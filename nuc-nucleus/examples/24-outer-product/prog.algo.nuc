@@ -1,0 +1,118 @@
+// Outer product (rank-1 update / BLAS-2 `ger`) — the conceptual
+// OPPOSITE of a reduction.
+//
+// Two input vectors a (length M, the "column" vector) and b (length N,
+// the "row" vector) produce a 2D matrix c with
+//
+//     c[i][j] = a[i] * b[j]
+//
+// There is NO contraction and NO reduction: every output element is an
+// independent product of one a element and one b element. The rank
+// EXPANDS (1D x 1D -> 2D) rather than contracting. That single property
+// is what distinguishes this example from the neighbours that look
+// superficially similar:
+//
+//   - 03-reduction / 23-dot-product CONTRACT (sum_k ...): they collapse
+//     an axis. This example does the opposite — it introduces a new
+//     output axis for every input axis.
+//   - 07-matmul CONTRACTS along k: c[i][j] = sum_k A[i][k]*B[k][j]. The
+//     outer product is the degenerate "K=1, no accumulate" case — the
+//     rank-1 building block matmul sums over. Here there is no `k` loop
+//     and no accumulator at all.
+//   - 15-transpose is a PERMUTATION of one input (rank-preserving); the
+//     outer product reads two distinct 1D inputs and writes a 2D
+//     output it builds from scratch.
+//   - 01-elementwise-add is a per-element MAP over two EQUAL-length 1D
+//     arrays with a SHARED index (c[i] = a[i]+b[i]). The outer product
+//     reads a and b with DIFFERENT index variables (a[i], b[j]) so the
+//     output is the full Cartesian M x N grid, not a single 1D result.
+//
+// RECTANGULAR dims (M != N) are deliberate: c is non-square (8 x 16), so
+// the rank expansion is unmistakable and the example can never be
+// mistaken for a 2D-elementwise op over equal shapes.
+//
+// What this example demonstrates:
+//   - Reading TWO different 1D arrays with TWO different single index
+//     variables in one pure kernel call: `mul(a[i], b[j])`. The outer
+//     loop variable `i` indexes a; the inner loop variable `j` indexes
+//     b. This is a strict SUBSET of 07-matmul's mixed-index reads
+//     `madd(c[i][j], a[i][k], b[k][j])` (which mixes i/k and k/j in 2D
+//     index expressions and accumulates); here each read uses exactly
+//     one loop variable into a 1D array, and there is no accumulate.
+//   - A 2D row-major output `c : i32[M][N]` written once per (i, j)
+//     under single-assignment (PRD §6.2.1: the rule is on the data
+//     SYMBOL — one dataflow statement assigns `c` — not on every loop
+//     iteration). Unlike 07-matmul, `c` is NOT pre-initialised to an
+//     accumulator identity because there is no fold: each c[i][j] is a
+//     single straight assignment from one product.
+//
+// What this example does NOT demonstrate:
+//   - Reduction / accumulation. There is no `sum_k`, no accumulator,
+//     no tree combine. That is the whole point — it is the rank
+//     EXPANSION counterpart to 03/23.
+//   - Distributed placement across compute workers. The naive schedule
+//     places everything on `host`; the cross-backend differential is
+//     the acceptance signal. A distributed variant would partition the
+//     `i` axis (each worker owns a strip of rows of c, needing the
+//     whole of b), but that is out of scope here.
+//   - Float arithmetic. PRD §10.1 demands bit-identity; integer only.
+//
+// Numeric choice & determinism (PRD §10.1): i32 throughout, with
+// `wrapping_mul` in the kernel. Integer multiply is bit-deterministic
+// by language definition. Crucially, because there is NO reduction,
+// every output element c[i][j] is a single independent product — the
+// result is order-independent BY CONSTRUCTION (no associativity or
+// commutativity argument is even needed; there is nothing to reorder).
+// So bit-identity across all backends and all schedules is automatic.
+// The committed fixture (see reference/) keeps every product tiny, well
+// inside the i32 range, but the `wrapping_mul` spelling documents the
+// overflow contract defensively.
+//
+// Row-major layout: `c : i32[M][N]` is a single flat Vec<i32> of length
+// M*N laid out row-major — c[i][j] at flat index i*N + j. The codegen
+// resolves the N stride at compile time from the data symbol's shape
+// (identical convention to 07-matmul's `c[i][j] -> c[i*N + j]`).
+
+const M : usize = 8;     // length of column vector a (rows of c)
+const N : usize = 16;    // length of row vector   b (cols of c)
+
+
+// Two input vectors and the 2D outer-product matrix. Each `data`
+// symbol is assigned by exactly one dataflow statement (PRD §6.2.1):
+// `a` and `b` are whole-array assigned by their loaders; `c` is
+// indexed-assigned once per (i, j) by the single `mul` statement.
+data a : i32[M];         // column vector (length M)
+data b : i32[N];         // row vector    (length N)
+data c : i32[M][N];      // outer product: c[i][j] = a[i] * b[j]
+
+
+// Pure compute kernel: scalar multiply. `mul(x, y) = x * y`. Scalar
+// (i32, i32) -> i32 so the contract pass (TASK-0012, scalar-only
+// matching at M1) PASSES on it directly. Pure: reorderable,
+// deduplicable, eliminable.
+kernel mul : (i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved within a basic block,
+// never duplicated. Aggregate-typed in Nuc; on the Rust side they use
+// `Vec<i32>` (see kernels.rs and the README "Why Vec<i32>" note).
+//   load_a reads a from input.bin positions [0..M);
+//   load_b reads b from positions [M..M+N) (single-file two-input
+//   convention, same as 01/23).
+kernel load_a      : ()          -> i32[M]    effectful;
+kernel load_b      : ()          -> i32[N]    effectful;
+kernel save_output : (i32[M][N]) -> ()        effectful;
+
+
+// Dataflow: load both vectors, then fire `mul` over the full M x N grid
+// with DISTINCT index variables (a[i] with the outer var, b[j] with the
+// inner var), writing each c[i][j] exactly once. No reduction.
+a <-- load_a();
+b <-- load_b();
+
+for i : 0 .. M {
+    for j : 0 .. N {
+        c[i][j] <-- mul(a[i], b[j]);   // outer product: a[i] (outer) * b[j] (inner)
+    }
+}
+
+save_output(c);

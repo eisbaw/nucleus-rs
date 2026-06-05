@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1419,6 +1419,61 @@ milestone = "M6"
 
 [[required]]
 example  = "23-dot-product"
+schedule = "naive"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 24-outer-product/naive: TASK-0449 — the OUTER PRODUCT (rank-1 /
+# BLAS-2 ger). Two 1D vectors a (len M=8) and b (len N=16) produce the
+# 2D matrix c[i][j] = a[i]*b[j] with NO reduction/contraction — the
+# conceptual OPPOSITE of 03/23 (rank EXPANSION 1Dx1D->2D), distinct
+# from 07-matmul (contracts along k), 15-transpose (permutation) and
+# 01-elementwise-add (shared-index 1D map). The one new shape vs 01 is
+# reading two DIFFERENT 1D arrays with two DIFFERENT single index vars
+# in one kernel call (mul(a[i], b[j])) — a strict subset of 07-matmul's
+# mixed-index reads, so NO new codegen surface. Because there is no
+# reduction, every c[i][j] is a single independent product => order-
+# independent by construction => all 7 tier-1 backends emit bytes
+# bit-identical to reference.bin. Mirrors the 23-dot-product naive
+# block (naive x 7 tier-1, M6).
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
+schedule = "naive"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "24-outer-product"
 schedule = "naive"
 backend  = "mp-uds-event"
 milestone = "M6"

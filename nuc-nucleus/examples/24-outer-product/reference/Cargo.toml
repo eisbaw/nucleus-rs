@@ -1,0 +1,45 @@
+# Standalone reference implementation for example 24-outer-product.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or on
+# any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` link).
+#
+# Regenerate the committed fixture + reference with:
+#
+#   # 1. write the deterministic input.bin (96 bytes = a ++ b):
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/24-outer-product/reference/Cargo.toml -- \
+#     --gen-input nuc-nucleus/examples/24-outer-product/input.bin
+#
+#   # 2. compute reference.bin (512 bytes = c, row-major M*N i32 LE):
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/24-outer-product/reference/Cargo.toml -- \
+#     --in  nuc-nucleus/examples/24-outer-product/input.bin \
+#     --out nuc-nucleus/examples/24-outer-product/reference.bin
+#
+# `just regen-references` auto-discovers this crate via glob and runs
+# step 2; step 1 (--gen-input) must be run once to create input.bin.
+#
+# The crate is excluded from the parent workspace by being inside
+# `nuc-nucleus/`, which the `nucleus/` workspace does not include. An
+# explicit empty `[workspace]` table makes that intent defensive
+# against future workspace globs.
+
+[package]
+name        = "outer-product-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 24-outer-product."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "outer-product-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"
