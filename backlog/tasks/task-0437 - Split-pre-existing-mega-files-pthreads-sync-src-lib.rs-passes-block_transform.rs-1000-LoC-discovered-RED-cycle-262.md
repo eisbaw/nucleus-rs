@@ -3,11 +3,11 @@ id: TASK-0437
 title: >-
   Split pre-existing mega-files pthreads-sync/src/lib.rs +
   passes/block_transform.rs (>1000 LoC; discovered RED cycle-262)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-06-03 17:58'
-updated_date: '2026-06-05 14:59'
+updated_date: '2026-06-05 16:10'
 labels: []
 dependencies: []
 ---
@@ -32,4 +32,9 @@ Cycle orchestrator INDEPENDENT review gate (parallel, read-only) — both GO. La
 - mped-architect: GO. Independently confirmed the de-indent is whitespace-only/lossless (no multi-line/raw string literals in the test body that a blanket 4-space strip could corrupt; 6 #[test] fns same names/order; production lines 1-663 byte-identical to parent); allow-list direction-B correct + recipe rationale comment not lying; TASK-0437.01 correctly parented (-p=--parent) with honest production-heavy scope + forward-carried gotchas; TASK-0437 honestly In Progress (no AC-gaming).
 - Architect P3-1 (stale self-cited SHA) addressed by this note. Architect P3-2 (PRE-EXISTING, not introduced here): the retained pthreads-sync allow-list bullet comment says "~flat at 1035" but the file is 1044 LoC — forward-carried to TASK-0437.01 (where that entry is removed entirely when the split lands). 
 DELIVERABLE this cycle: block_transform.rs mega-file split via verbatim test-mod carve-out (1043->664 LoC), stale allow-list entry removed, full just ci GREEN, e2e baseline held 483/420/0/63/0. TASK-0437 stays IN PROGRESS — pthreads-sync/src/lib.rs half tracked in TASK-0437.01.
+
+PARENT CLOSED by orchestrator. Both mega-files split, both halves passed the independent parallel review gate (GO/GO):
+- block_transform.rs (1043->664) via inline-test-mod carve-out — TASK-0437 first half, commit e63abbf (review GO, prior cycle).
+- pthreads-sync/src/lib.rs (1044->609) via verbatim Event-rendering carve into events.rs — child TASK-0437.01, commit dd339db (review GO this cycle; e2e 483/420/0/63/0 x2, dependent-backend clippy exit 0, byte-identical move).
+Both stale check-mega-files allow-list entries removed; direction-B fence green. No remaining mega-file work under this task. e2e baseline held 483/420/0/63/0 throughout (pure moves, zero codegen change).
 <!-- SECTION:NOTES:END -->
