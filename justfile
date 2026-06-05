@@ -124,6 +124,33 @@ e2e-mpi:
 required-coverage-check-negative-mpi:
     nix develop .#mpi --command bash -c 'cd nucleus && out=$(mktemp) && trap "rm -f $out" EXIT && { if NUC_REQUIRED_COVERAGE_NEGATIVE=1 cargo run --release --bin nucleus-e2e -- --with-mpi >"$out" 2>&1; then bit=0; else bit=1; fi; }; cat "$out"; n=$(grep -oE "^NUC_REQUIRED_COVERAGE_GAP_DETECTED=[0-9]+" "$out" | tail -n1 | cut -d= -f2); if [ -z "$n" ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED signal MISSING under --with-mpi — cannot prove the mpi-tier required-coverage guard detected the injected sentinel cell (TASK-0188/0446 harness contract broken)"; exit 1; fi; if [ "$n" -lt 1 ]; then echo "FAIL: NUC_REQUIRED_COVERAGE_GAP_DETECTED=$n — the mpi-tier required-coverage guard detected NO injection-attributable gap (TASK-0446)"; exit 1; fi; if [ "$bit" -eq 0 ]; then echo "FAIL: mpi-tier required-coverage guard did NOT exit non-zero on the injected sentinel mpi required cell (TASK-0446 wired --with-mpi path silently neutered)"; exit 1; else echo "OK: mpi-tier required-coverage guard correctly bit on the injected sentinel mpi required cell (--with-mpi)"; fi'
 
+# TASK-0447: one-command tier-2 MPI gate. Bundles the previously-manual
+# MPI verification sequence — positive acceptance (`check-mpi` M7 +
+# `check-mpi-nonblocking` M8 + `e2e-mpi` cross-backend differential) AND
+# BOTH required-coverage negative falsifiers (the tier-1
+# `required-coverage-check-negative` + the mpi-tier
+# `required-coverage-check-negative-mpi`) — into ONE fail-loud `just`
+# prerequisite chain, so "run the MPI tier" is a single reproducible
+# command that carries its own negative arms. Closes the TASK-0446 P2
+# standing-bite DISCOVERABILITY gap: the mpi-tier coverage falsifier is
+# out-of-default-`ci` (needs `.#mpi`), so a human could run `e2e-mpi`
+# and forget the falsifier; bundling it here makes it un-forgettable.
+# Any prerequisite exiting non-zero ABORTS the gate (just prerequisite
+# semantics) — so `mpi-gate` FAILS if an mpi cell is silently skipped
+# (caught by `e2e-mpi` / the mpi-tier coverage falsifier) or either
+# required-coverage guard is bypassed (caught by the two falsifiers).
+# Each prerequisite is self-contained: the four mpi arms self-enter
+# `.#mpi`; `required-coverage-check-negative` is the tier-1 arm (default
+# shell, also wired into `just ci`). The two CHEAP negative falsifiers
+# run FIRST so a severed coverage guard fails fast BEFORE the heavy
+# rsmpi cross-builds. Invoke from the default shell:  just mpi-gate
+# DELIBERATELY NOT in `just ci` (needs `.#mpi`, same out-of-default-ci
+# rule as every arm). Mirrors the tier-3 `renode-multimcu-gate` bundling
+# pattern. If an mpi CI lane is ever added it MUST invoke this recipe so
+# both required-coverage negative arms run (TASK-0446 P2 residual).
+mpi-gate: required-coverage-check-negative required-coverage-check-negative-mpi check-mpi check-mpi-nonblocking e2e-mpi
+    @echo "OK: tier-2 M7/M8 MPI gate PASSED — both required-coverage negative falsifiers bit (tier-1 + mpi-tier) AND check-mpi + check-mpi-nonblocking + e2e-mpi positive acceptance all GREEN (TASK-0447)."
+
 # Verify PRD §1 / §10.1: same source + same backend = byte-identical
 # emitted code. Builds every cell twice and diffs the generated files.
 # TASK-0033.
