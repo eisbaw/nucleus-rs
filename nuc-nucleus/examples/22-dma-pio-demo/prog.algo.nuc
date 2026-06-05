@@ -1,0 +1,93 @@
+// Audio gain-apply — the M11 demo that shows TWO structurally distinct
+// cross-worker transport shapes in ONE Nucleus application.
+//
+// Structurally this is a near-clone of example 02-split-add (top-level
+// loads, a per-element loop, a top-level save). The arithmetic is a
+// Q8 fixed-point gain: `out[i] = (samples[i] * gains[i]) >> 8`, with
+// `gains[i] = 256` meaning unity gain. The point of the example is NOT
+// the arithmetic — it is what the *schedule* does with the data edges.
+//
+// What this example demonstrates
+// ------------------------------
+//   - DMA-async vs PIO-sync transport, side by side, from ONE source.
+//     In `schedules/dma_pio.sched.nuc` the bulk audio frames cross as
+//     `mode=dma` edges (samples in, out back) while the per-sample gain
+//     coefficients cross as a `mode=pio` edge. The embedded-pattern
+//     backend (TASK-0438.02) emits a STRUCTURALLY DIFFERENT code path
+//     for each: a DMA edge renders `shim.dma_link_arm(...)` +
+//     `dma_link_recv_arm(...)` plus a completion spin loop; a PIO edge
+//     renders the unchanged `shim.link_push` / `shim.link_recv` byte
+//     loop. Both ride the SAME UART fabric and are value-equivalent, so
+//     the whole app stays Renode byte-exact (the proof of the demo).
+//   - The bulk=DMA / control=PIO split mirrors a real embedded audio
+//     pipeline (ex14 hearing-aid reality): you DMA a frame buffer but
+//     PIO a handful of control words.
+//
+// HONEST caveat — Renode DMA is a TIMING MODEL, not a silicon engine
+// ------------------------------------------------------------------
+// Under the Renode co-sim the modelled DMA does NOT run a real STM32H7
+// DMA stream. `dma_link_arm` delegates to the same `link_push` UART
+// transport, and `dma_link_poll` returns `true` synchronously, so the
+// emitted spin loop terminates on its first iteration. That means the
+// proof this example carries is VALUE-correctness (byte-exact output),
+// NOT timing-correctness (parent TASK-0438 AC#4). A real async DMA
+// engine — where `dma_link_poll` reads the silicon transfer-complete
+// bit and the CPU does useful work while the stream runs — is the
+// explicit follow-up TASK-0048.12. See `README.md` and TASK-0438.03.
+//
+// What this example does NOT demonstrate
+// --------------------------------------
+//   - Real cycle-accurate DMA timing (see the caveat above; TASK-0048.12).
+//   - Distributed placement across many compute workers (a single `w0`
+//     runs the whole loop, exactly like 02-split-add).
+//   - Buffered / notify=event async transfers. `mode=` is orthogonal to
+//     `sync`/`async`; here both edges stay `sync` so the synchronous
+//     embedded shim can honour them honestly.
+//
+// Numeric choice: i32 (PRD §10.1 — integers are bit-deterministic by
+// language definition). The Q8 multiply uses `wrapping_mul` on the Rust
+// side so overflow is two's-complement deterministic, not UB.
+//
+// Dataflow shape (deliberately parallel to example 02-split-add)
+// --------------------------------------------------------------
+//   samples <-- load_samples();            // produced on host
+//   gains   <-- load_gains();              // produced on host
+//   for i : 0 .. N {
+//       out[i] <-- apply_gain(samples[i], gains[i]);  // on w0
+//   }
+//   save_output(out);                      // consumed on host
+//
+// The algorithm has NO knowledge of `host`/`w0` or of DMA vs PIO. The
+// placement AND the transport mode live entirely in the schedule
+// (PRD §2 algorithm/schedule split; PRD §6.3.4 transport is a codegen
+// concern, not an algorithmic one).
+
+const N : usize = 256;     // 256 * 4 bytes per array = 1 KiB audio frame.
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1.
+data samples : i32[N];     // bulk audio frame (DMA-async edge in)
+data gains   : i32[N];     // per-sample gain coefficients, Q8 (PIO-sync edge)
+data out     : i32[N];     // processed audio frame (DMA-async edge back)
+
+
+// Scalar Q8 gain-apply. Pure: reorderable, deduplicable, eliminable.
+// Signature is explicitly scalar so the contract pass matches it
+// against `pub fn apply_gain(sample: i32, gain: i32) -> i32`.
+kernel apply_gain : (i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; Rust side is `Vec<i32>` (see kernels.rs).
+kernel load_samples : ()       -> i32[N] effectful;
+kernel load_gains   : ()       -> i32[N] effectful;
+kernel save_output  : (i32[N]) -> ()     effectful;
+
+
+// Dataflow.
+samples <-- load_samples();
+gains   <-- load_gains();
+
+for i : 0 .. N {
+    out[i] <-- apply_gain(samples[i], gains[i]);
+}
+
+save_output(out);

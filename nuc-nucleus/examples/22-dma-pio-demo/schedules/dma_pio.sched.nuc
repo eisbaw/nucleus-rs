@@ -1,0 +1,77 @@
+// DMA+PIO schedule for example 22-dma-pio-demo — the load-bearing
+// schedule for this example, and the whole point of the demo.
+//
+// Two workers (same topology as 02-split-add):
+//   host  -- runs the effectful I/O kernels (load_samples, load_gains,
+//            save_output). Owns the file system / the injected input
+//            region under Renode.
+//   w0    -- runs the pure `apply_gain` kernel; the loop body executes
+//            here.
+//
+// Cross-worker dataflow edges (host <-> w0), one `transfer` per
+// crossing data symbol (PRD §6.3.4: omitting a required transfer is a
+// hard error, not a silent default). What makes THIS schedule the demo
+// is the per-edge `mode=` hint (TASK-0438.01 DSL, .02 codegen):
+//
+//   samples (host -> w0)  mode=dma  -- BULK audio frame in. Bulk frame
+//                                      transfers are the natural DMA
+//                                      case: arm a descriptor, let the
+//                                      stream run. Emits dma_link_arm
+//                                      (push side) + dma_link_recv_arm
+//                                      (recv side) + a completion spin.
+//   gains   (host -> w0)  mode=pio  -- per-sample gain COEFFICIENTS.
+//                                      Control/coefficient words are the
+//                                      natural PIO case: a handful of
+//                                      CPU-driven loads, no descriptor
+//                                      setup overhead. Emits the
+//                                      unchanged link_push / link_recv.
+//   out     (w0 -> host)  mode=dma  -- processed BULK frame back. DMA
+//                                      again (bulk), symmetric to
+//                                      `samples`.
+//
+// So this single schedule emits BOTH transport shapes: two DMA-async
+// edges (samples, out) and one PIO-sync edge (gains). That is parent
+// TASK-0438 AC#1 (>=1 dma edge AND >=1 pio edge in one app).
+//
+// HONEST timing-model note (parent AC#4)
+// --------------------------------------
+// `mode=dma` here is a MODELLED DMA SHAPE, not a silicon STM32H7 DMA
+// stream. Under Renode the default `dma_link_arm` delegates to the same
+// `link_push` UART transport and `dma_link_poll` returns `true`
+// synchronously, so the emitted spin loop terminates immediately and
+// the DMA bytes ride the SAME UART fabric as the PIO bytes. The two
+// modes are therefore VALUE-EQUIVALENT and the whole app stays
+// byte-exact under `just renode-multimcu 22-dma-pio-demo dma_pio`. The
+// proof is value-correctness, NOT timing. A real async DMA engine is
+// the follow-up TASK-0048.12.
+//
+// All three transfers stay `sync` (producer blocks until the consumer
+// has received). `mode=` is ORTHOGONAL to sync/async: it selects the
+// transport CODE PATH, not the completion semantics. Keeping them
+// `sync` is what lets the synchronous embedded shim honour them without
+// a capability lie (same surface the embedded-pattern capabilities.toml
+// declares: default class, heap region, sync, no async/buffer/event).
+//
+// What's intentionally NOT here
+// -----------------------------
+//   - No loop options (no block=, no vectorize=, no pipeline=).
+//   - No notify=, no buffer=N. `sync` + `mode=` only.
+//   - No distributed placement. A single `w0` runs the whole loop.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0 };
+
+    // I/O on host (owns the file system / injected input region).
+    place load_samples on host;
+    place load_gains   on host;
+    place save_output  on host;
+
+    // Compute on w0.
+    place apply_gain   on w0;
+
+    // Cross-worker data — one transfer per data symbol that crosses,
+    // each tagged with its transport mode (the demo's payload).
+    transfer samples : sync, mode=dma;   // bulk audio frame  -> DMA-async
+    transfer gains   : sync, mode=pio;   // gain coefficients -> PIO-sync
+    transfer out     : sync, mode=dma;   // processed frame   -> DMA-async
+}

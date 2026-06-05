@@ -1745,7 +1745,7 @@ renode-multimcu EX="02-split-add" SCHED="split":
     fi
 
 # Tier-3 M11 multi-MCU VALUE-CORRECTNESS standing gate (TASK-0049.10.08
-# AC#4). Runs BOTH proven `renode-multimcu` co-sims as ONE fail-loud
+# AC#4). Runs the proven `renode-multimcu` co-sims as ONE fail-loud
 # command — a STANDING gate, not a remembered manual invocation:
 #
 #   1. 02-split-add/split   — 2 STM32H7 MCUs (host + w0), sync transfers;
@@ -1755,10 +1755,18 @@ renode-multimcu EX="02-split-add" SCHED="split":
 #      vs reference.bin. Unblocked by the staged-release boot-order
 #      fixpoint (TASK-0049.05.03) which resolved the rf frame-3 stall;
 #      this proves ex14 per-frame VALUES are correct end-to-end.
+#   3. 22-dma-pio-demo/dma_pio — 2 STM32H7 MCUs (host + w0) exercising
+#      BOTH transport shapes in one app: two `mode=dma` edges (samples,
+#      out) emit dma_link_arm/dma_link_recv_arm + completion spin, one
+#      `mode=pio` edge (gains) emits link_push/link_recv; BYTE-EXACT
+#      1024B vs reference.bin (TASK-0438.03, the DMA-vs-PIO demo). The
+#      modes are value-equivalent over the SAME UART fabric so the app
+#      stays byte-exact — value-correctness, NOT timing (AC#4).
 #
-# `just` runs prerequisite recipes before the body, so both `renode-multimcu`
-# invocations run; each fails LOUD (exit 1) on any byte-count/diff mismatch,
-# which fails this gate. No new co-sim logic lives here — it composes the
+# `just` runs prerequisite recipes before the body, so all three
+# `renode-multimcu` invocations run; each fails LOUD (exit 1) on any
+# byte-count/diff mismatch, which fails this gate. No new co-sim logic
+# lives here — it composes the
 # parameterised recipe (PRD §12.3 anti-bloat: one standing gate, not
 # per-example one-offs).
 #
@@ -1770,8 +1778,8 @@ renode-multimcu EX="02-split-add" SCHED="split":
 # `[[skip]]` for the same reason — the standing gate is THIS Renode recipe
 # path, NOT the e2e matrix. The ci.yml `renode-multimcu` job runs this gate
 # best-effort (PRD §10.3); it is NOT part of the merge-blocking `just ci`.
-renode-multimcu-gate: (renode-multimcu "02-split-add" "split") (renode-multimcu "14-hearing-aid" "embedded_multimcu_sync")
-    @echo "OK: tier-3 M11 multi-MCU value-correctness gate PASSED — 02-split-add 2-MCU 1024B + 14-hearing-aid 3-MCU 512B both BYTE-EXACT vs reference.bin (TASK-0049.10.08 AC#4)."
+renode-multimcu-gate: (renode-multimcu "02-split-add" "split") (renode-multimcu "14-hearing-aid" "embedded_multimcu_sync") (renode-multimcu "22-dma-pio-demo" "dma_pio")
+    @echo "OK: tier-3 M11 multi-MCU value-correctness gate PASSED — 02-split-add 2-MCU 1024B + 14-hearing-aid 3-MCU 512B + 22-dma-pio-demo 2-MCU 1024B (DMA+PIO) all BYTE-EXACT vs reference.bin (TASK-0049.10.08 AC#4 + TASK-0438.03)."
 
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03
