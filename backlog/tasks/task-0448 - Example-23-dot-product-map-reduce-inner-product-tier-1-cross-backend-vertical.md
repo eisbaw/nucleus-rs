@@ -3,11 +3,11 @@ id: TASK-0448
 title: >-
   Example 23-dot-product: map-reduce (inner product) tier-1 cross-backend
   vertical
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-06-05 02:32'
-updated_date: '2026-06-05 02:44'
+updated_date: '2026-06-05 03:02'
 labels: []
 dependencies: []
 ---
@@ -42,4 +42,19 @@ GOTCHAS / SUBTLETIES:
 - Fixture: a[k]=(k%7)-3 in [-3,3], b[k]=(k%5)-2 in [-2,2]; product in [-6,6]; |dot| bounded 1536 << i32 max so wrapping_* never wraps on this fixture. result = -1 (0xffffffff), independently cross-checked in Python and matched by pthreads-sync emit. moduli 7/5 keep a,b out of phase (non-trivial dot, not accidental zero).
 - input.bin 2048B (a in [0..N), b in [N..2N)); reference.bin 4B. Reference uses a FLAT left-to-right fold (independent control structure) vs the Nucleus partition+tree reduction; equal because wrapping_add is assoc+commut over i32.
 - Example dir count was already 22 (22-dma-pio-demo is the embedded/Renode example, NOT in e2e runnable_examples); 23-dot-product makes 23. README 22->23 prose+sentinel.
+
+ORCHESTRATOR REVIEW GATE (phase3, independent of implementer self-report) — 2026-06-05:
+- Implementer did NOT run the review gate (disclosed). Orchestrator ran the mandatory parallel read-only gate itself: qa-test-runner GO + mped-architect GO.
+- qa-test-runner independently reproduced: just e2e = 434/371/0/63/0 TWICE (deterministic, non-flake; prior baseline 427/364/0/63/0, delta +7 total/+7 pass, fail 0, required-fail 0); all 7 tier-1 backends 23-dot-product/naive PASS bit-identical (pthreads-sync, pthreads-async, openmp-rs, mp-tcp-bufsync, mp-tcp-poll, mp-tcp-event, mp-uds-event); check-readme-counts OK=23; build/clippy clean (no doc_lazy_continuation), test 1379/0/3, test-release 1377/0/3.
+- mped-architect independently recomputed the dot product TWO ways (reference flat fold AND the Nucleus partition-4x64+tree-combine shape) -> both -1 (0xffffffff) matching reference.bin; clean-room rebuilt input.bin (2048B) + reference.bin (4B) via the reference --gen-input/--in/--out -> byte-identical to committed; verified reference independence (zero deps, empty [workspace], panic=abort), e2e-matrix 7-backend enrollment (no typo/dupe), README counts, and doc-claim accuracy.
+- ORCHESTRATOR independent oracle: recomputed the wrapping dot product from input.bin fixture (a[k]=(k%7)-3, b[k]=(k%5)-2) = -1, matching reference.bin; fixture matches documented pattern.
+- 2D double-input map prod[w][i] <-- mul(a[w][i], b[w][i]) lowered cleanly on all 7 backends (no fallback needed) — the only novelty over the proven 03 reduction is the source-array identity.
+- Review fold: architect P3 doc-precision (nested-call rejection wording) FIXED in commit 14a5463 (attribute to the tier-1 render_fire_arg helper, not v2 absolutely). Other P3 (reference/target gitignored, not committed) = no action.
+VERDICT: GO. Done stands on independent verification (qa GO + architect GO + orchestrator oracle; e2e 434 non-flake, 7/7 bit-identical).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+DONE. Added tier-1 example 23-dot-product (map-reduce / inner product): standalone dot product = elementwise multiply two vectors then two-phase tree sum-reduce to scalar. Pure composition of ex01 two-input map + ex03 two-phase tree reduction; no new codegen. The 2D double-input map lowered as designed on all 7 backends (verified, no fallback). All 7 tier-1 backends bit-identical to reference.bin under naive. Gate green: e2e 427/364/0/63/0 -> 434/371/0/63/0 (+7 total/+7 pass, fail 0, required-fail 0); build/clippy/test/test-release/check-readme-counts clean. Commit 72c4df2. No stubs, no follow-ups needed.
+<!-- SECTION:FINAL_SUMMARY:END -->
