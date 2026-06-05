@@ -286,6 +286,8 @@ impl NucleusShim for Usart1Shim {
         // AXISRAM / `.axisram_tx`), then let the DMA engine stream the
         // staging buffer out. The stage-copy is the honest DTCM-compute ->
         // SRAM-stage -> DMA bridge; the DMA *source* is genuinely AXI SRAM.
+        // A fully zero-copy real-DMA path (output array placed directly in
+        // AXI SRAM, no stage-copy) is the TASK-0048.13 follow-up.
         if len > DMA_TX_STAGING_CAP {
             // Loud, non-silent failure: emit a diagnostic line and stop
             // (rather than truncate the transfer and ship a wrong-length,
