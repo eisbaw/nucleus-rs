@@ -26,10 +26,12 @@
 //   - Composition of two already-proven dataflow shapes at the
 //     algorithm level: a two-input elementwise map feeding a two-phase
 //     tree reduction, with no new codegen surface.
-//   - The explicit `prod` intermediate. v2 codegen disallows nested
-//     kernel calls inside an argument expression, so the "fused"
+//   - The explicit `prod` intermediate. The tier-1 backends' codegen
+//     rejects nested kernel calls inside an argument expression (the IR
+//     represents them, but the shared `render_fire_arg` helper every
+//     tier-1 backend uses rejects `ArgBinding::Nested`), so the "fused"
 //     spelling `accumulate(partials[w], mul(a[w][i], b[w][i]))` would
-//     not compile. Materialising the map output into its own data
+//     not compile on any backend this example targets. Materialising the map output into its own data
 //     symbol (`prod`) is the convention used throughout the examples
 //     (same reasoning as the `half1`/`half2` intermediates in 03).
 //   - Accumulating pattern in the algorithm sublanguage. The LHS
@@ -114,8 +116,8 @@ a <-- load_input();
 b <-- load_input_b();
 
 // Phase 0 — MAP: elementwise products a[w][i] * b[w][i]. The explicit
-// `prod` edge is required because v2 forbids nested kernel calls in an
-// argument expression (see header).
+// `prod` edge is required because the tier-1 backends' codegen rejects
+// nested kernel calls in an argument expression (see header).
 for w : 0 .. NUM_WORKERS {
     for i : 0 .. PARTITION_SIZE {
         prod[w][i] <-- mul(a[w][i], b[w][i]);

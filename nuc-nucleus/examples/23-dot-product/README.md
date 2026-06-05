@@ -32,8 +32,10 @@ is introduced; the example is pure composition.
 
 ## Why the explicit `prod` intermediate
 
-v2 codegen disallows nested kernel calls inside an argument expression,
-so the "fused" spelling
+The tier-1 backends' codegen rejects nested kernel calls inside an
+argument expression (the IR represents them, but the shared
+`render_fire_arg` helper every tier-1 backend uses rejects
+`ArgBinding::Nested`), so the "fused" spelling
 `accumulate(partials[w], mul(a[w][i], b[w][i]))` would not compile.
 Materialising the map output into its own `data` symbol (`prod`) is the
 convention throughout the examples (the same reasoning behind 03's
