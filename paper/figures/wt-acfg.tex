@@ -1,0 +1,96 @@
+% fig:wt-acfg --- the stencil's application control-flow graph (ACFG).
+% Faithful to chapters/07b-compilation-walkthrough.tex sec:wt-acfg:
+%   initial tree = Seq[ Op(load_image@host),
+%                       Repeat y:1..15 [ Repeat x:1..15 [ Op(blur3@{w0..w3}) ] ],
+%                       Op(save_image@host) ]
+% with each Op carrying a dataflow record (arrays read/written, affine indices),
+% and the schedule transforms tagged on the nodes they rewrite. Ranges half-open.
+\begin{figure}[tbp]
+  \centering
+  % ===== Panel (a): the ACFG control tree =====
+  \begin{tikzpicture}[
+      font=\small,
+      seq/.style={draw, rounded corners, fill=gray!15, minimum height=7mm,
+                  inner sep=3pt, align=center},
+      op/.style={draw, fill=blue!10, minimum height=7mm, inner sep=3pt, align=center},
+      rep/.style={draw, fill=orange!14, minimum height=7mm, inner sep=3pt, align=center},
+      tree/.style={-{Latex[length=1.6mm]}},
+      tag/.style={font=\scriptsize\itshape, fill=yellow!18, draw=yellow!55!black,
+                  rounded corners=1pt, inner sep=2pt, align=center},
+      lead/.style={densely dotted, yellow!55!black, -{Latex[length=1.2mm]}},
+    ]
+    \node[seq] (seq) at (0,0) {\texttt{Seq}};
+    \node[op]  (load) at (-3.4,-1.5) {\texttt{Op}\,/\,\texttt{load\_image}\\@\,\texttt{host}};
+    \node[rep] (ry)   at (0,-1.5)    {\texttt{Repeat} $y:1..15$};
+    \node[op]  (save) at (3.4,-1.5)  {\texttt{Op}\,/\,\texttt{save\_image}\\@\,\texttt{host}};
+    \node[rep] (rx)   at (0,-3.0)    {\texttt{Repeat} $x:1..15$};
+    \node[op]  (blur) at (0,-4.5)    {\texttt{Op}\,/\,\texttt{blur3}\\@\,$\{$\texttt{w0..w3}$\}$};
+    \draw[tree] (seq) -- (load);
+    \draw[tree] (seq) -- (ry);
+    \draw[tree] (seq) -- (save);
+    \draw[tree] (ry) -- (rx);
+    \draw[tree] (rx) -- (blur);
+
+    % dataflow records (the affine read/write sets) to the right of each op
+    \node[align=left, font=\scriptsize, right=2mm of blur, text width=42mm] (df) {%
+      \textbf{reads} \texttt{img\_in[y$-$1..y$+$1][x$-$1..x$+$1]}\\
+      \quad (9 affine accesses)\\
+      \textbf{writes} \texttt{img\_out[y][x]}};
+    \draw[densely dotted] (blur) -- (df);
+    \node[font=\scriptsize, below=1mm of load] (dfl) {\textbf{writes} \texttt{img\_in}};
+    \node[font=\scriptsize, below=1mm of save] (dfs) {\textbf{reads} \texttt{img\_out}};
+
+    % schedule-transform tags, stacked in the empty lower-left, with leaders
+    \node[tag, text width=24mm] (tpar) at (-3.5,-3.1)
+      {\texttt{partition=rows}\\$\rightarrow$ 4 row bands};
+    \node[tag, text width=24mm] (tblk) at (-3.5,-4.6)
+      {\texttt{block=64} $+$ \texttt{reuse}\\$\rightarrow$ tiled, 3-slot window};
+    \node[tag, text width=22mm] (thalo) at (6.7,-4.9)
+      {halo pass\\$\rightarrow$ width-1 halo on \texttt{img\_in}};
+    \draw[lead] (tpar.east) to[out=0,in=-135] (ry.south west);
+    \draw[lead] (tblk.east) to[out=0,in=180] (rx.west);
+    \draw[lead] (thalo.north) to[out=90,in=0] (df.south east);
+
+    \node[font=\footnotesize\bfseries] at (0,0.95)
+      {(a)\ \ ACFG control tree (transforms tagged in yellow)};
+  \end{tikzpicture}
+
+  \vspace{3mm}
+
+  {\footnotesize\bfseries (b)\ \ dataflow DAG (the \emph{what}, before any decomposition)}\par
+  \vspace{1.5mm}
+
+  % ===== Panel (b): the dataflow DAG (resized to fit the text width) =====
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      data/.style={draw, ellipse, fill=green!14, inner sep=2pt, align=center},
+      kern/.style={draw, rounded corners=2pt, inner sep=3pt, align=center},
+      flow/.style={-{Latex[length=2mm]}, thick},
+    ]
+    \node[kern, fill=blue!10] (k1) at (0,0) {\texttt{load\_image}\\\scriptsize effectful};
+    \node[data] (d1) at (3.2,0) {\texttt{img\_in}\\\scriptsize\texttt{i32[16][16]}};
+    \node[kern, fill=green!12] (k2) at (6.4,0) {\texttt{blur3}\\\scriptsize pure};
+    \node[data] (d2) at (9.6,0) {\texttt{img\_out}\\\scriptsize\texttt{i32[16][16]}};
+    \node[kern, fill=blue!10] (k3) at (12.6,0) {\texttt{save\_image}\\\scriptsize effectful};
+    \draw[flow] (k1) -- (d1);
+    \draw[flow] (d1) -- node[above, font=\scriptsize]{9 reads} (k2);
+    \draw[flow] (k2) -- node[above, font=\scriptsize]{1 write/cell} (d2);
+    \draw[flow] (d2) -- (k3);
+  \end{tikzpicture}}
+
+  \caption[The stencil's ACFG and dataflow DAG]{The application control-flow
+    graph the compiler builds for the stencil. \textbf{(a)} The control tree: a
+    \texttt{Seq} of an effectful load, a doubly-nested \texttt{Repeat} firing the
+    pure \texttt{blur3}, and an effectful save (\texttt{@} denotes placement, so
+    \texttt{@\{w0..w3\}} means the operation runs on all four compute workers).
+    Each operation carries a dataflow record naming the arrays it reads and
+    writes as affine index expressions (dotted). The schedule's transforms (yellow) rewrite or annotate specific
+    nodes: \texttt{partition=rows} cuts the $y$ repeat into four bands,
+    \texttt{block=64} with \texttt{reuse} tiles the $x$ repeat and adds a
+    three-slot delay line, and halo inference records a width-one halo on
+    \texttt{img\_in}. \textbf{(b)} The same body as a dataflow DAG --- still the
+    \emph{what}, with no worker, transfer, or buffer in sight. Loop ranges are
+    half-open ($1..15$ denotes $1,\dots,14$).}
+  \label{fig:wt-acfg}
+\end{figure}

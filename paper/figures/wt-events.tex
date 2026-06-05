@@ -1,0 +1,104 @@
+% fig:wt-events --- the per-worker event lists as a swimlane timeline.
+% Faithful to sec:wt-events of chapters/07b-compilation-walkthrough.tex:
+%   host : fire load_image; push img_in to w0,w1,w2,w3; barrier; barrier;
+%          wait img_out from w0,w1,w2,w3; fire save_image.
+%   w_i  : barrier; wait img_in from host; loop over band { tiled+reuse blur3 };
+%          push img_out to host; barrier.
+% Time flows downward. The two barriers are horizontal 5-way sync lines; the host
+% idles (empty lane) between them while the workers compute -- which is exactly
+% the host's back-to-back "barrier; barrier" in its list.
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      fire/.style={draw, rounded corners=3pt, fill=blue!12, minimum height=6mm,
+                   inner sep=3pt, align=center},
+      io/.style={draw, fill=green!12, minimum height=6mm, inner sep=3pt, align=center},
+      loop/.style={draw, fill=orange!14, minimum height=13mm, inner sep=3pt,
+                   align=center, font=\scriptsize},
+      bar/.style={very thick, orange!65!black},
+      lane/.style={font=\footnotesize\bfseries},
+      push/.style={-{Latex[length=1.8mm]}, blue!45!black, thick},
+      ret/.style={-{Latex[length=1.8mm]}, green!40!black, thick},
+    ]
+    % lane x positions
+    \def\xh{0} \def\xa{3.4} \def\xb{5.5} \def\xc{7.6} \def\xd{9.7}
+    % lane headers
+    \node[lane] at (\xh,0.7) {\texttt{host}};
+    \node[lane] at (\xa,0.7) {\texttt{w0}};
+    \node[lane] at (\xb,0.7) {\texttt{w1}};
+    \node[lane] at (\xc,0.7) {\texttt{w2}};
+    \node[lane] at (\xd,0.7) {\texttt{w3}};
+
+    % --- host lane above barrier 1 ---
+    \node[fire] (hload) at (\xh,0)   {fire \texttt{load\_image}};
+    \node[io]   (hpush) at (\xh,-1.1){push \texttt{img\_in}\\$\rightarrow$ w0,w1,w2,w3};
+
+    % --- barrier 1 (5-way) ---
+    \def\byone{-2.0}
+    \draw[bar] (-1.2,\byone) -- (10.9,\byone);
+    \node[font=\scriptsize, anchor=west, orange!65!black] at (10.95,\byone) {barrier 1};
+
+    % --- worker lanes between the barriers ---
+    \foreach \x/\name/\band in {\xa/w0/{1..5}, \xb/w1/{5..9}, \xc/w2/{9..12}, \xd/w3/{12..15}} {
+      \node[io]   (\name wait) at (\x,-2.75) {wait\\\texttt{img\_in}};
+      \node[loop] (\name loop) at (\x,-4.15) {loop $y:\band$\\\scriptsize tiled $+$ reuse\\\scriptsize fire \texttt{blur3}};
+      \node[io]   (\name out)  at (\x,-5.55) {push\\\texttt{img\_out}};
+    }
+    % host idles between the two barriers (empty lane) -- its list is "barrier; barrier"
+    \node[font=\scriptsize\itshape, gray, align=center] at (\xh,-4.15)
+      {(host idle:\\\texttt{barrier;}\\\texttt{barrier})};
+
+    % --- barrier 2 (5-way) ---
+    \def\bytwo{-6.4}
+    \draw[bar] (-1.2,\bytwo) -- (10.9,\bytwo);
+    \node[font=\scriptsize, anchor=west, orange!65!black] at (10.95,\bytwo) {barrier 2};
+
+    % --- host lane below barrier 2 ---
+    \node[io]   (hwait) at (\xh,-7.2) {wait \texttt{img\_out}\\$\leftarrow$ w0,w1,w2,w3};
+    \node[fire] (hsave) at (\xh,-8.3) {fire \texttt{save\_image}};
+
+    % --- intra-lane order edges (host) ---
+    \draw[-{Latex[length=1.4mm]}] (hload) -- (hpush);
+    \draw[-{Latex[length=1.4mm]}] (hwait) -- (hsave);
+    % --- intra-lane order edges (workers) ---
+    \foreach \name in {w0,w1,w2,w3} {
+      \draw[-{Latex[length=1.4mm]}] (\name wait) -- (\name loop);
+      \draw[-{Latex[length=1.4mm]}] (\name loop) -- (\name out);
+    }
+    % --- cross-lane transfers: img_in pushes (host -> workers) ---
+    \foreach \name in {w0,w1,w2,w3} {
+      \draw[push] (hpush.east) to[out=0,in=120] (\name wait.north);
+    }
+    % --- cross-lane transfers: img_out returns (workers -> host) ---
+    \foreach \name in {w0,w1,w2,w3} {
+      \draw[ret] (\name out.south) to[out=-120,in=0] (hwait.east);
+    }
+
+    % --- legend ---
+    \begin{scope}[shift={(-1.0,-9.4)}]
+      \node[fire, minimum height=4mm] (lf) at (0,0) {fire};
+      \node[io, minimum height=4mm, right=2mm of lf] (li) {push/wait};
+      \node[loop, minimum height=4mm, right=2mm of li] (ll) {loop};
+      \draw[bar] ([xshift=4mm]ll.east) -- ++(0.9,0);
+      \node[font=\scriptsize, right=1mm of ll, xshift=10mm] {barrier (5-way sync)};
+    \end{scope}
+  \end{tikzpicture}}
+  \caption[Per-worker event lists of the stencil]{The per-worker event lists, the
+    sole interface between the middle end and any backend, as a swimlane
+    timeline (time flows down). The host fires \texttt{load\_image}, pushes one
+    \texttt{img\_in} band into each worker's buffered channel, meets both
+    barriers, collects the four \texttt{img\_out} bands, and fires
+    \texttt{save\_image}. Each worker meets barrier 1, waits for its
+    \texttt{img\_in} band, runs the tiled, reuse-windowed \texttt{blur3} loop over
+    its row band, pushes its \texttt{img\_out} band back, and meets barrier 2. The
+    two horizontal bars are the 5-way pre- and post-compute barriers; between them
+    the host lane is empty --- exactly the back-to-back \texttt{barrier; barrier}
+    in the host's list --- while the workers compute. Blue arrows are
+    \texttt{img\_in} transfers (host to worker), green arrows are
+    \texttt{img\_out} transfers (worker to host); the \texttt{img\_in} pushes
+    cross barrier 1 because the channels are buffered (depth 2). The loop event
+    carries the iteration structure, not an unrolled body.}
+  \label{fig:wt-events}
+\end{figure}

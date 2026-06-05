@@ -1,0 +1,80 @@
+% fig:wt-bands --- the row-band partition with the floor-with-spillover remainder
+% and the width-1 halo. Faithful to sec:wt-acfg / sec:wt-inject of
+% chapters/07b-compilation-walkthrough.tex:
+%   interior y range 1..15 (length 14), partitioned 4/4/3/3 across w0..w3:
+%     w0 = 1..5,  w1 = 5..9,  w2 = 9..12,  w3 = 12..15   (output bands, half-open)
+%   halo width 1 on img_in along y => each worker receives band +- 1 row:
+%     w0 input 0..6,  w1 input 4..10,  w2 input 8..13,  w3 input 11..16
+%   rows 0 and 15 are the never-written border (interior is 1..15).
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      cell/.style={draw, minimum width=20mm, minimum height=4.2mm,
+                   inner sep=0pt, anchor=north},
+      brace/.style={decorate, decoration={brace, amplitude=4pt}, thick},
+    ]
+    % geometry: row r drawn at y = -r*0.42 cm (row 0 at top).
+    \def\rh{0.42}
+    \foreach \r in {0,...,15} {
+      \pgfmathsetmacro\yy{-\r*\rh}
+      % default border colour
+      \def\fillcol{gray!18}
+      \ifnum\r>0 \ifnum\r<5 \def\fillcol{blue!22}\fi\fi      % w0 band rows 1..4
+      \ifnum\r>4 \ifnum\r<9 \def\fillcol{orange!28}\fi\fi    % w1 band rows 5..8
+      \ifnum\r>8 \ifnum\r<12 \def\fillcol{green!28}\fi\fi    % w2 band rows 9..11
+      \ifnum\r>11 \ifnum\r<15 \def\fillcol{red!22}\fi\fi     % w3 band rows 12..14
+      \node[cell, fill=\fillcol] (row\r) at (0,\yy) {\scriptsize row \r};
+    }
+    % left header
+    \node[font=\footnotesize\bfseries, align=center] at (0,0.55)
+      {\texttt{img\_out} (written)};
+    \node[font=\scriptsize, left=8mm of row0, anchor=east] {border (not written)};
+    \node[font=\scriptsize, left=8mm of row15, anchor=east] {border (not written)};
+
+    % band labels (output) on the left
+    \node[font=\scriptsize, blue!50!black, left=1mm of row2.west, anchor=east, align=right]
+      {\textbf{w0}\\out $1..5$\\(4 rows)};
+    \node[font=\scriptsize, orange!55!black, left=1mm of row6.west, anchor=east, align=right]
+      {\textbf{w1}\\out $5..9$\\(4 rows)};
+    \node[font=\scriptsize, green!45!black, left=1mm of row10.west, anchor=east, align=right]
+      {\textbf{w2}\\out $9..12$\\(3 rows)};
+    \node[font=\scriptsize, red!55!black, left=1mm of row13.west, anchor=east, align=right]
+      {\textbf{w3}\\out $12..15$\\(3 rows)};
+
+    % halo-input ranges as braces on the right.  Each worker receives its band
+    % +-1 halo row.  Braces drawn at increasing x to show the overlaps (halo).
+    % w0 input rows 0..5 (range 0..6)
+    \draw[brace, blue!50!black] ([xshift=4mm]row0.north east) -- ([xshift=4mm]row5.south east)
+      node[midway, right=5pt, font=\scriptsize, align=left, blue!50!black]
+      {w0 in: rows $0..6$};
+    % w1 input rows 4..9 (range 4..10)
+    \draw[brace, orange!55!black] ([xshift=16mm]row4.north east) -- ([xshift=16mm]row9.south east)
+      node[midway, right=5pt, font=\scriptsize, align=left, orange!55!black]
+      {w1 in: rows $4..10$};
+    % w2 input rows 8..12 (range 8..13)
+    \draw[brace, green!45!black] ([xshift=28mm]row8.north east) -- ([xshift=28mm]row12.south east)
+      node[midway, right=5pt, font=\scriptsize, align=left, green!45!black]
+      {w2 in: rows $8..13$};
+    % w3 input rows 11..15 (range 11..16)
+    \draw[brace, red!55!black] ([xshift=40mm]row11.north east) -- ([xshift=40mm]row15.south east)
+      node[midway, right=5pt, font=\scriptsize, align=left, red!55!black]
+      {w3 in: rows $11..16$};
+
+    \node[font=\footnotesize\bfseries, align=center] at (4.0,0.55)
+      {\texttt{img\_in} received (band $+$ halo)};
+  \end{tikzpicture}
+  \caption[Row-band partition and halo of the stencil]{The row-band partition of
+    the stencil's outer loop. The interior range $1..15$ (rows $1$ through $14$;
+    rows $0$ and $15$ are the never-written border) has length $14$, which does
+    not divide evenly by four. The floor-with-spillover policy hands
+    $\lceil 14/4\rceil = 4$ rows to \texttt{w0} and \texttt{w1} and
+    $\lfloor 14/4\rfloor = 3$ to \texttt{w2} and \texttt{w3}, giving the
+    contiguous output bands $1..5$, $5..9$, $9..12$, $12..15$ (left). Halo
+    inference adds one row on each side along $y$, so each worker receives a
+    \emph{larger} slice of \texttt{img\_in} (right braces): \texttt{w0} computing
+    $1..5$ receives input rows $0..6$, \texttt{w1} computing $5..9$ receives
+    $4..10$, and so on. The brace overlaps are the shared halo rows. All ranges
+    are half-open.}
+  \label{fig:wt-bands}
+\end{figure}

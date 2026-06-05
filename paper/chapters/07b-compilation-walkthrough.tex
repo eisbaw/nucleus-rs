@@ -148,6 +148,8 @@ the index expressions it uses --- the nine \texttt{img\_in} accesses and the one
 \texttt{img\_out} write, recorded as affine index expressions, which the inference
 passes will read.
 
+\input{figures/wt-acfg}
+
 The schedule's transforms are then applied to this tree, in the fixed order the
 pipeline defines, each pass either rewriting the tree or annotating it. Throughout,
 loop and band ranges are written half-open: $a..b$ denotes the integers
@@ -187,6 +189,8 @@ $a, a{+}1, \dots, b{-}1$.
         earlier iterations of the system could not express; here it falls out of a
         one-word directive and the access pattern.
 \end{itemize}
+
+\input{figures/wt-bands}
 
 After these passes the ACFG is no longer a faithful echo of the source loop nest:
 it encodes four per-worker bands, a tiled and reuse-windowed inner loop, and the
@@ -253,6 +257,8 @@ the gate would have rejected the program here, at compile time, naming the
 offending place or transition --- not produced code that hangs. This check runs on
 this program, as on every program, before any code is emitted.
 
+\input{figures/wt-net}
+
 \section{Projection to per-worker event lists}\label{sec:wt-events}
 
 The last middle-end step projects the elaborated ACFG into one totally-ordered
@@ -278,6 +284,8 @@ inner loop firing \texttt{blur3}; push \texttt{img\_out} to the host; barrier. T
 loop event carries the iteration structure rather than an unrolled body, so a
 backend emits a loop construct rather than one replicated body per iteration,
 keeping generated code compact regardless of trip count.
+
+\input{figures/wt-events}
 
 These event lists are the output of the middle end and the input to every backend.
 The same host-and-four-workers lists just described are what the next sections lower

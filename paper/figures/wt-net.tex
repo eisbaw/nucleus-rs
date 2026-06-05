@@ -1,0 +1,105 @@
+% fig:wt-net --- the Petri net the elaborated ACFG lowers to, and the soundness
+% gate. Faithful to sec:wt-net of chapters/07b-compilation-walkthrough.tex:
+%   places  = array regions a worker owns, transfer channels, barriers;
+%   transitions = host load_image, 4 img_in sends + 4 matching receives,
+%                 each worker's blur3 firings, the two barriers,
+%                 4 img_out sends + receives, host save_image.
+%   channel capacities: 2 for the async img_in channels, 1 for the sync img_out.
+% The four compute workers are a 4-fold-symmetric column; drawn once inside a
+% plate ("x4") for legibility, with the host spine across the top. The two
+% barriers are 5-way (host + w0..w3).
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      place/.style={draw, circle, minimum size=9mm, inner sep=1pt, align=center,
+                    fill=green!10},
+      chan/.style={draw, circle, minimum size=10mm, inner sep=1pt, align=center,
+                   fill=blue!10, very thick},
+      tr/.style={draw, fill=gray!75, minimum width=2.2mm, minimum height=10mm,
+                 inner sep=0pt},
+      bar/.style={draw, fill=orange!70, minimum width=2.6mm, minimum height=34mm,
+                  inner sep=0pt},
+      a/.style={-{Latex[length=1.8mm]}},
+      lbl/.style={font=\scriptsize, align=center},
+    ]
+    % ---- host spine (y = 2.6) ----
+    \def\hy{2.6}
+    \node[tr] (tload) at (0,\hy) {};   \node[lbl, above=0.5mm of tload] {\texttt{load\_image}};
+    \node[place] (pin) at (1.5,\hy) {\texttt{img\_in}\\\scriptsize @host};
+    \node[tr] (tsend) at (3.0,\hy) {}; \node[lbl, above=0.5mm of tsend] {send};
+    \node[tr] (trout) at (12.6,\hy) {};\node[lbl, below=0.5mm of trout] {recv};
+    \node[place] (pout) at (14.1,\hy) {\texttt{img\_out}\\\scriptsize @host};
+    \node[tr] (tsave) at (15.6,\hy) {};\node[lbl, above=0.5mm of tsave] {\texttt{save\_image}};
+
+    % ---- a single worker column (y = 0), enclosed by a plate ----
+    \node[chan] (cin) at (4.5,1.3) {cap\,2};
+    \node[lbl, left=0.5mm of cin] {\texttt{img\_in}\\chan};
+    \node[tr] (trin) at (6.0,0) {};   \node[lbl, below=0.5mm of trin] {recv};
+    \node[place] (pband) at (7.4,0) {band\\\scriptsize $+$halo};
+    \node[tr] (tblur) at (8.8,0) {}; \node[lbl, below=0.5mm of tblur] {\texttt{blur3}};
+    \node[place] (pob) at (10.0,0) {out\\\scriptsize band};
+    \node[tr] (tso) at (11.1,0) {};  \node[lbl, below=0.5mm of tso] {send};
+    \node[chan] (cout) at (12.6,1.3) {cap\,1};
+    \node[lbl, right=0.5mm of cout] {\texttt{img\_out}\\chan};
+
+    % plate around the worker column
+    \begin{scope}[on background layer]
+      \node[draw, dashed, rounded corners, fill=yellow!8, inner sep=4mm,
+            fit=(cin)(trin)(pband)(tblur)(pob)(tso)(cout),
+            label={[font=\footnotesize\bfseries, fill=yellow!18, rounded corners,
+                    inner sep=2pt, yshift=-2mm]below:$\times\,4$ --- one column per
+                    worker (\texttt{w0}--\texttt{w3}): bands $1..5$ / $5..9$ /
+                    $9..12$ / $12..15$}]
+            (plate) {};
+    \end{scope}
+
+    % ---- the two 5-way barriers ----
+    \node[bar] (b1) at (5.0,1.4) {};
+    \node[lbl, orange!60!black] at (5.0,3.7) {barrier 1\\\scriptsize (pre-compute, 5-way)};
+    \node[bar] (b2) at (11.9,1.4) {};
+    \node[lbl, orange!60!black] at (11.9,3.7) {barrier 2\\\scriptsize (post-compute, 5-way)};
+
+    % ---- arcs ----
+    \draw[a] (tload) -- (pin);
+    \draw[a] (pin) -- (tsend);
+    \draw[a] (tsend) -- (cin);            % host pushes into the img_in channel
+    \draw[a] (cin) -- (trin);             % worker receives
+    \draw[a] (trin) -- (pband);
+    \draw[a] (pband) -- (tblur);
+    \draw[a] (tblur) -- (pob);
+    \draw[a] (pob) -- (tso);
+    \draw[a] (tso) -- (cout);             % worker pushes into img_out channel
+    \draw[a] (cout) -- (trout);           % host receives
+    \draw[a] (trout) -- (pout);
+    \draw[a] (pout) -- (tsave);
+    % barrier synchronisation arcs (host + worker both meet each barrier)
+    \draw[a, orange!60!black] (tsend) -- (b1);
+    \draw[a, orange!60!black] (b1) -- (trin);
+    \draw[a, orange!60!black] (tso) -- (b2);
+    \draw[a, orange!60!black] (b2) -- (trout);
+    % host participates in BOTH barriers: it passes barrier 1, idles, then meets
+    % barrier 2 (the back-to-back "barrier; barrier" in the host's event list).
+    \draw[a, orange!60!black] (b1.north) to[out=70,in=110] (b2.north);
+  \end{tikzpicture}}
+  \caption[The stencil's Petri net and soundness gate]{The Petri net the
+    elaborated ACFG lowers to. \emph{Places} (circles) model state --- the array
+    regions a worker owns and the transfer channels --- and \emph{transitions}
+    (bars) model events: the host's \texttt{load\_image}, the four
+    \texttt{img\_in} sends and matching receives, each worker's \texttt{blur3}
+    firings, the four \texttt{img\_out} sends and receives, and the host's
+    \texttt{save\_image}. The four compute workers form a 4-fold-symmetric
+    column, drawn once inside the dashed plate. Channel places (marked
+    ``cap'') carry the capacity their buffer policy sets: \textbf{2} for the
+    asynchronous \texttt{img\_in} channels, \textbf{1} for the synchronous
+    \texttt{img\_out} channels. The two orange bars are the 5-way (host $+$
+    \texttt{w0}--\texttt{w3}) pre- and post-compute barriers; the orange arcs
+    are their barrier-place arcs (no participant proceeds until all five have
+    arrived), and the arc arching over the top is the host idling from the
+    first barrier to the second. The gate checks, in order, conflict-freedom
+    (no place offers a token to two competing consumers), then --- on one
+    replayed firing order --- boundedness (no \texttt{img\_in} channel ever
+    exceeds 2) and deadlock-freedom, before any code is emitted.}
+  \label{fig:wt-net}
+\end{figure}
