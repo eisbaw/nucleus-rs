@@ -285,6 +285,7 @@ fn defensive_unknown_loop_var_returns_typed_err() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
             name_span: None,
         },
     );
@@ -440,6 +441,7 @@ fn defensive_unknown_data_in_ref_returns_typed_err() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
             name_span: None,
         },
     );
@@ -656,6 +658,7 @@ fn task0271_strict_rejects_non_affine_reuse_body() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
             name_span: None,
         },
     );

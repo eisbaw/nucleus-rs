@@ -499,6 +499,10 @@ fn lower_kernel(
             params,
             ret,
             purity: k.purity,
+            // TASK-0343.01.01: thread the optional `combine = <op>`
+            // accumulator-identity attribute through to codegen via the
+            // sidecar. `None` for every kernel without the attribute.
+            combine: k.combine,
             // TASK-0099: thread the algorithm-source `kernel K : ...`
             // identifier byte range through to the link step so
             // `UnplacedKernel` (raised when no schedule `place` covers

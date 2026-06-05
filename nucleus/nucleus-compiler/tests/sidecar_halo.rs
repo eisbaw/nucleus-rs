@@ -348,6 +348,7 @@ fn build_linked_for_partition_test(
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
             name_span: None,
         },
     );

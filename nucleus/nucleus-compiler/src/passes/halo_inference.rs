@@ -1567,6 +1567,7 @@ mod tests {
                 params: vec![t_scalar(ScalarType::I32)],
                 ret: Some(t_scalar(ScalarType::I32)),
                 purity: Purity::Pure,
+                combine: None,
                 name_span: None,
             },
         );
@@ -2090,6 +2091,7 @@ mod tests {
                 params: vec![t_scalar(ScalarType::I32), t_scalar(ScalarType::I32)],
                 ret: Some(t_scalar(ScalarType::I32)),
                 purity: Purity::Pure,
+                combine: None,
                 name_span: None,
             },
         );
@@ -2481,6 +2483,7 @@ mod tests {
                 params: vec![t_scalar(ScalarType::I32); arity],
                 ret: Some(t_scalar(ScalarType::I32)),
                 purity: Purity::Pure,
+                combine: None,
                 name_span: None,
             },
         );

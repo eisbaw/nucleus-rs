@@ -45,8 +45,8 @@ pub mod span {
 
 pub use crate::span::Spanned;
 pub use ast::{
-    AlgoAst, BinOp, CmpOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl, KernelSig,
-    Purity, ScalarType, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, CmpOp, CombineOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl,
+    KernelSig, Purity, ScalarType, Stmt, Type, UnaryOp,
 };
 pub use ir::{
     collect_dataref_names, walk_dataref_names, AlgoIR, IndexedRef, IrBinOp, IrCmpOp, IrExpr,

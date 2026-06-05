@@ -17,7 +17,7 @@
 
 use nucleus_compiler::algo::span::Spanned;
 use nucleus_compiler::algo::{
-    parse_algo, AlgoAst, BinOp, CmpOp, Expr, IndexedLValue, Item, KernelDecl, ParseError,
+    parse_algo, AlgoAst, BinOp, CmpOp, CombineOp, Expr, IndexedLValue, Item, KernelDecl, ParseError,
     ParseErrorKind, ParseErrors, Purity, ScalarType, Stmt,
 };
 
@@ -196,6 +196,26 @@ fn parses_example_03_reduction() {
     assert_eq!(by_name("combine").purity, Purity::Pure);
     assert_eq!(by_name("load_input").purity, Purity::Effectful);
     assert_eq!(by_name("save_output").purity, Purity::Effectful);
+
+    // TASK-0343.01.01 GRAMMAR GOTCHA: `combine` is a legal kernel NAME
+    // here, NOT the (positional, after-purity) combine attribute. No
+    // kernel in 03-reduction declares a `combine = <op>` attribute, so
+    // every kernel's `combine` field must be `None` — including the one
+    // literally named `combine`. If the contextual keyword had been
+    // promoted to a reserved word, `kernel combine : ...` would have
+    // failed to parse (the `.expect("03-reduction must parse")` above
+    // would have fired). This asserts the attribute is also not
+    // mis-attached.
+    assert_eq!(
+        by_name("combine").combine,
+        None,
+        "the kernel literally named `combine` must carry NO combine \
+         attribute — `combine` is a contextual keyword, not reserved"
+    );
+    assert!(
+        kernels.iter().all(|k| k.combine.is_none()),
+        "no 03-reduction kernel declares a combine attribute"
+    );
 
     // Both step kernels are binary scalar.
     assert_eq!(by_name("accumulate").sig.params.len(), 2);
@@ -499,6 +519,87 @@ for y : 1 .. H {
     assert!(
         err.message.contains("*.sched.nuc"),
         "expected `*.sched.nuc` reference in hint, got: {}",
+        err.message
+    );
+}
+
+// --------------------------------------------------------------------
+// TASK-0343.01.01: contextual `combine = <op>` kernel attribute
+// --------------------------------------------------------------------
+
+/// Parse a one-kernel program and return the kernel's `combine` field.
+fn parse_one_kernel_combine(decl: &str) -> Option<CombineOp> {
+    let src = format!("{decl}\n");
+    let ast = parse_algo(&src).expect("kernel decl must parse");
+    let ks = kernels(&ast);
+    assert_eq!(ks.len(), 1, "expected exactly one kernel decl");
+    ks[0].combine
+}
+
+#[test]
+fn combine_attribute_sum_or_xor_parse() {
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine=sum;"),
+        Some(CombineOp::Sum)
+    );
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine = or ;"),
+        Some(CombineOp::Or),
+        "whitespace around `=` and the op must be tolerated"
+    );
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure combine=xor;"),
+        Some(CombineOp::Xor)
+    );
+    // No attribute => None.
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (i32, i32) -> i32 pure;"),
+        None
+    );
+}
+
+#[test]
+fn combine_named_kernel_still_legal_without_attribute() {
+    // The grammar gotcha: `combine` as a kernel NAME (right after
+    // `kernel`) must stay legal even though it is also the attribute
+    // keyword (after purity). 03-reduction / 23-dot-product rely on this.
+    assert_eq!(
+        parse_one_kernel_combine("kernel combine : (i32, i32) -> i32 pure;"),
+        None,
+        "kernel named `combine` with no attribute => None combine field"
+    );
+    // And a kernel named `combine` that ALSO declares a combine attribute
+    // parses (name position vs attribute position never overlap).
+    assert_eq!(
+        parse_one_kernel_combine("kernel combine : (i32, i32) -> i32 pure combine=xor;"),
+        Some(CombineOp::Xor),
+        "kernel named `combine` may also carry a `combine=<op>` attribute"
+    );
+}
+
+#[test]
+fn combine_attribute_min_max_and_rejected_pointing_at_followup() {
+    // min/max/and (non-zero identity, identity-aware init) are OUT OF
+    // SCOPE for TASK-0343.01.01 — rejected with a typed error pointing
+    // at the deferral task TASK-0343.01.02. No silent fallthrough.
+    for op in ["min", "max", "and"] {
+        let src = format!("kernel k : (i32, i32) -> i32 pure combine={op};\n");
+        let err = expect_err(&src);
+        assert!(
+            err.message.contains("TASK-0343.01.02"),
+            "`combine={op}` reject must point at the deferral task \
+             TASK-0343.01.02; got: {}",
+            err.message
+        );
+    }
+}
+
+#[test]
+fn combine_attribute_unknown_op_rejected() {
+    let err = expect_err("kernel k : (i32, i32) -> i32 pure combine=product;\n");
+    assert!(
+        err.message.contains("combine") && err.message.contains("sum"),
+        "unknown combine op must name the expected set (sum/or/xor); got: {}",
         err.message
     );
 }

@@ -56,7 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::ast::{Purity, ScalarType};
+use super::ast::{CombineOp, Purity, ScalarType};
 
 /// A concrete data shape: scalar type + zero or more resolved
 /// dimensions. Dimensions are evaluated at lower time, so this is a
@@ -132,6 +132,13 @@ pub struct ResolvedKernel {
     /// `None` for unit return; `Some(t)` for a typed return.
     pub ret: Option<ResolvedType>,
     pub purity: Purity,
+    /// Overlapping-write accumulator combine identity (TASK-0343.01.01).
+    /// `Some(_)` iff the source `kernel` decl carried a `combine = <op>`
+    /// attribute; `None` otherwise (every pre-TASK-0343.01.01 kernel).
+    /// Threaded verbatim from [`super::ast::KernelDecl::combine`] at
+    /// lower time, copied into the codegen-contract
+    /// [`crate::sidecar::KernelSig::combine`] at sidecar build.
+    pub combine: Option<CombineOp>,
     /// Byte range of the algorithm-source kernel-identifier token (the
     /// `kernel K : ...` `K`). `None` for manually-constructed test
     /// instances. See type docs.
@@ -148,6 +155,7 @@ impl PartialEq for ResolvedKernel {
             && self.params == other.params
             && self.ret == other.ret
             && self.purity == other.purity
+            && self.combine == other.combine
     }
 }
 

@@ -116,6 +116,45 @@ pub enum Purity {
     Effectful,
 }
 
+/// Overlapping-write accumulator combine identity, declared by an
+/// optional `combine = <op>` kernel attribute (TASK-0343.01.01).
+///
+/// When a kernel owns an overlapping-write accumulator fan-in (the
+/// distributed `acc[b] <-- k(acc[b], ...)` shape, partitioned over an
+/// OUTER loop so each worker whole-array-replicates `acc`), the host
+/// element-wise combine of the per-worker partials must use this
+/// algebraic identity instead of the pre-TASK-0343.01.01 hardcoded
+/// `wrapping_add`.
+///
+/// # Scope (TASK-0343.01.01 — the zero-identity slice)
+///
+/// Only the THREE identities that share the additive-identity ZERO are
+/// admitted here: `Sum` (`wrapping_add`), `Or` (`|`), `Xor` (`^`). All
+/// three need NO init change — the existing per-backend zero-init
+/// (`render_array_init` / `rust_scalar_zero`) is already correct
+/// (`0` is the identity for all three). They are also all
+/// associative + commutative ⇒ order-independent across worker arrival
+/// ⇒ bit-identical (PRD §10.1).
+///
+/// The NON-zero-identity ops (`min` → identity MAX, `max` → identity
+/// MIN, `and` → identity all-ones) require identity-aware init across
+/// the ~4 zero-init sites and are DEFERRED to TASK-0343.01.02. They
+/// are deliberately ABSENT from this enum — the parser rejects any
+/// `combine = <op>` whose `<op>` is not one of `sum|or|xor` with a
+/// typed error pointing at TASK-0343.01.02, so there is no silent
+/// fallthrough.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CombineOp {
+    /// `wrapping_add` — additive sum (identity 0). The pre-TASK-0343.01.01
+    /// hardcoded behaviour; `combine = sum` is byte-identical to it.
+    Sum,
+    /// Bitwise OR `|` (identity 0).
+    Or,
+    /// Bitwise XOR `^` (identity 0).
+    Xor,
+}
+
 /// `const NAME : SCALAR = EXPR ;`
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstDecl {
@@ -131,12 +170,18 @@ pub struct DataDecl {
     pub ty: Type,
 }
 
-/// `kernel NAME : SIG PURITY ;`
+/// `kernel NAME : SIG PURITY [ 'combine' '=' CombineOp ] ;`
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelDecl {
     pub name: SpIdent,
     pub sig: KernelSig,
     pub purity: Purity,
+    /// Optional overlapping-write accumulator combine identity
+    /// (TASK-0343.01.01). `Some(_)` iff the decl carries a
+    /// `combine = <op>` attribute (parsed contextually after purity).
+    /// `None` for every kernel that does not own an accumulator
+    /// fan-in — which is every kernel shipped before TASK-0343.01.01.
+    pub combine: Option<CombineOp>,
 }
 
 /// `( T1, T2, ... ) -> RET`. `ret` is `None` for the explicit unit

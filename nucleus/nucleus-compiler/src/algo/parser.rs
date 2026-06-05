@@ -95,8 +95,8 @@
 use chumsky::prelude::*;
 
 use super::ast::{
-    AlgoAst, BinOp, Call, CmpOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item, KernelDecl,
-    KernelSig, Purity, SpExpr, SpItem, SpStmt, Stmt, Type, UnaryOp,
+    AlgoAst, BinOp, Call, CmpOp, CombineOp, ConstDecl, DataDecl, Expr, IndexedLValue, Item,
+    KernelDecl, KernelSig, Purity, SpExpr, SpItem, SpStmt, Stmt, Type, UnaryOp,
 };
 use super::tokens::{
     comment_or_ws, for_loop_var, ident, int_lit, keyword, pad, padded_spanned, scalar_type,
@@ -582,13 +582,61 @@ fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> +
         pad(keyword("effectful")).to(Purity::Effectful),
     ));
 
+    // Optional contextual `combine = <op>` attribute (TASK-0343.01.01).
+    //
+    // `combine` is matched via `keyword("combine")` which (see
+    // `tokens::keyword`) recognises the TEXT without globally reserving
+    // it — so `combine` stays a legal kernel/data IDENT (03-reduction &
+    // 23-dot-product both name a kernel `combine`). The attribute only
+    // appears AFTER purity, a position a kernel-NAME never occupies
+    // (the name sits right after `kernel`), so the contextual parse is
+    // unambiguous.
+    //
+    // SCOPE (TASK-0343.01.01 zero-identity slice): only `sum|or|xor`
+    // are accepted here. `min|max|and` (non-zero identity, identity-
+    // aware init) are DEFERRED to TASK-0343.01.02 — they parse as a
+    // bare ident and are REJECTED below with a typed error pointing
+    // there, so there is no silent fallthrough.
+    let combine_op = pad(ident()).try_map(|id, span| match id.node.as_str() {
+        "sum" => Ok(CombineOp::Sum),
+        "or" => Ok(CombineOp::Or),
+        "xor" => Ok(CombineOp::Xor),
+        "min" | "max" | "and" => Err(Simple::custom(
+            span,
+            format!(
+                "kernel combine identity `{}` is a NON-ZERO-identity op (min->MAX, \
+                 max->MIN, and->all-ones); it needs identity-aware init and is \
+                 deferred to TASK-0343.01.02. TASK-0343.01.01 accepts only the \
+                 zero-identity ops `sum`, `or`, `xor`.",
+                id.node
+            ),
+        )),
+        other => Err(Simple::custom(
+            span,
+            format!(
+                "unknown kernel combine identity `{other}`; expected one of \
+                 `sum`, `or`, `xor` (TASK-0343.01.01)"
+            ),
+        )),
+    });
+    let combine = pad(keyword("combine"))
+        .ignore_then(pad(just('=')))
+        .ignore_then(combine_op)
+        .or_not();
+
     pad(keyword("kernel"))
         .ignore_then(pad(ident()))
         .then_ignore(pad(just(':')))
         .then(sig)
         .then(purity)
+        .then(combine)
         .then_ignore(just(';'))
-        .map(|((name, sig), purity)| KernelDecl { name, sig, purity })
+        .map(|(((name, sig), purity), combine)| KernelDecl {
+            name,
+            sig,
+            purity,
+            combine,
+        })
 }
 
 /// Indexed LValue `IDENT ('[' EXPR ']')*`.
