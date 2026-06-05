@@ -144,12 +144,14 @@ fn ex01_bin_emits_renode_runnable_firmware_with_uart_streaming() {
         "load copy must be null-guarded (stub shim returns null => no copy):\n{main}"
     );
 
-    // TASK-0048.02: dma_push streams the RAW output bytes verbatim (the
-    // byte-exact reference.bin diff is the value-correctness bar); the
-    // old ASCII summary line (NUC-EX1 / checksum) is GONE.
+    // TASK-0048.12: dma_push streams the RAW output bytes via a REAL DMA1
+    // MemoryToPeripheral transfer into USART1's TDR (the byte-exact
+    // reference.bin diff is the value-correctness bar); the old CPU
+    // usart1_putc loop AND the older ASCII summary (NUC-EX1 / checksum)
+    // are GONE.
     assert!(
-        main.contains("usart1_putc(byte);"),
-        "dma_push must stream raw output bytes over USART1:\n{main}"
+        main.contains("DMA_TX_STAGING") && main.contains("DMA1_S0CR"),
+        "dma_push must drive a real DMA1 MemoryToPeripheral USART1 TX:\n{main}"
     );
     assert!(
         !main.contains("NUC-EX1"),
@@ -239,8 +241,8 @@ fn ex05_bin_emits_renode_runnable_firmware_with_flattened_blur3() {
         "save Fire did not lower to dma_push streaming img_out:\n{main}"
     );
     assert!(
-        main.contains("usart1_putc(byte);"),
-        "dma_push must stream raw bytes:\n{main}"
+        main.contains("DMA_TX_STAGING") && main.contains("DMA1_S0CR"),
+        "dma_push must drive a real DMA1 MemoryToPeripheral USART1 TX:\n{main}"
     );
 }
 
@@ -312,8 +314,8 @@ fn ex09_bin_emits_renode_runnable_firmware_with_two_stage_pipe() {
         "save Fire did not lower to dma_push streaming result:\n{main}"
     );
     assert!(
-        main.contains("usart1_putc(byte);"),
-        "dma_push must stream raw bytes:\n{main}"
+        main.contains("DMA_TX_STAGING") && main.contains("DMA1_S0CR"),
+        "dma_push must drive a real DMA1 MemoryToPeripheral USART1 TX:\n{main}"
     );
 }
 

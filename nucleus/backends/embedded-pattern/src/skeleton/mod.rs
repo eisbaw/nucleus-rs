@@ -480,12 +480,18 @@ mod tests {
             s.contains("impl NucleusShim for Usart1Shim"),
             "Usart1Shim must impl NucleusShim"
         );
-        // TASK-0048.02: dma_push streams RAW output bytes (the byte-exact
-        // reference.bin diff is the value-correctness bar); the old ASCII
-        // summary framing (NUC-EX1 / checksum) is GONE.
+        // TASK-0048.12: dma_push streams RAW output bytes via a REAL DMA1
+        // MemoryToPeripheral transfer into USART1's TDR (replacing the old
+        // CPU usart1_putc byte loop). The byte-exact reference.bin diff is
+        // the value-correctness bar; the old ASCII summary framing (NUC-EX1
+        // / checksum) is GONE.
         assert!(
-            s.contains("usart1_putc(byte);"),
-            "dma_push must stream raw output bytes over USART1"
+            s.contains("DMA_TX_STAGING") && s.contains("DMA1_S0CR"),
+            "dma_push must drive a real DMA1 MemoryToPeripheral USART1 TX (staging + stream regs)"
+        );
+        assert!(
+            s.contains("DMA_DIR_MEM_TO_PERIPH | DMA_MINC | DMA_EN"),
+            "dma_push must enable the DMA1 stream (MemToPeriph|MINC|EN) to fire the transfer"
         );
         assert!(!s.contains("NUC-EX1"), "ASCII summary framing must be GONE");
         assert!(
@@ -592,6 +598,16 @@ mod tests {
         assert!(
             s.contains("ORIGIN = 0x20000000, LENGTH = 128K"),
             "RAM region"
+        );
+        // TASK-0048.12: the AXI SRAM region + the NOLOAD .axisram_tx
+        // section that backs the real-DMA staging buffer.
+        assert!(
+            s.contains("ORIGIN = 0x24040000, LENGTH = 256K"),
+            "AXISRAM region for the DMA staging buffer"
+        );
+        assert!(
+            s.contains(".axisram_tx (NOLOAD)") && s.contains("> AXISRAM"),
+            "NOLOAD .axisram_tx section mapped into AXISRAM"
         );
     }
 

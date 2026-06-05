@@ -35,20 +35,27 @@ use super::{render_count_statics, NUCLEUS_SHIM_SRC};
 ///   matching `input.bin`'s layout (a's N words then b's N words —
 ///   exactly the advancing offsets `kernels.rs::read_i32_le_slice`
 ///   uses, WITHOUT this backend parsing kernel bodies).
-/// - `dma_push` IS the UART emission: it streams the `len` RAW bytes of
-///   the drained output region (the `save_output(c)` effectful Fire
-///   lowers to `shim.dma_push(0, c.as_ptr() as *const u8,
-///   core::mem::size_of_val(&c)); shim.dma_wait(0)` — see render.rs
-///   `render_fire`) verbatim over USART1. The `renode-embedded`
-///   recipe captures those bytes and `cmp`s them BYTE-EXACT against the
-///   example's `reference.bin` (PRD §10.3 point 3). Raw (not ASCII): a byte-exact
-///   reference diff is the value-correctness bar, and Renode's USART
-///   file backend captures raw bytes faithfully (proven in the
-///   TASK-0048.02 de-risk: a hand firmware streamed c and the capture
-///   was `cmp -s`-identical to reference.bin).
-/// - `dma_wait` / `irq_barrier` are no-ops: the injection is synchronous
-///   (the region is populated before the CPU starts), so there is
-///   nothing to block on. Real async DMA/IRQ is parent TASK-0048 AC#1.
+/// - `dma_push` IS the UART emission, via a REAL DMA1 MemoryToPeripheral
+///   transfer (TASK-0048.12). The `save_output(c)` effectful Fire lowers
+///   to `shim.dma_push(0, c.as_ptr() as *const u8,
+///   core::mem::size_of_val(&c)); shim.dma_wait(0)` (see render.rs
+///   `render_fire`). `dma_push` CPU-copies the `len` source bytes from the
+///   drained output array (in DTCM, where codegen places it) into an AXI-
+///   SRAM staging static (`DMA_TX_STAGING`, `.axisram_tx` section), then
+///   programs DMA1 stream 0 (PAR=USART1.TDR, M0AR=&staging, NDTR=len,
+///   DIR=MemToPeriph|MINC, EN) so the DMA engine streams the staging buffer
+///   out to USART1's TDR — mirroring the proven tests/renode/dma-uart-smoke
+///   register sequence. The DTCM->AXI-SRAM stage-copy is the HONEST bridge:
+///   on real STM32H7 silicon DMA1/DMA2 cannot reach DTCM, so the DMA
+///   *source* must be AXI SRAM. The `renode-embedded` recipe captures the
+///   DMA-emitted bytes and `cmp`s them BYTE-EXACT against the example's
+///   `reference.bin` (PRD §10.3 point 3).
+/// - `dma_wait` / `irq_barrier` are no-ops: Renode's STM32DMA fires the
+///   whole MemoryToPeripheral transfer SYNCHRONOUSLY on the EN write
+///   (TASK-0048.11), so by the time `dma_push` returns the bytes are
+///   already captured — there is nothing to block on. On real silicon
+///   `dma_wait` would poll the stream transfer-complete flag (TCIF); that
+///   async overlap is unverifiable on the non-cycle-accurate emulator.
 /// - `monotonic_ns` (TASK-0048.04) IS the tier-3 monotonic clock (PRD
 ///   §6.3.5): it reads the Cortex-M SysTick 24-bit down-counter and
 ///   accumulates elapsed ticks across calls into a monotonically
@@ -89,6 +96,43 @@ const USART1_TXE: u32 = 1 << 7;
 // `sysbus LoadBinary @input.bin 0x2400_0000` BEFORE the CPU starts, so by
 // the time `run` executes the bytes are already present (no DMA wait).
 const NUC_INPUT_REGION: *const u8 = 0x2400_0000 as *const u8;
+
+// --- Real DMA1 MemoryToPeripheral USART1 TX (TASK-0048.12) -------------
+// Renode models DMA1 as DMA.STM32DMA @ 0x4002_0000 (platforms/cpus/
+// stm32h743.repl). Per-stream registers (STM32DMA.cs, StreamStep = 0x18);
+// we use stream 0 so streamOffset = 0:
+//   SxCR   @ base + 0x10   stream configuration
+//   SxNDTR @ base + 0x14   number of byte items to transfer
+//   SxPAR  @ base + 0x18   peripheral address (DMA destination for M->P)
+//   SxM0AR @ base + 0x1C   memory-0 address  (DMA source for M->P)
+const DMA1_S0CR: *mut u32 = 0x4002_0010 as *mut u32;
+const DMA1_S0NDTR: *mut u32 = 0x4002_0014 as *mut u32;
+const DMA1_S0PAR: *mut u32 = 0x4002_0018 as *mut u32;
+const DMA1_S0M0AR: *mut u32 = 0x4002_001C as *mut u32;
+// SxCR bit fields: EN bit0; DIR bits6..7 (01 = MemoryToPeripheral); PINC
+// bit9 (0: fixed dest = TDR); MINC bit10 (1: walk the source buffer);
+// PSIZE bits11..12 / MSIZE bits13..14 both 00 = byte.
+const DMA_DIR_MEM_TO_PERIPH: u32 = 0b01 << 6;
+const DMA_MINC: u32 = 1 << 10;
+const DMA_EN: u32 = 1 << 0;
+// USART1 CR3 DMAT (bit 7): on real silicon this gates the TX-DMA request;
+// under Renode it is a no-op flag (no callback), set for HW faithfulness.
+const USART1_CR3: *mut u32 = 0x4001_1008 as *mut u32;
+const USART1_CR3_DMAT: u32 = 1 << 7;
+// USART1 TDR address as a plain integer (the DMA peripheral-address
+// register, not a CPU pointer): DMA writes every byte here with PINC=0.
+const USART1_TDR_ADDR: u32 = 0x4001_1028;
+
+// The DMA TX staging buffer, placed in AXI SRAM (see memory.x AXISRAM /
+// `.axisram_tx`). On real STM32H7 silicon DMA1/DMA2 cannot reach DTCM, so
+// the DMA *source* must be AXI-SRAM-resident; the computed output array
+// codegen places lives in DTCM (RAM), hence `dma_push` stage-copies it
+// here first. CAP=4096 is a safe upper bound (the largest M10 output is
+// 1024B; ex1/ex5 = 1024, ex9 = 64). `len > CAP` is handled loudly (see
+// dma_push) rather than silently truncating.
+const DMA_TX_STAGING_CAP: usize = 4096;
+#[link_section = \".axisram_tx\"]
+static mut DMA_TX_STAGING: [u8; DMA_TX_STAGING_CAP] = [0u8; DMA_TX_STAGING_CAP];
 
 // --- Tier-3 monotonic clock: Cortex-M SysTick (TASK-0048.04) ---------
 // SysTick is the ARMv7-M architectural 24-bit DOWN-counter in the System
@@ -174,11 +218,15 @@ fn systick_init() {
 ///   the injected input region (`NUC_INPUT_REGION`) at the current cursor
 ///   and advances the cursor by `bytes`. Sequential loads consume the
 ///   region in order (matching `input.bin`'s array-concatenation layout).
-/// - `dma_push` is the UART emission: it streams the `len` RAW bytes of
-///   the drained region verbatim over USART1 (captured + `cmp`'d
+/// - `dma_push` is the UART emission via a REAL DMA1 MemoryToPeripheral
+///   transfer (TASK-0048.12): it stage-copies the `len` output bytes from
+///   DTCM into the AXI-SRAM `DMA_TX_STAGING` static, then programs DMA1
+///   stream 0 to stream them into USART1's TDR (captured + `cmp`'d
 ///   byte-exact vs reference.bin by `just renode-embedded <example>`).
-/// - `dma_wait` / `irq_barrier` are no-ops (synchronous injection; real
-///   DMA/IRQ is parent TASK-0048 AC#1).
+/// - `dma_wait` / `irq_barrier` are no-ops: Renode's STM32DMA transfers
+///   synchronously on the EN write, so nothing blocks here (real silicon
+///   would poll the stream TCIF; that async overlap is unverifiable on the
+///   non-cycle-accurate emulator).
 /// - `monotonic_ns` accumulates SysTick down-counter ticks into a
 ///   monotonic ns reading (TASK-0048.04).
 struct Usart1Shim {
@@ -226,19 +274,62 @@ impl NucleusShim for Usart1Shim {
         p
     }
     fn dma_push(&mut self, _chan: usize, src: *const u8, len: usize) {
-        // Stream the drained output region's RAW bytes verbatim over
-        // USART1. The `renode-embedded` recipe captures these and
-        // `cmp`s them BYTE-EXACT against reference.bin (PRD §10.3 point 3
-        // value-correctness). `read_volatile` so the byte loads are not
-        // reordered/elided across the MMIO writes in `usart1_putc`.
-        let mut i = 0usize;
-        while i < len {
-            let byte = unsafe { core::ptr::read_volatile(src.add(i)) };
-            usart1_putc(byte);
-            i += 1;
+        // REAL DMA1 MemoryToPeripheral USART1 TX (TASK-0048.12), mirroring
+        // the proven tests/renode/dma-uart-smoke register sequence. The
+        // `renode-embedded` recipe captures the emitted bytes and `cmp`s
+        // them BYTE-EXACT against reference.bin (PRD §10.3 point 3).
+        //
+        // HONEST BRIDGE: codegen places the computed output array in DTCM
+        // (RAM @ 0x2000_0000). On real STM32H7 silicon DMA1/DMA2 CANNOT
+        // reach DTCM (only AXI SRAM), so we CPU-copy the `len` source bytes
+        // from `src` (DTCM) into `DMA_TX_STAGING` (AXI SRAM, see memory.x
+        // AXISRAM / `.axisram_tx`), then let the DMA engine stream the
+        // staging buffer out. The stage-copy is the honest DTCM-compute ->
+        // SRAM-stage -> DMA bridge; the DMA *source* is genuinely AXI SRAM.
+        if len > DMA_TX_STAGING_CAP {
+            // Loud, non-silent failure: emit a diagnostic line and stop
+            // (rather than truncate the transfer and ship a wrong-length,
+            // silently-passing capture). A bounded sink, no_std-safe.
+            usart1_puts(b\"dma_push: len exceeds DMA_TX_STAGING_CAP\\n\");
+            return;
+        }
+        unsafe {
+            // 1. Stage-copy src (DTCM) -> DMA_TX_STAGING (AXI SRAM).
+            //    read_volatile so the byte loads are not reordered/elided.
+            let stage = core::ptr::addr_of_mut!(DMA_TX_STAGING) as *mut u8;
+            let mut i = 0usize;
+            while i < len {
+                let byte = core::ptr::read_volatile(src.add(i));
+                core::ptr::write_volatile(stage.add(i), byte);
+                i += 1;
+            }
+            // 2. CR3 DMAT (bit 7) — gates the TX-DMA request on real
+            //    silicon; a no-op flag under Renode, set for HW
+            //    faithfulness. (CR1=UE|TE is enabled once in `main`.)
+            let cr3 = core::ptr::read_volatile(USART1_CR3);
+            core::ptr::write_volatile(USART1_CR3, cr3 | USART1_CR3_DMAT);
+            // 3. Program DMA1 stream 0: source = staging (incrementing),
+            //    destination = USART1 TDR (fixed, PINC=0). Configure with
+            //    EN clear, THEN set EN in a second write — Renode's
+            //    STM32DMA reads DIR at the moment EN is written, and this is
+            //    the real STM32 HAL ordering (configure, enable last).
+            core::ptr::write_volatile(DMA1_S0PAR, USART1_TDR_ADDR);
+            core::ptr::write_volatile(DMA1_S0M0AR, stage as u32);
+            core::ptr::write_volatile(DMA1_S0NDTR, len as u32);
+            core::ptr::write_volatile(DMA1_S0CR, DMA_DIR_MEM_TO_PERIPH | DMA_MINC);
+            core::ptr::write_volatile(DMA1_S0CR, DMA_DIR_MEM_TO_PERIPH | DMA_MINC | DMA_EN);
         }
     }
-    fn dma_wait(&mut self, _chan: usize) {}
+    fn dma_wait(&mut self, _chan: usize) {
+        // No-op: Renode's STM32DMA performs the WHOLE MemoryToPeripheral
+        // transfer SYNCHRONOUSLY on the EN write (TASK-0048.11), so by the
+        // time `dma_push` returns the bytes are already in the USART file
+        // backend — there is nothing to block on here. On real silicon this
+        // would poll the stream transfer-complete flag (DMA1 LISR/HISR TCIF
+        // for stream 0) before reusing the staging buffer; that async-
+        // completion wait is UNVERIFIABLE on the non-cycle-accurate
+        // emulator (TASK-0048.12 AC#3 fidelity note).
+    }
     // Cross-worker transport (M11 multi-MCU) is unreachable on the
     // SINGLE-worker M10 bin path (examples 1/5/9 emit no Push/Wait), so
     // the single-worker Usart1Shim no-ops link_push/link_recv. The
@@ -511,24 +602,66 @@ pub fn render_bin_cargo_toml() -> String {
     )
 }
 
-/// The STM32H743 `memory.x` linker fragment (M10, TASK-0048.01).
-/// Mirrors tests/renode/uart-smoke/memory.x EXACTLY: 128K FLASH @
-/// 0x08000000, 128K RAM @ 0x20000000 (the FULL DTCM). DO NOT raise RAM
-/// past 128K without mapping a larger region (axiSram @ 0x24000000), or
-/// the stack would silently overflow DTCM with no linker error.
+/// The STM32H743 `memory.x` linker fragment (M10, TASK-0048.01 +
+/// TASK-0048.12). FLASH 128K @ 0x08000000, RAM 128K @ 0x20000000 (the
+/// FULL DTCM). DO NOT raise RAM past 128K without mapping a larger region,
+/// or the stack would silently overflow DTCM with no linker error.
+///
+/// TASK-0048.12 adds an `AXISRAM` region @ 0x2404_0000 (256K, the upper
+/// half of the 512K axiSram block the platform maps @ 0x2400_0000, size
+/// 0x80000). The real-DMA `dma_push` stages its source bytes into a
+/// `#[link_section = ".axisram_tx"]` static here, because on real STM32H7
+/// silicon DMA1/DMA2 CANNOT reach DTCM (only AXI SRAM / SRAM1-3) — Renode
+/// papers over this by modelling DTCM as plain MappedMemory, but the shim
+/// is written HW-faithfully so the DMA *source* is a genuinely
+/// DMA-reachable region. The 256K offset from the 0x2400_0000 base means
+/// the staging static never collides with the `.resc`-injected input
+/// fixture (`sysbus LoadBinary $input 0x24000000`, at most ~1KB for the
+/// M10 examples). The section is `(NOLOAD)`: the static is written by the
+/// CPU stage-copy BEFORE the DMA reads it, so there is no FLASH init image
+/// to carry (keeps the binary small and avoids a cortex-m-rt `.data`-style
+/// copy into a region the runtime does not know to initialise).
 pub fn render_memory_x() -> String {
     String::from(
         "/* STM32H743 memory map (from Renode platforms/cpus/stm32h743.repl):\n\
         \x20  flashBank1 @ 0x08000000 (size 0x100000 = 1024K) and DTCM @ 0x20000000\n\
         \x20  (size 0x20000 = 128K). FLASH here is a strict subset (128K of 1024K).\n\
         \x20  RAM here is the FULL DTCM (128K == 0x20000) — do NOT raise RAM LENGTH\n\
-        \x20  past 128K without mapping a larger region (e.g. axiSram @ 0x24000000),\n\
-        \x20  or the stack would silently overflow DTCM with no linker error. */\n\
+        \x20  past 128K without mapping a larger region, or the stack would silently\n\
+        \x20  overflow DTCM with no linker error.\n\
+        \x20\n\
+        \x20  AXISRAM (TASK-0048.12) is the upper 256K of the 512K axiSram block the\n\
+        \x20  platform maps @ 0x2400_0000 (size 0x80000). The real-DMA dma_push stages\n\
+        \x20  its source bytes into a `.axisram_tx` static here: on real H7 silicon the\n\
+        \x20  DMA controllers cannot reach DTCM, only AXI SRAM, so a HW-faithful DMA\n\
+        \x20  source must live in AXI SRAM. The 256K offset keeps it clear of the\n\
+        \x20  `.resc`-injected input fixture @ 0x2400_0000 (<=~1KB for the M10\n\
+        \x20  examples). */\n\
         MEMORY\n\
         {\n\
-        \x20 FLASH : ORIGIN = 0x08000000, LENGTH = 128K\n\
-        \x20 RAM   : ORIGIN = 0x20000000, LENGTH = 128K\n\
-        }\n",
+        \x20 FLASH   : ORIGIN = 0x08000000, LENGTH = 128K\n\
+        \x20 RAM     : ORIGIN = 0x20000000, LENGTH = 128K\n\
+        \x20 AXISRAM : ORIGIN = 0x24040000, LENGTH = 256K\n\
+        }\n\
+        \n\
+        /* The DMA TX staging buffer lives in AXI SRAM (see above). NOLOAD +\n\
+        \x20  INSERT AFTER .uninit (NOT .bss): the static is written by the CPU\n\
+        \x20  stage-copy before the DMA reads it, so it needs neither a FLASH init\n\
+        \x20  image (.data copy) nor zeroing (.bss). cortex-m-rt's startup zeroes\n\
+        \x20  ONLY __sbss..__ebss and copies ONLY __sdata..__edata, both in RAM;\n\
+        \x20  routing this through `INSERT AFTER .bss` would push __ebss out to the\n\
+        \x20  AXI-SRAM address and make startup zero the ENTIRE DTCM->AXISRAM gap\n\
+        \x20  (a multi-MB out-of-bounds walk that faults). `INSERT AFTER .uninit`\n\
+        \x20  leaves __sbss/__ebss/__euninit untouched, so the stack/heap (placed at\n\
+        \x20  __euninit in RAM) and the zero/copy ranges are unaffected. */\n\
+        SECTIONS\n\
+        {\n\
+        \x20 .axisram_tx (NOLOAD) : ALIGN(4)\n\
+        \x20 {\n\
+        \x20   *(.axisram_tx);\n\
+        \x20   . = ALIGN(4);\n\
+        \x20 } > AXISRAM\n\
+        } INSERT AFTER .uninit;\n",
     )
 }
 
