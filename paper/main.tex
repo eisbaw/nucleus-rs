@@ -1,0 +1,50 @@
+% Nucleus — PhD dissertation.
+% Build:  nix develop --command just build   (LuaLaTeX + biber via latexmk)
+% This document is a COHESIVE STANDALONE thesis: it must not reference
+% internal task ids or PRD paragraph numbers anywhere in its prose.
+\documentclass[11pt,a4paper,oneside]{memoir}
+
+\input{preamble}
+\addbibresource{refs.bib}
+
+\title{\nuc: A Deterministic Algorithm/Schedule Co-Compiler with\\
+       First-Class IO and a Petri-Net Soundness Gate}
+\author{Mark Ruvald Pedersen}
+\date{\today}
+
+\begin{document}
+
+\frontmatter
+\input{frontmatter/titlepage}
+\input{frontmatter/declaration}
+\input{frontmatter/abstract}
+\input{frontmatter/acknowledgements}
+\cleardoublepage
+\tableofcontents
+\listoffigures
+\listoftables
+
+\mainmatter
+\input{chapters/01-introduction}
+\input{chapters/02-background}
+\input{chapters/03-prior-art}
+\input{chapters/04-problem-and-solution-space}
+\input{chapters/05-nuc-language}
+\input{chapters/06-architecture}
+\input{chapters/07-backends-and-target-ladder}
+\input{chapters/08-validation}
+\input{chapters/09-results}
+\input{chapters/10-discussion}
+\input{chapters/11-future-work}
+\input{chapters/12-conclusion}
+
+\appendix
+\input{appendices/A-examples}
+\input{appendices/B-grammar}
+\input{appendices/C-capability-matrix}
+\input{appendices/D-reproducibility}
+
+\backmatter
+\printbibliography[heading=bibintoc]
+
+\end{document}

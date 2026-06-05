@@ -1,0 +1,22 @@
+# Nucleus dissertation — task runner. Run inside the dev shell:
+#   nix develop --command just <recipe>
+
+# Build the dissertation PDF (lualatex + biber, multi-pass via latexmk).
+build:
+    latexmk -lualatex -interaction=nonstopmode -halt-on-error main.tex
+
+# Continuously rebuild on every save (preview mode).
+watch:
+    latexmk -lualatex -pvc -interaction=nonstopmode main.tex
+
+# Build any externalised standalone TikZ figures (set up in TASK-0451.06).
+figures:
+    @echo "figures are currently inlined; standalone externalisation lands with the figures cycle"
+
+# Open the built PDF with the system viewer.
+view:
+    xdg-open main.pdf
+
+# Remove all LaTeX build artefacts (aux, log, bcf, pdf, ...).
+clean:
+    latexmk -C

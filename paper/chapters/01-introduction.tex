@@ -1,0 +1,26 @@
+\chapter{Introduction}\label{ch:introduction}
+% Content cycle: C2. Intent: state the portability problem; motivate the
+% algorithm/schedule split; give the thesis statement + contributions; bound
+% the scope (the algorithm class); lay out the dissertation structure.
+
+\section{The portability problem}\label{sec:intro-problem}
+% Porting an algorithm across CPU threads / MPI cluster / embedded MCU means
+% rewriting it: decomposition + IO semantics are hand-written, per platform.
+
+\section{Motivation}\label{sec:intro-motivation}
+% IO is a second-class citizen (compute scheduling has Halide/TVM/Exo; IO
+% does not); hardware churns faster than algorithms; decomposition is the
+% expensive, error-prone part.
+
+\section{Thesis statement and contributions}\label{sec:intro-contributions}
+% Algorithm/schedule separation; IO as a first-class schedule directive; one
+% Petri-net IR with a compile-time soundness gate; falsifiable genericity via
+% a cross-backend bit-identical differential test.
+
+\section{Scope and non-goals}\label{sec:intro-scope}
+% The affine/static/single-assignment algorithm class; what is deliberately
+% out (data-dependent writes, recursion, dynamic scheduling).
+
+\section{Structure of this dissertation}\label{sec:intro-structure}
+
+\todo{Write Chapter 1 (cycle C2).}

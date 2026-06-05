@@ -1,0 +1,66 @@
+% Preamble — packages and dissertation styling.
+% Engine: LuaLaTeX (fontspec requires lua/xe; the build uses lualatex).
+
+\usepackage{fontspec}            % Unicode/OpenType font handling (LuaTeX).
+\usepackage{microtype}           % Micro-typographic refinements.
+\usepackage[english]{babel}
+
+\usepackage{graphicx}
+\usepackage{booktabs}            % Professional tables.
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+% --- Figures: TikZ / PGF ---
+\usepackage{tikz}
+\usetikzlibrary{
+  arrows.meta, positioning, fit, calc, shapes.geometric,
+  shapes.misc, backgrounds, matrix, chains, decorations.pathreplacing
+}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% --- Code listings (Nuc + Rust) ---
+\usepackage{listings}
+\definecolor{lstkw}{RGB}{20,20,160}
+\definecolor{lstcomment}{RGB}{100,100,100}
+\definecolor{lststring}{RGB}{160,40,40}
+\lstdefinestyle{nuc}{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{lstkw}\bfseries,
+  commentstyle=\color{lstcomment}\itshape,
+  stringstyle=\color{lststring},
+  showstringspaces=false,
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  numbers=left, numberstyle=\ttfamily\scriptsize\color{lstcomment},
+}
+\lstset{style=nuc}
+% A light Nuc-language listing dialect (extend in the language chapter).
+\lstdefinelanguage{Nuc}{
+  morekeywords={algorithm,schedule,kernel,pure,effectful,worker,workers,
+    map,for,repeat,block,vectorize,reuse,pipeline,sync,transfer,buffer,
+    check,partition,backend,in,out},
+  morecomment=[l]{//},
+  morestring=[b]",
+}
+
+% --- Bibliography ---
+\usepackage[backend=biber,style=numeric-comp,sorting=nyt]{biblatex}
+
+% --- Cross-references (load hyperref then cleveref last) ---
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black, citecolor=black, urlcolor=blue,
+  pdftitle={Nucleus: a deterministic algorithm/schedule co-compiler},
+  pdfauthor={Mark Ruvald Pedersen},
+}
+\usepackage{cleveref}
+
+% Convenience macros.
+\newcommand{\nuc}{\textsc{Nucleus}}
+\newcommand{\nuclang}{\textsc{Nuc}}
+\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO:} #1]}}

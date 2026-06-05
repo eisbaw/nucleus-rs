@@ -1,0 +1,32 @@
+\chapter{Architecture and Methodology}\label{ch:architecture}
+% Content cycle: C3. Intent: walk the compilation pipeline end to end; defend
+% the two boundaries; explain the soundness gate and why it is sound here.
+
+\section{The compilation pipeline}\label{sec:arch-pipeline}
+% parse -> typed algorithm IR -> link -> ACFG -> transforms -> transfer/halo
+% inference -> Petri-net IR -> soundness gate -> per-worker projection ->
+% presentation-layer codegen. (Central figure.)
+
+\section{The two boundaries}\label{sec:arch-boundaries}
+% Algorithm/schedule; middle-end/presentation.
+
+\section{Algorithm IR and linking}\label{sec:arch-link}
+
+\section{The ACFG and its transforms}\label{sec:arch-acfg}
+% vectorise, block, pipeline, reuse.
+
+\section{Transfer and halo inference}\label{sec:arch-transfer}
+% Automatic transfer synthesis, not automatic parallelism extraction.
+
+\section{The Petri-net IR and the event contract}\label{sec:arch-petri}
+
+\section{The soundness gate}\label{sec:arch-gate}
+% Boundedness, deadlock, conflict-freedom by exact replay over the
+% deterministic firing order; why this is sound for the restricted class.
+
+\section{Per-worker projection}\label{sec:arch-projection}
+% worker -> ordered EventList.
+
+\section{Presentation-layer codegen}\label{sec:arch-codegen}
+
+\todo{Write Chapter 6 (cycle C3).}

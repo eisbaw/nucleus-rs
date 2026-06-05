@@ -1,0 +1,9 @@
+% Placeholder TikZ figure — replaced by the real figure set in cycle C6.
+% Kept so figures/ is non-empty and the include path is exercised.
+\begin{tikzpicture}[node distance=8mm]
+  \node[draw, rounded corners] (a) {algorithm};
+  \node[draw, rounded corners, right=of a] (s) {schedule};
+  \node[draw, rounded corners, below=of $(a)!0.5!(s)$] (c) {compiler};
+  \draw[-{Stretch}] (a) -- (c);
+  \draw[-{Stretch}] (s) -- (c);
+\end{tikzpicture}
