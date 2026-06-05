@@ -1,17 +1,161 @@
 \chapter{Background}\label{ch:background}
-% Content cycle: C2. Intent: give the reader the concepts the rest of the
-% dissertation builds on, neutrally and without assuming the contribution.
+
+This chapter introduces the concepts the rest of the dissertation depends on. It
+is deliberately neutral: it presents established ideas --- separation of
+concerns in parallel programming, the dimensions of IO semantics, static versus
+dynamic scheduling, Petri nets, and differential testing --- without yet
+assuming the contribution. A reader already fluent in any of these sections may
+skip it.
 
 \section{Parallel decomposition and separation of concerns}\label{sec:bg-decomp}
 
+A sequential program states \emph{what} to compute. A parallel program must also
+state \emph{how} the work is divided across processing elements and \emph{how}
+those elements coordinate. These are different concerns, and conflating them is
+the source of much of the difficulty in parallel programming: a change to the
+data layout for one machine forces edits all through code that expresses the
+mathematics, and the mathematics becomes hard to read through the layout.
+
+The decomposition itself has two axes. \emph{Spatial} decomposition divides data
+or iterations across workers that run concurrently --- domain decomposition of a
+grid, blocking of a matrix, partitioning of an array. \emph{Temporal}
+decomposition orders work within a worker and overlaps it across workers ---
+loop tiling, software pipelining (overlapping successive loop iterations so
+workers stay busy), and double buffering (alternating between two buffers so a
+producer can fill one while the consumer drains the other). Both axes are
+scheduling decisions: they change performance and resource use, but, applied
+correctly, they do not change the computed result.
+
+The idea that the result-defining part of a program should be written once and
+the performance-defining part chosen separately has a clear lineage in
+high-performance compute. Halide~\cite{ragan-kelley2013halide} crystallised it
+as the explicit split between an \emph{algorithm} (pure functions over an index
+domain) and a \emph{schedule} (the tiling, fusion, vectorisation, and
+parallelism applied to it), and showed that a single algorithm could be
+retargeted across schedules by orders of magnitude in performance without
+touching its definition. The polyhedral
+compilers~\cite{baghdadi2019tiramisu,bondhugula2008pluto} pursue the same
+separation through a more powerful mathematical model. What unites them is the
+discipline that the algorithm never mentions the schedule. This dissertation
+adopts that discipline and extends it from scheduling computation \emph{within a
+single machine} (intra-node) to decomposition and IO \emph{across many machines
+or workers} (inter-node). A middle ground between fully manual and fully
+automatic decomposition is to have the programmer annotate the decomposition
+explicitly --- in a separate schedule sublanguage --- while leaving the compiler
+to infer the resulting transfers from those annotations; that is the approach
+taken here and developed in \cref{ch:language}.
+
 \section{IO semantics as a programming concern}\label{sec:bg-io}
-% sync/async, buffered/unbuffered, event/poll, shared-memory/DMA/message-passing.
+
+When two workers exchange data, the exchange is governed by choices that are
+usually made implicitly by whatever runtime is in use, but which materially
+affect correctness and performance. These choices form a small set of orthogonal
+dimensions:
+
+\begin{description}[leftmargin=*]
+  \item[Synchronous vs.\ asynchronous.] Does the producer block until the
+        transfer completes, or does it initiate the transfer and continue,
+        completing it later? Asynchrony enables latency hiding but requires
+        somewhere to track the in-flight operation.
+  \item[Buffered vs.\ unbuffered.] Is there storage that decouples producer and
+        consumer rates, allowing the producer to run ahead by a bounded number
+        of items, or must each transfer rendezvous directly?
+  \item[Event-driven vs.\ polled.] Is the consumer woken when data arrives (by
+        an interrupt, a condition variable, or an event-loop readiness
+        notification), or does it repeatedly test for arrival?
+  \item[Transport.] Do the bytes move through shared memory, a loopback or
+        network socket, a Unix domain socket, a cluster interconnect via a
+        message-passing library, or a DMA engine on an embedded device?
+\end{description}
+
+These dimensions are largely independent of one another and of the algorithm. A
+shared-memory threads runtime such as OpenMP~\cite{dagum1998openmp} fixes one
+combination; a message-passing library such as MPI~\cite{mpiforum2021} offers
+several (blocking and non-blocking sends, buffered and synchronous modes) but
+within its own model; an embedded async framework such as
+Embassy~\cite{embassy} fixes yet another around interrupts and DMA. Crucially,
+none of them lets these choices be \emph{stated} as part of a schedule and
+\emph{swapped} without rewriting the communication code. That gap --- IO
+semantics as an unspoken property of the chosen runtime rather than a
+first-class, selectable directive --- is the gap this work targets.
 
 \section{Static versus dynamic scheduling}\label{sec:bg-scheduling}
 
+A \emph{schedule} assigns operations to workers and orders them in time.
+Scheduling may happen dynamically, at run time --- as in work-stealing thread
+pools or dataflow runtimes that fire operations when their inputs become
+available --- or statically, at compile time, fixing the order before the
+program runs.
+
+Dynamic scheduling adapts to data-dependent and machine-dependent variation, at
+the cost of run-time overhead, nondeterminism, and analyses that can only be
+approximate. Static scheduling gives up that adaptivity but gains three
+properties this work depends on. First, \emph{determinism}: a fixed firing order
+means a fixed result and a fixed communication pattern, which is what makes
+byte-identical cross-backend comparison meaningful. Second,
+\emph{analysability}: with the order known at compile time, properties such as
+buffer sufficiency and freedom from deadlock become decidable by replaying that
+one order, rather than searching a reachable state space. Third, \emph{suitability
+for embedded real-time targets}, where dynamic scheduling is often unacceptable
+regardless. Static scheduling of dataflow has a long pedigree --- synchronous
+dataflow~\cite{lee1987sdf} schedules a restricted graph entirely at compile time
+precisely to remove run-time overhead --- and this work sits firmly in that
+static tradition. The scope restrictions stated in \cref{sec:intro-scope} ---
+affine bounds, single-assignment arrays, and a statically fixed decomposition ---
+are exactly what place this work in the static-scheduling camp and make the
+analyses of the following sections tractable.
+
 \section{Petri nets}\label{sec:bg-petri}
-% Places, transitions, markings, firing; boundedness and deadlock.
+
+A Petri net~\cite{petri1962kommunikation,murata1989petri} is a bipartite
+directed graph with two kinds of node: \emph{places} and \emph{transitions}.
+Places hold \emph{tokens}; a marking is an assignment of a token count to every
+place. A transition is \emph{enabled} when each of its input places holds enough
+tokens, and \emph{firing} it removes tokens from its input places and deposits
+tokens on its output places, producing a new marking. The net's behaviour is the
+set of markings reachable from an initial marking by firing enabled transitions.
+
+A handful of standard properties characterise such a net. A net is
+\emph{bounded} if no place can ever exceed a stated token capacity, and
+\emph{$k$-bounded} if that capacity is $k$. It is \emph{live} if no transition is
+permanently disabled. A \emph{deadlock} is a reachable marking in which no
+transition is enabled --- the system cannot make progress. For general Petri
+nets these properties are decidable but expensive; for restricted subclasses
+they become cheap.
+
+Petri nets are a natural model for the problem at hand because their vocabulary
+maps directly onto statically scheduled communication. A transition models a
+kernel firing, a data transfer, or a synchronisation; a place models a data
+slot, a communication channel, or a barrier; a token models the presence of a
+value or a unit of buffer credit; a place's capacity models a declared buffer
+size; and tokens placed on a channel in the initial marking model the
+head-start that double-buffering or software-pipelining provides. Under this
+mapping, ``does this schedule's communication stay within its declared
+buffers?'' is exactly boundedness, and ``can this schedule's communication
+hang?'' is exactly the reachability of a deadlocked marking.
+\Cref{ch:architecture} shows how restricting the net to a statically determined
+firing order collapses these checks to a single deterministic replay.
 
 \section{Determinism and differential testing}\label{sec:bg-determinism}
 
-\todo{Write Chapter 2 (cycle C2).}
+\emph{Differential testing}~\cite{mckeeman1998differential} establishes
+confidence in a system by comparing the outputs of multiple implementations that
+are supposed to agree: where they differ, at least one is wrong, and the
+disagreement localises the fault. It is especially powerful for compilers, where
+an oracle for ``the correct output'' is otherwise hard to obtain; the
+Csmith~\cite{yang2011csmith} work famously used differential testing across C
+compilers to find hundreds of bugs by generating programs whose output every
+correct compiler must agree on.
+
+Differential testing requires a deterministic notion of agreement. Two
+implementations can only be compared byte-for-byte if both are deterministic for
+the same input. This is why the algorithm class in this work is restricted to
+deterministic arithmetic (\cref{sec:intro-scope}): integer computation, or
+floating-point computation whose reductions do not reorder, guarantees that a
+single reference output exists for every example. Given that determinism,
+differential testing becomes a means not only of finding bugs but of
+\emph{falsifying a design claim}. If one algorithm is compiled under many
+schedules and many backends and all outputs are byte-identical to a single
+hand-written reference, then the claim that the algorithm is independent of
+schedule and backend has survived a concrete attempt to break it; a single
+differing byte refutes it. \Cref{ch:validation} develops this rig in full.

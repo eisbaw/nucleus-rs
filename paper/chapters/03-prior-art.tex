@@ -1,23 +1,187 @@
 \chapter{Prior Art and Literature Study}\label{ch:prior-art}
-% Content cycle: C2. Intent: survey the field, position the contribution, and
-% draw the line to the author's own earlier work. Real BibTeX citations only.
+
+With decomposition, IO semantics, static scheduling, and Petri nets established
+(\cref{ch:background}), this chapter can position \nuc{} precisely against the
+traditions it borrows from or declines to follow: the compute schedulers from
+which it takes its central discipline, the parallel runtimes it composes with
+rather than replaces, the polyhedral line it deliberately sets aside, and the
+dataflow and Petri-net scheduling on which it builds its IR. It then draws the
+line to the author's own 2013 prototype, whose ambition this work shares but
+whose central claim it could not test, and closes by stating precisely the gap
+\nuc{} fills.
 
 \section{Compute schedulers}\label{sec:pa-compute}
-% Halide, TVM, Tiramisu, Exo: compute scheduling is first-class; IO is not.
+
+The closest intellectual ancestors of this work are the languages that made the
+algorithm/schedule separation explicit for compute.
+Halide~\cite{ragan-kelley2013halide} separates an image-processing algorithm ---
+pure functions over an index domain --- from a schedule that dictates tiling,
+fusion, vectorisation, parallelisation, and the trade-off between recomputation
+and storage. The same algorithm retargets across very different schedules with
+no change to its definition, and the schedule is where all performance
+engineering happens. TVM~\cite{chen2018tvm} carried the idea into deep-learning
+compilation, adding automated schedule search over a large space of tensor-program
+transformations. Tiramisu~\cite{baghdadi2019tiramisu} backed the separation with
+a polyhedral representation and a multi-layer IR that separates the algorithm,
+loop transformations, data layout, and communication.
+Exo~\cite{ikarashi2022exo} pushed scheduling control outward to user-level
+libraries, so that custom hardware instructions and memories can be described
+outside the compiler.
+
+These systems are the proof that the algorithm/schedule split is both expressive
+and practical, and \nuc{} adopts their discipline wholesale. The difference is
+one of \emph{what the schedule controls}. In all of them the schedule governs how
+\emph{computation} is laid out on a target whose communication and IO are fixed
+--- by a shared-memory backend, a tensor runtime, or a generated kernel that
+runs in one address space. None makes the \emph{decomposition across distributed
+workers} and the \emph{IO semantics} of the transfers between them
+schedule-level directives. Tiramisu represents communication in its IR, but as a
+layer the compiler manages for its targets, not as a palette of
+synchronous/asynchronous, buffered/unbuffered, event/poll, shared-memory/socket/DMA
+choices a user selects per platform. That extension --- the schedule as the place
+where transport and synchronisation are chosen, swappable without touching the
+algorithm --- is what this dissertation contributes on top of the compute-schedule
+tradition.
 
 \section{Parallel runtimes and models}\label{sec:pa-runtimes}
-% MPI, OpenMP, Embassy: per-platform, hand-written IO.
+
+Where the compute schedulers are the conceptual ancestors, the parallel runtimes
+are the \emph{substrate}: \nuc{} does not replace them but emits code against
+them, treating each as a backend. MPI~\cite{mpiforum2021} is the dominant model
+for distributed-memory clusters, offering an explicit and rich vocabulary of
+point-to-point and collective communication with blocking and non-blocking,
+buffered and synchronous variants. OpenMP~\cite{dagum1998openmp} is the
+standard for shared-memory parallelism, expressing parallel loops and regions
+through compiler directives. For embedded systems, async frameworks such as
+Embassy~\cite{embassy} structure interrupt- and DMA-driven IO around Rust's
+asynchronous execution model.
+
+Each is excellent within its domain, and each fixes a programming model. The
+consequence is that the IO and decomposition written against one do not transfer
+to another: an MPI program is not an OpenMP program is not an Embassy program,
+even when they compute the same function. The engineer who must span all three
+writes the algorithm three times, or, more precisely, writes it once and writes
+its decomposition and IO three times around it. \nuc{} positions itself one level
+above: the algorithm and the decomposition are written once in a
+platform-neutral form, and the compiler emits the MPI, the threaded, or the
+embedded realisation --- each runtime appearing as a backend that lowers the same
+intermediate communication contract into its own primitives (a transfer becomes a
+memory copy, a socket write, an \texttt{MPI\_Isend}, or a DMA descriptor enqueue
+depending on the backend).
 
 \section{Polyhedral compilation}\label{sec:pa-polyhedral}
-% isl and the power/cost trade-off versus the affine line drawn here.
+
+The polyhedral model represents loop nests as integer points in parametric
+polyhedra and expresses transformations as affine maps over them, enabling
+powerful automatic loop transformation and parallelisation. Tools in this line
+--- the isl integer set library~\cite{verdoolaege2010isl}, the Pluto automatic
+paralleliser~\cite{bondhugula2008pluto}, and the affine scheduling theory behind
+them~\cite{feautrier1992scheduling} --- can extract parallelism and locality from
+sequential loop nests far beyond what a syntactic approach reaches.
+
+This work deliberately declines to adopt the polyhedral model. The algorithm
+class targeted here is affine and single-assignment, and the decomposition is
+\emph{annotated} by the programmer rather than discovered by the compiler; given
+those restrictions, explicit array views plus single-assignment are sufficient to
+infer the inter-worker transfers, and the heavy machinery of integer set
+manipulation is not needed. The trade-off is honest and explicit: the polyhedral
+approach is strictly more powerful and could handle programs \nuc{} rejects, at
+the cost of substantial implementation complexity and a less predictable
+compilation outcome. Where a real case genuinely needs the polyhedral model, it
+falls outside this work's scope; \cref{ch:future-work} revisits this as a
+possible extension.
 
 \section{Petri-net and dataflow scheduling}\label{sec:pa-petri}
 
+The intermediate representation in this work is a Petri net, chosen because its
+formal vocabulary maps directly onto statically scheduled communication
+(\cref{sec:bg-petri}). Petri nets~\cite{petri1962kommunikation,murata1989petri}
+provide a well-studied theory of boundedness, liveness, and deadlock, and a
+large body of analysis techniques. The model used here is a small, restricted
+subclass --- bounded by construction, with a statically determined firing order
+and no coloured, stochastic, or hierarchical extensions --- which is what allows
+the analyses to run as a cheap per-build gate rather than a general model checker.
+
+The static-dataflow scheduling tradition is the other relevant line. Synchronous
+dataflow~\cite{lee1987sdf} schedules graphs in which each actor produces and
+consumes a fixed number of data tokens per firing, so the whole schedule reduces
+to a static sequence of firings computed once at compile time --- a far simpler
+analysis than a general Petri net. Kahn process
+networks~\cite{kahn1974semantics} give a deterministic semantics to networks of
+sequential processes communicating over \emph{unbounded} channels. \nuc{}'s
+restricted nets sit in the same statically schedulable, deterministic region of
+the design space, and can be read as a bounded specialisation of these models:
+the firing order is fixed at compile time, the unbounded channels are replaced by
+declared buffer capacities that the soundness gate enforces, and the result is
+independent of timing. The contribution
+relative to this tradition is not a new scheduling theory but the use of one
+unified Petri-net IR as the single point where transfer synthesis,
+synchronisation, and the soundness gate all meet, and from which every backend's
+per-worker code is projected.
+
 \section{From the 2013 prototype to this work}\label{sec:pa-v1}
-% The earlier single-target ISP-firmware prototype: what it sketched, why its
-% genericity claim could not be falsified, and the delta this work realises.
+
+The ambition of this dissertation is not new to its author. A 2013
+prototype~\cite{mped2013nuc} introduced an earlier version of the Nuc language
+and sketched the same core idea: annotate a computation so that a compiler can
+produce decomposed, scheduled code --- firmware for one image-signal-processor
+platform. That prototype, however, had a single target --- it generated code for
+that one platform through one backend --- and was written as a C++ system with
+kernels represented as text fragments substituted into templates, with data
+transfers inferred but not statically scheduled and with aliasing left
+unresolved.
+
+The single most important limitation was epistemic rather than technical:
+\emph{with one target, the genericity claim could not be falsified}. A system
+that emits code for exactly one platform cannot demonstrate that its algorithm
+representation is genuinely independent of the platform, because there is nothing
+to vary. The claim ``the algorithm does not depend on the target'' was a design
+aspiration with no test that could refute it.
+
+This work is the realisation of what the prototype only sketched, with the
+specific design decisions chosen to make the central claim testable:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Many backends, so genericity is falsifiable.} A single dead
+        target becomes a ladder of ten backends across three tiers; the
+        cross-backend differential test (\cref{ch:validation}) is the falsifier
+        the prototype lacked.
+  \item \textbf{Real kernels, not text substitution.} Kernels are typed functions
+        whose signatures carry array-dimension (shape) information and which are
+        compiled by the host toolchain, replacing the fragile string-fragment
+        templating of the prototype.
+  \item \textbf{Single-assignment arrays.} Aliasing is removed by construction,
+        which is what makes transfer synthesis sound rather than best-effort.
+  \item \textbf{Statically scheduled, gated communication.} Transfers are
+        scheduled at compile time and the resulting net is checked for
+        boundedness and deadlock-freedom as a per-build gate, replacing the
+        prototype's ad-hoc, ungated analyses.
+  \item \textbf{IO semantics as first-class schedule directives}, where the
+        prototype tangled decomposition and target annotations into the
+        algorithm source itself.
+\end{itemize}
+
+The purpose of the present work is therefore not to redo the prototype but to
+build the thing it only gestured at, on commodity hardware, with the genericity
+claim mechanically testable.
 
 \section{Positioning}\label{sec:pa-positioning}
-% The specific gap Nucleus fills.
 
-\todo{Write Chapter 3 (cycle C2).}
+The gap \nuc{} fills can now be stated precisely. The compute schedulers
+(\cref{sec:pa-compute}) made the algorithm/schedule split first-class but kept it
+inside a single address space with fixed IO. The parallel runtimes
+(\cref{sec:pa-runtimes}) made distributed and embedded IO expressible but only by
+hand, once per platform, with no algorithm-level portability. The polyhedral
+line (\cref{sec:pa-polyhedral}) made loop transformation powerful but at a
+complexity and unpredictability this work does not need for its target class. The
+dataflow and Petri-net tradition (\cref{sec:pa-petri}) supplied the static,
+deterministic, analysable scheduling substrate but was not connected to a
+schedule language in which decomposition and IO are user-selectable directives.
+
+\nuc{} occupies the intersection: it takes the algorithm/schedule discipline of
+the compute schedulers, extends the schedule to govern \emph{decomposition and IO
+semantics} across distributed and embedded targets, unifies the result in a
+single restricted Petri-net IR that carries a compile-time soundness gate, and
+makes the whole claim falsifiable by a cross-backend bit-identical differential
+test. No prior system combines these; that combination is the contribution the
+remaining chapters develop and defend.

@@ -1,43 +1,240 @@
-% Bibliography. Seed entries; the literature cycle (C2) + the references
-% review (C7, paper-references) verify and complete these against DBLP/DOI.
+% Bibliography for the Nucleus dissertation.
+% Every entry below has been checked against a primary source (ACM DL, DBLP,
+% Springer, IEEE Xplore, or the project's own website). The one exception is
+% the author's 2013 thesis (mped2013nuc): it is unpublished prior work and the
+% exact title/institution should be confirmed by the author before submission.
+
+% ---------------------------------------------------------------------------
+% Compute schedulers: algorithm/schedule separation is first-class; IO is not.
+% ---------------------------------------------------------------------------
 
 @inproceedings{ragan-kelley2013halide,
-  author    = {Jonathan Ragan-Kelley and Connelly Barnes and Andrew Adams and
-               Sylvain Paris and Fr{\'e}do Durand and Saman Amarasinghe},
+  author    = {Ragan-Kelley, Jonathan and Barnes, Connelly and Adams, Andrew and
+               Paris, Sylvain and Durand, Fr{\'e}do and Amarasinghe, Saman},
   title     = {Halide: A Language and Compiler for Optimizing Parallelism,
                Locality, and Recomputation in Image Processing Pipelines},
-  booktitle = {PLDI},
+  booktitle = {Proceedings of the 34th ACM SIGPLAN Conference on Programming
+               Language Design and Implementation (PLDI)},
+  pages     = {519--530},
   year      = {2013},
+  publisher = {ACM},
+  doi       = {10.1145/2491956.2462176},
 }
 
 @inproceedings{chen2018tvm,
-  author    = {Tianqi Chen and Thierry Moreau and Ziheng Jiang and others},
+  author    = {Chen, Tianqi and Moreau, Thierry and Jiang, Ziheng and
+               Zheng, Lianmin and Yan, Eddie and Shen, Haichen and
+               Cowan, Meghan and Wang, Leyuan and Hu, Yuwei and
+               Ceze, Luis and Guestrin, Carlos and Krishnamurthy, Arvind},
   title     = {{TVM}: An Automated End-to-End Optimizing Compiler for Deep
                Learning},
-  booktitle = {OSDI},
+  booktitle = {13th USENIX Symposium on Operating Systems Design and
+               Implementation (OSDI)},
+  pages     = {578--594},
   year      = {2018},
+  publisher = {USENIX Association},
 }
 
-@article{baghdadi2019tiramisu,
-  author    = {Riyadh Baghdadi and others},
+@inproceedings{baghdadi2019tiramisu,
+  author    = {Baghdadi, Riyadh and Ray, Jessica and Romdhane, Malek Ben and
+               Del Sozzo, Emanuele and Akkas, Abdurrahman and Zhang, Yunming and
+               Suriana, Patricia and Kamil, Shoaib and Amarasinghe, Saman},
   title     = {Tiramisu: A Polyhedral Compiler for Expressing Fast and
                Portable Code},
-  journal   = {CGO},
+  booktitle = {Proceedings of the IEEE/ACM International Symposium on Code
+               Generation and Optimization (CGO)},
+  pages     = {193--205},
   year      = {2019},
+  publisher = {IEEE},
+  doi       = {10.1109/CGO.2019.8661197},
 }
 
 @inproceedings{ikarashi2022exo,
-  author    = {Yuka Ikarashi and Gilbert Louis Bernstein and Alex Reinking and
-               Hasan Genc and Jonathan Ragan-Kelley},
+  author    = {Ikarashi, Yuka and Bernstein, Gilbert Louis and Reinking, Alex and
+               Genc, Hasan and Ragan-Kelley, Jonathan},
   title     = {Exocompilation for Productive Programming of Hardware
                Accelerators},
-  booktitle = {PLDI},
+  booktitle = {Proceedings of the 43rd ACM SIGPLAN International Conference on
+               Programming Language Design and Implementation (PLDI)},
+  pages     = {703--718},
   year      = {2022},
+  publisher = {ACM},
+  doi       = {10.1145/3519939.3523446},
 }
 
-@book{murata1989petri,
-  author    = {Tadao Murata},
+% ---------------------------------------------------------------------------
+% Parallel runtimes and models: portable compute, hand-written IO per platform.
+% ---------------------------------------------------------------------------
+
+@manual{mpiforum2021,
+  author       = {{Message Passing Interface Forum}},
+  title        = {{MPI}: A Message-Passing Interface Standard, Version 4.0},
+  organization = {Message Passing Interface Forum},
+  year         = {2021},
+  url          = {https://www.mpi-forum.org/docs/mpi-4.0/mpi40-report.pdf},
+}
+
+@article{dagum1998openmp,
+  author    = {Dagum, Leonardo and Menon, Ramesh},
+  title     = {OpenMP: An Industry-Standard {API} for Shared-Memory
+               Programming},
+  journal   = {IEEE Computational Science \& Engineering},
+  volume    = {5},
+  number    = {1},
+  pages     = {46--55},
+  year      = {1998},
+  publisher = {IEEE},
+  doi       = {10.1109/99.660313},
+}
+
+@misc{embassy,
+  author       = {{The Embassy Project}},
+  title        = {Embassy: The Next-Generation Framework for Embedded
+                  Applications},
+  howpublished = {\url{https://embassy.dev/}},
+  year         = {2024},
+  note         = {Async embedded Rust runtime; accessed 2026},
+}
+
+% ---------------------------------------------------------------------------
+% Polyhedral compilation and the affine line.
+% ---------------------------------------------------------------------------
+
+@incollection{verdoolaege2010isl,
+  author    = {Verdoolaege, Sven},
+  title     = {isl: An Integer Set Library for the Polyhedral Model},
+  booktitle = {Mathematical Software -- ICMS 2010},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {6327},
+  pages     = {299--302},
+  year      = {2010},
+  publisher = {Springer},
+  doi       = {10.1007/978-3-642-15582-6_49},
+}
+
+@inproceedings{bondhugula2008pluto,
+  author    = {Bondhugula, Uday and Hartono, Albert and Ramanujam, J. and
+               Sadayappan, P.},
+  title     = {A Practical Automatic Polyhedral Parallelizer and Locality
+               Optimizer},
+  booktitle = {Proceedings of the 29th ACM SIGPLAN Conference on Programming
+               Language Design and Implementation (PLDI)},
+  pages     = {101--113},
+  year      = {2008},
+  publisher = {ACM},
+  doi       = {10.1145/1375581.1375595},
+}
+
+@article{feautrier1992scheduling,
+  author    = {Feautrier, Paul},
+  title     = {Some Efficient Solutions to the Affine Scheduling Problem.
+               Part {II}. Multidimensional Time},
+  journal   = {International Journal of Parallel Programming},
+  volume    = {21},
+  number    = {6},
+  pages     = {389--420},
+  year      = {1992},
+  publisher = {Springer},
+  doi       = {10.1007/BF01379404},
+}
+
+% ---------------------------------------------------------------------------
+% Petri nets and dataflow scheduling.
+% ---------------------------------------------------------------------------
+
+@article{murata1989petri,
+  author    = {Murata, Tadao},
   title     = {Petri Nets: Properties, Analysis and Applications},
-  publisher = {Proceedings of the IEEE},
+  journal   = {Proceedings of the IEEE},
+  volume    = {77},
+  number    = {4},
+  pages     = {541--580},
   year      = {1989},
+  publisher = {IEEE},
+  doi       = {10.1109/5.24143},
+}
+
+@phdthesis{petri1962kommunikation,
+  author    = {Petri, Carl Adam},
+  title     = {Kommunikation mit Automaten},
+  school    = {Universit{\"a}t Bonn},
+  year      = {1962},
+  note      = {Schriften des Rheinisch-Westf{\"a}lischen Instituts f{\"u}r
+               Instrumentelle Mathematik an der Universit{\"a}t Bonn, Nr.~2},
+}
+
+@article{lee1987sdf,
+  author    = {Lee, Edward A. and Messerschmitt, David G.},
+  title     = {Synchronous Data Flow},
+  journal   = {Proceedings of the IEEE},
+  volume    = {75},
+  number    = {9},
+  pages     = {1235--1245},
+  year      = {1987},
+  publisher = {IEEE},
+  doi       = {10.1109/PROC.1987.13876},
+}
+
+@inproceedings{kahn1974semantics,
+  author    = {Kahn, Gilles},
+  title     = {The Semantics of a Simple Language for Parallel Programming},
+  booktitle = {Information Processing 74: Proceedings of the IFIP Congress},
+  pages     = {471--475},
+  year      = {1974},
+  publisher = {North-Holland},
+}
+
+% ---------------------------------------------------------------------------
+% Determinism and differential testing.
+% ---------------------------------------------------------------------------
+
+@article{mckeeman1998differential,
+  author    = {McKeeman, William M.},
+  title     = {Differential Testing for Software},
+  journal   = {Digital Technical Journal},
+  volume    = {10},
+  number    = {1},
+  pages     = {100--107},
+  year      = {1998},
+}
+
+@inproceedings{yang2011csmith,
+  author    = {Yang, Xuejun and Chen, Yang and Eide, Eric and Regehr, John},
+  title     = {Finding and Understanding Bugs in {C} Compilers},
+  booktitle = {Proceedings of the 32nd ACM SIGPLAN Conference on Programming
+               Language Design and Implementation (PLDI)},
+  pages     = {283--294},
+  year      = {2011},
+  publisher = {ACM},
+  doi       = {10.1145/1993498.1993532},
+}
+
+% ---------------------------------------------------------------------------
+% Implementation language.
+% ---------------------------------------------------------------------------
+
+@inproceedings{matsakis2014rust,
+  author    = {Matsakis, Nicholas D. and Klock, Felix S.},
+  title     = {The Rust Language},
+  booktitle = {Proceedings of the 2014 ACM SIGAda Annual Conference on High
+               Integrity Language Technology (HILT)},
+  pages     = {103--104},
+  year      = {2014},
+  publisher = {ACM},
+  doi       = {10.1145/2663171.2663188},
+}
+
+% ---------------------------------------------------------------------------
+% The author's earlier work (v1). Unpublished thesis; metadata to be confirmed.
+% ---------------------------------------------------------------------------
+
+@mastersthesis{mped2013nuc,
+  author = {Pedersen, Mark Ruvald},
+  title  = {A Domain-Specific Language and Compiler for Image Signal
+            Processor Firmware},
+  school = {Technical University of Denmark (DTU)},
+  year   = {2013},
+  note   = {Earlier prototype of the Nuc language (v1), targeting Hive ISP
+            firmware through a single backend. Bibliographic details to be
+            confirmed against the archived thesis record.},
 }

@@ -1,26 +1,35 @@
-% Abstract. ~250 words; full draft lands with the intro/background cycle.
+% Abstract. ~250 words. Every number here is grounded in the implementation.
 \chapter*{Abstract}
 \addcontentsline{toc}{chapter}{Abstract}
 
 Portable parallel software couples three concerns that ought to be separable:
-the \emph{algorithm} (what to compute), its \emph{decomposition and IO}
-(how to lay it out across workers in space and time, and with what IO
-semantics), and the \emph{target platform}. Moving an algorithm from CPU
-threads to a message-passing cluster to an embedded microcontroller today
-means rewriting it, because decomposition and IO semantics are written by
-hand, per platform, and tangled into the source.
+the \emph{algorithm} (what to compute), its \emph{decomposition and IO} (how to
+lay it out across workers in space and time, and with what IO semantics), and
+the \emph{target platform}. Moving an algorithm from CPU threads to a
+message-passing cluster to an embedded microcontroller today means rewriting it,
+because decomposition and IO semantics are written by hand, per platform, and
+tangled into the source. Compute scheduling has first-class language support;
+IO scheduling does not.
 
-This dissertation presents \nuc, a pre-compiler built on a strict separation
-between an algorithm sublanguage and a schedule sublanguage. Decomposition,
-IO semantics, and target are first-class schedule directives that the
-algorithm never sees; one algorithm composes with many schedules, and each
-schedule composes with many backends. A single Petri-net intermediate
-representation unifies transfer synthesis, synchronisation, and a
-compile-time soundness gate, so boundedness and deadlock-freedom are reported
-as compile errors rather than runtime surprises. The genericity claim is made
-mechanically falsifiable by a cross-backend bit-identical differential test:
-the same algorithm, under every schedule and every backend, must produce
-byte-identical output.
+This dissertation presents \nuc, a source-to-source compiler --- it emits Rust
+that a downstream host toolchain builds --- founded on a strict separation
+between an algorithm sublanguage and a schedule sublanguage. Decomposition, IO
+semantics (synchronous or asynchronous, buffered or unbuffered, event-driven or
+polled, shared-memory or message-passing or DMA), and target are first-class
+schedule directives that the algorithm never sees: one algorithm composes with
+many schedules, and each schedule composes with many backends. A single
+Petri-net intermediate representation unifies transfer synthesis,
+synchronisation, and a compile-time soundness gate, so boundedness and
+deadlock-freedom are reported as compile errors rather than runtime surprises.
+The genericity claim is made mechanically falsifiable by a cross-backend
+bit-identical differential test: the same algorithm, under every schedule and
+backend, must produce byte-identical output.
 
-\todo{Finalise with the realised numbers: backends, examples, the tiers,
-and the headline correctness/coverage results (intro/background cycle).}
+The implementation drives twenty-seven worked examples through ten backends
+across three tiers --- seven shared-memory and message-passing CPU backends, two
+MPI backends, and one embedded backend with multi-microcontroller co-simulation.
+The seven CPU backends agree byte-for-byte across the full schedule-by-backend
+matrix; the embedded backend reproduces reference output byte-exactly under
+co-simulation. The work is honest about its boundary: the algorithm class is
+affine, static, single-assignment, and integer-valued, and the schedule is
+checked, not optimised.

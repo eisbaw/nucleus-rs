@@ -1,26 +1,204 @@
 \chapter{Introduction}\label{ch:introduction}
-% Content cycle: C2. Intent: state the portability problem; motivate the
-% algorithm/schedule split; give the thesis statement + contributions; bound
-% the scope (the algorithm class); lay out the dissertation structure.
 
 \section{The portability problem}\label{sec:intro-problem}
-% Porting an algorithm across CPU threads / MPI cluster / embedded MCU means
-% rewriting it: decomposition + IO semantics are hand-written, per platform.
+
+A parallel algorithm is rarely written once. The same computation --- a stencil
+blur, a blocked matrix multiply, a small neural-network forward pass --- is
+expected to run on a developer's laptop using operating-system threads, to scale
+out across a message-passing cluster, and, increasingly, to run on an embedded
+microcontroller inside a product. In each setting the \emph{arithmetic} is
+identical. What changes is everything around it: how the data is partitioned
+across workers, how those workers exchange intermediate results, and what
+input/output (IO) semantics govern that exchange --- whether a transfer blocks
+or returns immediately, whether it is buffered, whether the receiver is woken by
+an event or discovers the data by polling, and whether the bytes move through
+shared memory, a socket, a direct-memory-access (DMA) engine, or a cluster
+interconnect.
+
+Today, moving an algorithm between these settings means rewriting it. The
+decomposition and the IO semantics are written by hand, once per platform, and
+tangled directly into the source. A threads version, an MPI version, and a
+microcontroller version of the ``same'' algorithm are three separate programs
+that happen to compute the same function, maintained in parallel, drifting apart
+with every change. The cost of this duplication is not the arithmetic --- the
+kernel bodies are small and stable --- but the decomposition and IO glue, which
+is large, platform-specific, and the part most likely to harbour a deadlock, a
+buffer overrun, or a subtle ordering bug.
+
+This dissertation argues that the duplication is avoidable, and that avoiding it
+requires treating decomposition and IO not as code to be written but as
+\emph{schedule directives} to be chosen --- separately from, and without
+modifying, the algorithm they apply to.
 
 \section{Motivation}\label{sec:intro-motivation}
-% IO is a second-class citizen (compute scheduling has Halide/TVM/Exo; IO
-% does not); hardware churns faster than algorithms; decomposition is the
-% expensive, error-prone part.
+
+Three observations motivate the work, in decreasing order of how much weight
+they carry.
+
+\paragraph{IO has been a second-class citizen.} The separation of an algorithm
+from its \emph{schedule} --- the choices of tiling, fusion, vectorisation, and
+parallelism that determine performance without changing the result --- is a
+mature idea for \emph{compute}. Halide~\cite{ragan-kelley2013halide} made it the
+organising principle of an image-processing language and compiler;
+TVM~\cite{chen2018tvm}, Tiramisu~\cite{baghdadi2019tiramisu}, and
+Exo~\cite{ikarashi2022exo} carried it into deep learning and hardware
+accelerators. In all of these systems the schedule controls how computation is
+laid out, but the \emph{IO} that connects parallel workers --- the transport,
+the synchronisation, the buffering discipline --- is either implicit in a fixed
+runtime or written by hand outside the language. There is no schedule directive
+for ``use asynchronous double-buffered transfers here, blocking unbuffered ones
+there.'' This dissertation makes IO semantics a first-class schedule directive,
+swappable per target without touching the algorithm.
+
+\paragraph{Hardware changes faster than algorithms do.} An algorithm written for
+x86 with threads should not have to be rewritten for an MPI cluster, an ARM
+system-on-chip, or a custom accelerator --- yet today it usually is. The
+parallel runtimes that target these platforms --- MPI~\cite{mpiforum2021} for
+clusters, OpenMP~\cite{dagum1998openmp} for shared memory, and async embedded
+frameworks such as Embassy~\cite{embassy} for microcontrollers --- each impose
+their own programming model and their own hand-written IO. They are excellent at
+what they do, but they do not compose: a program written against one is not a
+program against another. The algorithm/schedule split delivers the most value
+precisely where the hardware churns under a stable algorithm.
+
+\paragraph{Decomposition is the bottleneck.} Algorithm code is comparatively
+cheap to write and easy to get right. Deciding how to decompose it across
+heterogeneous workers, with explicit and correct IO, is the expensive,
+error-prone part. The right response is to make \emph{that} the cheap thing to
+iterate on: to let an engineer change the decomposition, the IO discipline, or
+the target platform by editing a small schedule file, while the algorithm stays
+fixed and the compiler does the rewriting.
 
 \section{Thesis statement and contributions}\label{sec:intro-contributions}
-% Algorithm/schedule separation; IO as a first-class schedule directive; one
-% Petri-net IR with a compile-time soundness gate; falsifiable genericity via
-% a cross-backend bit-identical differential test.
+
+\paragraph{Thesis statement.} \emph{A parallel algorithm can be written once, in
+a form that contains no decomposition and no IO, and then be mapped onto
+shared-memory threads, a message-passing cluster, and an embedded
+microcontroller purely by changing a separate schedule --- with the compiler
+synthesising all data transfers and synchronisation, guaranteeing at compile
+time that no declared communication buffer overflows and that the program cannot
+deadlock, and with the claim that the algorithm is genuinely unchanged made
+mechanically falsifiable by requiring byte-identical output across every schedule
+and every CPU backend.}
+
+The system that realises this statement is called \nuc. Its contributions are:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{A strict algorithm/schedule separation in which decomposition
+        and IO are first-class schedule concerns.} The algorithm is expressed in
+        one sublanguage that has no notion of workers, buffers, transports, or
+        synchronisation; the schedule is expressed in a second sublanguage in
+        which the number of workers, the data partitioning, the loop
+        transformations, and the IO semantics are all explicit directives. One
+        algorithm composes with many schedules; each schedule composes with many
+        \emph{backends} --- code-generation paths, each targeting one combination
+        of runtime and transport, such as shared-memory threads, message passing,
+        or embedded DMA (\cref{fig:composition}).
+
+  \item \textbf{Compiler-synthesised, statically scheduled communication unified
+        by a single Petri-net intermediate representation (IR).} From the
+        declared data-access patterns the compiler infers which data each worker
+        must send to each other worker, including the \emph{halo regions} (the
+        boundary slices of a neighbour's data a stencil needs). This is transfer
+        \emph{synthesis} --- deriving the communication for a decomposition the
+        programmer has already fixed --- rather than automatic parallelisation,
+        which would discover parallel structure from scratch. The whole program
+        is lowered to one Petri net (a directed bipartite graph of places and
+        transitions, defined in \cref{sec:bg-petri}) whose transitions are kernel
+        firings, transfers, and synchronisations.
+
+  \item \textbf{A compile-time soundness gate.} The gate is not a separate
+        analysis bolted on; it is an intrinsic reading of the same IR. Because the
+        firing order is statically determined for the restricted net class,
+        boundedness (no declared buffer ever overflows) and deadlock-freedom (no
+        required transfer ever waits on a value that is never produced) are
+        decided at compile time and reported as compile errors, not discovered as
+        runtime hangs or crashes.
+
+  \item \textbf{A falsifiable genericity claim.} The assertion that the algorithm
+        is truly independent of schedule and backend is tested, not merely
+        asserted: the same algorithm, compiled under every schedule and every
+        CPU backend, must produce byte-identical output against a hand-written
+        reference. A single differing byte falsifies the separation and points
+        at which boundary leaked.
+
+  \item \textbf{A realised target ladder.} The model is carried from theory to
+        running code across three tiers: seven CPU backends (the cheap
+        falsification rig), two MPI backends, and one embedded backend
+        demonstrated by multi-microcontroller co-simulation --- ten backends in
+        total, driving twenty-seven worked examples.
+\end{enumerate}
 
 \section{Scope and non-goals}\label{sec:intro-scope}
-% The affine/static/single-assignment algorithm class; what is deliberately
-% out (data-dependent writes, recursion, dynamic scheduling).
+
+The portability claim is deliberately bounded, and the boundary is stated up
+front rather than buried. \nuc{} is portable \emph{for algorithms whose
+decomposition fits a restricted model}, not for all algorithms. Concretely, the
+algorithm class is:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Affine and static.} Loop bounds and array indices are affine
+        functions of the iteration variables --- of the form $a\cdot i + b$ for
+        compile-time constants $a$ and $b$ --- and the decomposition and firing
+        order are fixed at compile time. There is no dynamic scheduling, no work
+        stealing, and no load balancing.
+  \item \textbf{Single-assignment.} Each array location is written exactly once.
+        The producer of every value is therefore unambiguous, which lets the
+        compiler derive inter-worker transfers by comparing read and write index
+        sets without having to reason about whether two names refer to the same
+        storage (aliasing). This is what makes transfer synthesis sound rather
+        than best-effort.
+  \item \textbf{Integer-valued for the bit-identity guarantee.} Byte-identical
+        cross-backend output requires deterministic arithmetic. Examples are
+        integer-valued, or use floating-point only where reductions do not
+        reorder; an example that would reorder a floating-point sum is restated
+        or excluded.
+\end{itemize}
+
+The following are explicit non-goals. \nuc{} does \emph{not} perform automatic
+parallelisation: the programmer annotates the decomposition, and the compiler
+maps and schedules it (it does, however, infer transfers and halos from declared
+access patterns, which is a narrower and decidable problem). Data-dependent array
+\emph{indexing} is supported, in both single-worker and distributed form: a
+data-dependent \emph{read} (a gather, $x[c[k]]$ where $c$ is itself data) and a
+data-dependent \emph{write} (a scatter, such as a histogram indexed by data) both
+compile and run bit-identically across the CPU backends. The data-dependent
+dimension is handled conservatively --- the gathered array is broadcast in whole
+rather than sliced, and a scattered target is replicated per worker and
+recombined --- which preserves correctness at some cost in communication volume.
+What remains \emph{outside} the model is data-dependent control \emph{flow}
+(convergence-driven loop termination), a data-dependent loop trip count, and
+recursion; consequently full sparse solvers, which need convergence-driven
+termination, are out of scope. A scatter whose write target is itself partitioned
+along an affine axis is conservatively rejected at compile time rather than
+mis-compiled. \nuc{} performs \emph{no} polyhedral analysis (the mathematical
+framework that represents loop nests as polyhedra to automate dependence analysis
+and loop transformation)~\cite{verdoolaege2010isl}: single-assignment plus
+explicit views suffice for the targeted class, and a case that genuinely needs
+the polyhedral model is out of scope. Finally, the schedule's runtime assertions
+are \emph{checked, not prescriptive}: the compiler reports whether a
+hand-written schedule meets a stated latency or buffer bound, but has no cost
+model and does not search for a schedule that does. \Cref{ch:discussion} returns
+to these limits as honest threats to the contribution.
 
 \section{Structure of this dissertation}\label{sec:intro-structure}
 
-\todo{Write Chapter 1 (cycle C2).}
+\Cref{ch:background} introduces the background concepts the rest of the work
+builds on --- parallel decomposition and separation of concerns, IO semantics as
+a programming concern, static versus dynamic scheduling, Petri nets, and the
+determinism that differential testing depends on --- neutrally and without
+assuming the contribution.
+\Cref{ch:prior-art} surveys the prior art, positions \nuc{} against the compute
+schedulers and parallel runtimes it borrows from and composes with, and draws
+the line to the author's own 2013 prototype~\cite{mped2013nuc}, whose genericity
+claim could not be falsified because it had a single target.
+\Cref{ch:problem} states the portability gap precisely and maps the design
+space. \Cref{ch:language} presents the two sublanguages; \cref{ch:architecture}
+the compilation pipeline (\cref{fig:pipeline}) and the Petri-net IR; and
+\cref{ch:backends} the ten backends and the target ladder.
+\Cref{ch:validation,ch:results} present the validation methodology --- the
+bit-identical differential rig, the soundness gate, and the negative falsifiers
+that prove the checks bite --- and the results obtained.
+\Cref{ch:discussion,ch:future-work,ch:conclusion} discuss advantages and
+shortcomings, sketch future work, and conclude. Appendices catalogue the worked
+examples, the grammar, the capability matrix, and the reproducibility setup.
