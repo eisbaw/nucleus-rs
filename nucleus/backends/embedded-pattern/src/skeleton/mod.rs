@@ -101,8 +101,10 @@ pub trait NucleusShim {
     /// [`Self::link_push`]; the default implementation DELEGATES to
     /// `link_push`, so the bytes ride the SAME UART fabric — a MODELLED
     /// DMA SHAPE, not a silicon DMA engine. A per-MCU shim wanting a real
-    /// DMA-engine TX overrides this (deferred to TASK-0048.12); every
-    /// shim today (StubShim, MultiMcuShim, Usart1Shim) inherits the
+    /// DMA-engine TX overrides this. NOTE: TASK-0048.12 added a REAL
+    /// DMA1 engine ONLY to the single-MCU save-drain `Usart1Shim::dma_push`,
+    /// NOT to these multi-MCU link-transport hooks (which still delegate).
+    /// Every shim today (StubShim, MultiMcuShim, Usart1Shim) inherits the
     /// delegate, keeping a DMA-mode cell byte-exact-capable over the
     /// existing transport.
     fn dma_link_arm(&mut self, seq: usize, src: *const u8, len: usize) {
@@ -124,8 +126,11 @@ pub trait NucleusShim {
     /// the spin terminates on its first iteration — there is no real
     /// DMA-complete IRQ in the model, which is precisely why the generated
     /// wait spins rather than `wfi`s (a `wfi` would block forever). A real
-    /// DMA-engine shim (TASK-0048.12) overrides this to read the silicon
-    /// transfer-complete bit.
+    /// DMA-engine shim would override this to read the silicon
+    /// transfer-complete (TCIF) bit; this is NOT yet done for the link
+    /// path — TASK-0048.12 wired a real DMA1 engine only into the
+    /// single-MCU `Usart1Shim::dma_push` save-drain, and the same
+    /// TCIF-not-default-true hazard is forward-carried (see TASK-0438.03).
     fn dma_link_poll(&mut self, _seq: usize) -> bool {
         true
     }
