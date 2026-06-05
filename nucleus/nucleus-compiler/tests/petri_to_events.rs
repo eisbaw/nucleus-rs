@@ -1803,6 +1803,7 @@ fn sidecar_alone_reconstructs_scalar_arg_cast_no_algoir_walk() {
                 dims: vec![],
             }),
             purity: Purity::Pure,
+            combine: None,
         },
     );
     let sidecar = NameSidecar {

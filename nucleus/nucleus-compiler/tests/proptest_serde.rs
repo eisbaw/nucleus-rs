@@ -123,7 +123,7 @@ use std::ops::Range;
 use proptest::prelude::*;
 
 use nucleus_compiler::algo::{
-    IndexedRef, IrBinOp, IrCmpOp, IrExpr, Purity, ResolvedType, ScalarType,
+    CombineOp, IndexedRef, IrBinOp, IrCmpOp, IrExpr, Purity, ResolvedType, ScalarType,
 };
 use nucleus_compiler::event::{
     ArgBinding, BlockTag, CheckFrame, DataId, DataSlice, Event, FireBinding, IterTile, IterVar,
@@ -188,6 +188,7 @@ fn sidecar_field_completeness_guard(s: &NameSidecar) {
         grid_shape_for_outer_iv: _,
         cumulative_data: _,
         data_decl_order: _,
+        combine_for_data: _,
         // INTENTIONALLY no `..`. A new serde-bearing field must
         // break-to-update the round-trip generator.
     } = s;
@@ -561,16 +562,29 @@ fn purity() -> impl Strategy<Value = Purity> {
     prop_oneof![Just(Purity::Pure), Just(Purity::Effectful)]
 }
 
+/// `CombineOp` = the zero-identity accumulator combine ops
+/// (TASK-0343.01.01 added `combine: Option<CombineOp>` to `KernelSig`'s
+/// serde surface). All three variants must round-trip.
+fn combine_op() -> impl Strategy<Value = CombineOp> {
+    prop_oneof![
+        Just(CombineOp::Sum),
+        Just(CombineOp::Or),
+        Just(CombineOp::Xor)
+    ]
+}
+
 fn kernel_sig() -> impl Strategy<Value = KernelSig> {
     (
         prop::collection::vec(resolved_type(), 0..=3),
         prop::option::of(resolved_type()),
         purity(),
+        prop::option::of(combine_op()),
     )
-        .prop_map(|(params, ret, purity)| KernelSig {
+        .prop_map(|(params, ret, purity, combine)| KernelSig {
             params,
             ret,
             purity,
+            combine,
         })
 }
 
@@ -649,9 +663,12 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
     // the round-trip is structural so a handful of ids per case suffices.
     let data_decl_order =
         prop::collection::vec(any::<u64>().prop_map(DataId), 0..=4);
+    // combine_for_data: BTreeMap<DataId, CombineOp> (TASK-0343.01.01).
+    let combine_for_data =
+        prop::collection::btree_map(any::<u64>().prop_map(DataId), combine_op(), 0..=3);
 
     // `prop_oneof!`/tuple strategies cap at 12-ish elements; bundle the last
-    // two scalar-ordering fields into a nested tuple to stay under the arity
+    // scalar-ordering fields into a nested tuple to stay under the arity
     // ceiling, then re-spread.
     (
         data_types,
@@ -664,7 +681,12 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-        (cumulative_data, data_decl_order, transfer_transport_for_seq),
+        (
+            cumulative_data,
+            data_decl_order,
+            transfer_transport_for_seq,
+            combine_for_data,
+        ),
     )
         .prop_map(
             |(
@@ -678,7 +700,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 reuse_widths,
                 partition_pairs,
                 grid_shape_for_outer_iv,
-                (cumulative_data, data_decl_order, transfer_transport_for_seq),
+                (cumulative_data, data_decl_order, transfer_transport_for_seq, combine_for_data),
             )| NameSidecar {
                 data_types,
                 consts,
@@ -693,6 +715,7 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 grid_shape_for_outer_iv,
                 cumulative_data,
                 data_decl_order,
+                combine_for_data,
             },
         )
 }

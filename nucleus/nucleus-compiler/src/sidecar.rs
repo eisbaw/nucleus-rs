@@ -90,7 +90,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::algo::{IrExpr, Purity, ResolvedType, ScalarType};
+use crate::algo::{CombineOp, IrExpr, Purity, ResolvedType, ScalarType};
 use crate::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use crate::sched::TransportMode;
 use crate::link::LinkedIR;
@@ -428,6 +428,41 @@ pub struct NameSidecar {
     /// byte layout simply never read it).
     #[cfg_attr(feature = "serde", serde(default))]
     pub data_decl_order: Vec<DataId>,
+
+    /// Per-accumulator-`DataId` overlapping-write combine identity
+    /// (TASK-0343.01.01). For each data symbol that is an
+    /// algorithm-level accumulator (the LHS-appears-in-RHS `acc[..] <--
+    /// k(acc[..], ...)` shape), this maps its [`DataId`] to the
+    /// [`CombineOp`] declared on the OWNING kernel `k` (the callee on
+    /// the RHS `Call` of its `<--` Dataflow).
+    ///
+    /// Consumed by
+    /// `backend_common::multi_worker_walker::wait::render_accumulate_assign`
+    /// to choose the host element-wise combine emit for the
+    /// overlapping-write fan-in: `sum` → `name[_k].wrapping_add(_tmp[_k])`,
+    /// `or` → `name[_k] | _tmp[_k]`, `xor` → `name[_k] ^ _tmp[_k]`.
+    /// Pre-TASK-0343.01.01 that combine was hardcoded to `wrapping_add`.
+    ///
+    /// An accumulator data symbol ABSENT from this map declared NO
+    /// combine identity on its owning kernel; the driver gate
+    /// (`check_accumulator_consistency`) and the render path both fail
+    /// LOUD on that case (no silent assume-sum fallback — TASK-0343.01.01
+    /// AC#4 soundness reject).
+    ///
+    /// Built at sidecar time by resolving each accumulator data's
+    /// Dataflow-RHS callee kernel's `combine` attribute. Empty for every
+    /// algorithm whose accumulator kernels declare no `combine`
+    /// (i.e. for a single-worker schedule there is no fan-in, so the
+    /// map being empty is inert — the accumulate fan-in only arises
+    /// under a distributed whole-array-replicate partition).
+    ///
+    /// serde-default so an older wire payload (no field) deserialises as
+    /// empty (pre-TASK-0343.01.01: no combine declared anywhere).
+    ///
+    /// Determinism: `BTreeMap` keyed by `DataId`; iteration in numeric
+    /// order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub combine_for_data: BTreeMap<DataId, CombineOp>,
 }
 
 /// A resolved kernel signature as the codegen contract needs it: the
@@ -473,6 +508,17 @@ pub struct KernelSig {
     /// region-read into the indexed slice rather than the pure
     /// `kernels::<callee>(..)` stub call (TASK-0049.10.01).
     pub purity: Purity,
+    /// Overlapping-write accumulator combine identity (TASK-0343.01.01),
+    /// mirrored verbatim from [`crate::algo::ResolvedKernel::combine`].
+    /// `Some(_)` iff the kernel decl declared `combine = <op>`; `None`
+    /// otherwise. This is the per-kernel fact; the consumer-facing,
+    /// per-accumulator-data resolution lives in
+    /// [`NameSidecar::combine_for_data`].
+    ///
+    /// serde-default so an older wire payload (no field) deserialises as
+    /// `None` (pre-TASK-0343.01.01: no kernel declares a combine).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub combine: Option<CombineOp>,
 }
 
 /// A resolved const as the codegen contract needs it: its evaluated
@@ -698,6 +744,10 @@ pub fn build_sidecar(
                 params: rk.params.clone(),
                 ret: rk.ret.clone(),
                 purity: rk.purity,
+                // TASK-0343.01.01: mirror the accumulator combine
+                // identity so the codegen contract can resolve it
+                // per-data (see combine_for_data below).
+                combine: rk.combine,
             },
         );
     }
@@ -816,6 +866,24 @@ pub fn build_sidecar(
         })
         .collect();
 
+    // (l) Per-accumulator-DataId combine identity (TASK-0343.01.01).
+    //     For each algorithm-level accumulator (`acc[..] <-- k(acc[..],
+    //     ...)` LHS-appears-in-RHS), resolve the OWNING kernel `k` (the
+    //     top-level RHS `Call` callee) and copy its declared `combine`
+    //     attribute keyed by the accumulator's DataId. A kernel that
+    //     does NOT declare `combine` produces NO entry — the gate +
+    //     render path treat an absent entry as a fail-loud soundness
+    //     reject (no silent assume-sum). Resolve names -> DataId via
+    //     acfg.name_data; an accumulator whose name is missing there is
+    //     a desync (same fail-loud rationale as block (a)/(d)) but is
+    //     filtered (filter_map) rather than panicked because the
+    //     accumulator-shape walk runs over source stmts that may name a
+    //     symbol the partition pass elided — the consuming gate
+    //     re-derives the accumulator set from the SAME walk and reports
+    //     the missing-combine reject there with full context.
+    let combine_for_data: BTreeMap<DataId, CombineOp> =
+        collect_combine_for_accumulators(&linked.algo, &acfg.name_data);
+
     Ok(NameSidecar {
         data_types,
         consts,
@@ -830,7 +898,72 @@ pub fn build_sidecar(
         grid_shape_for_outer_iv,
         cumulative_data,
         data_decl_order,
+        combine_for_data,
     })
+}
+
+/// Build the per-accumulator-`DataId` → [`CombineOp`] map
+/// (TASK-0343.01.01). Walks `algo.stmts` (descending into `For`
+/// bodies) for the overlapping-write accumulator shape `acc[..] <--
+/// k(acc[..], ...)` (LHS name appears among the RHS data references)
+/// and, when the RHS is a top-level kernel [`IrExpr::Call`] whose
+/// callee kernel declares a `combine = <op>` attribute, records
+/// `name_data[acc] -> op`.
+///
+/// An accumulator whose owning kernel declares NO `combine` produces no
+/// entry; the driver gate (`check_accumulator_consistency`) and the
+/// render path treat an absent entry as a fail-loud soundness reject
+/// (TASK-0343.01.01 AC#4) — there is no silent assume-sum fallback.
+///
+/// The RHS must be a DIRECT `Call` (the histogram/parity shape). A
+/// non-`Call` RHS accumulator (e.g. a bare `acc[i] <-- acc[i]`) has no
+/// owning kernel and so contributes no entry — and is likewise a
+/// fail-loud reject downstream if it ever reaches the fan-in. Mirrors
+/// `collect_accumulator_names` in
+/// `backend_common::multi_worker_walker::collect` (same LHS-in-RHS
+/// predicate, same canonical [`collect_dataref_names`] read-set walker)
+/// so the two stay aligned by construction.
+fn collect_combine_for_accumulators(
+    algo: &crate::algo::AlgoIR,
+    name_data: &BTreeMap<String, DataId>,
+) -> BTreeMap<DataId, CombineOp> {
+    use crate::algo::{collect_dataref_names, IrExpr, IrStmt};
+    use std::collections::BTreeSet;
+
+    fn walk(
+        stmts: &[crate::algo::IrStmt],
+        kernels: &BTreeMap<String, crate::algo::ResolvedKernel>,
+        name_data: &BTreeMap<String, DataId>,
+        out: &mut BTreeMap<DataId, CombineOp>,
+    ) {
+        for s in stmts {
+            match s {
+                IrStmt::Dataflow { lhs, rhs } => {
+                    let mut rhs_refs: BTreeSet<String> = BTreeSet::new();
+                    collect_dataref_names(rhs, &mut rhs_refs);
+                    if !rhs_refs.contains(&lhs.name) {
+                        continue; // not an accumulator (no self-read)
+                    }
+                    // Owning kernel = the top-level RHS Call callee.
+                    if let IrExpr::Call { callee, .. } = rhs {
+                        if let Some(rk) = kernels.get(callee) {
+                            if let (Some(op), Some(did)) =
+                                (rk.combine, name_data.get(&lhs.name).copied())
+                            {
+                                out.insert(did, op);
+                            }
+                        }
+                    }
+                }
+                IrStmt::For { body, .. } => walk(body, kernels, name_data, out),
+                IrStmt::Effect { .. } => {}
+            }
+        }
+    }
+
+    let mut out = BTreeMap::new();
+    walk(&algo.stmts, &algo.kernels, name_data, &mut out);
+    out
 }
 
 /// Walk `stmts` (descending into `IrStmt::For` bodies, carrying the
