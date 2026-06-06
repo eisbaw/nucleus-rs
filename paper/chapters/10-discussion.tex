@@ -241,11 +241,29 @@ gaps are recorded rather than hidden, but ``no counterexample in twenty-seven
 examples'' is empirical evidence, not a proof, and should be read as such. The
 natural way to push the claim from curated witnesses toward the boundary is
 generative: a property-based harness that synthesises affine, single-assignment
-programs and checks cross-backend byte-identity over them would attack the
-separation far harder than a fixed corpus can. That such a harness is not yet built
---- the differential rig runs a curated corpus, not generated programs --- is the
-most pointed gap in the present validation, and a more direct piece of future work
-for a correctness claim than the performance study of \cref{sec:fw-quant}.
+programs and checks cross-backend byte-identity over them attacks the separation
+harder than a fixed corpus can. Such a harness now exists for a structured subclass
+(\cref{sec:val-differential}): it synthesises one-dimensional element-wise integer
+pipelines, decomposed across a real worker boundary, and checks that all seven
+tier-1 backends and an in-process reference agree byte-for-byte; across the seeds run
+to date it has produced no counterexample. This narrows the gap but does not close
+it, and two things must be said plainly about how far. First, the synthesised
+subclass is much smaller than the grammar the system admits --- the generator emits
+no multi-dimensional, reduction, data-dependent, multi-worker-partitioned, or
+floating-point programs --- so the boundary of the empirical claim has moved outward,
+not vanished, and every shape the generator cannot yet reach remains covered only by
+the curated corpus. Second, the result is still empirical and still intent-bounded:
+``no counterexample over the sampled programs'' is stronger than ``no counterexample
+in twenty-seven examples'' but is not a proof, and the generator's in-process
+reference shares the arithmetic intent of the kernels it emits --- indeed it is a
+second transcription of the same operator definition, so \emph{less} independent than
+the separately-authored curated oracle, not more. At the level of author intent the
+bound is the same as the curated case: it guards against a compiler fault that
+mistranslates a kernel, not against an author-level error in the intent itself.
+Extending the
+generator to the multi-dimensional, reduction, and bounded data-dependent shapes is
+the most direct remaining piece of validation work for the correctness claim, a more
+direct one than the performance study of \cref{sec:fw-quant}.
 
 \paragraph{Agreement could be common-mode rather than genuine.} The differential
 rig infers mutual byte-identity transitively, through a shared immutable reference

@@ -97,6 +97,27 @@ reference is the shared fixed point through which mutual agreement is establishe
 The harness reports a one-line-per-cell table and a totals line; a non-zero count
 of required-cell failures fails the build.
 
+\paragraph{A generative arm over a synthesised subclass.} The curated matrix is
+complemented by a generative differential harness that relies on no hand-written
+example at all. From a seed it synthesises random programs in a structured subclass
+of the affine, single-assignment, integer class --- one-dimensional element-wise
+integer pipelines of one to four pure scalar stages, over randomly-sized arrays,
+decomposed across a real host/worker boundary --- and subjects each to the same test
+the curated rig applies: compile across all seven tier-1 backends, run against
+generated input, and require mutual byte-identity, here additionally cross-checked
+against an in-process reference computed directly from the synthesised program.
+Generation is deterministic in the seed, so any divergence reproduces exactly and the
+harness prints the offending program and the divergent backend. One failure mode it
+does not catch is a hang: with no per-command timeout, a synthesised program that
+deadlocked would stall this arm rather than be reported, so the generative arm tests
+value-correctness, not liveness --- liveness remains the soundness gate's
+responsibility (\cref{sec:val-gate}). It is run on demand rather than on every build,
+because each synthesised program costs seven independent backend builds. The subclass it samples is narrower than the full grammar --- it
+generates no multi-dimensional, reduction, data-dependent, multi-worker-partitioned,
+or floating-point shapes --- so it sharpens the corpus-coverage limitation of
+\cref{sec:val-suite} rather than removing it; the honest accounting of what it does
+and does not buy is deferred to \cref{sec:disc-threats}.
+
 \section{The soundness gate as a compile-time guarantee}\label{sec:val-gate}
 
 The differential rig is a dynamic check: it runs emitted code and inspects the
