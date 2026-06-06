@@ -15,9 +15,12 @@ diagnostics downstream rather than by the grammar.
 Comments run from \texttt{//} to end of line. Identifiers are the usual
 alphanumeric-with-underscore form. Integer and size literals may carry a unit
 suffix in the schedule's resource and timing positions (for example \texttt{64KB},
-\texttt{10ms}, \texttt{1ns}). A type is a scalar element type --- \texttt{i32},
-\texttt{f32}, \texttt{usize} --- optionally followed by one or more bracketed
-dimension extents, each a constant-folding expression over declared constants.
+\texttt{10ms}, \texttt{1ns}). A type is a scalar element type --- one of the
+fixed-width integer types, the pointer-width \texttt{usize}/\texttt{isize}, the two
+floating-point widths, or \texttt{bool} --- optionally followed by one or more
+bracketed dimension extents, each a constant-folding expression over declared
+constants. The worked examples in this dissertation exercise only \texttt{i32},
+\texttt{f32}, and \texttt{usize}, but the grammar admits the full set below.
 
 \section{The algorithm sublanguage}
 
@@ -35,7 +38,9 @@ purity      ::= "pure" | "effectful"
 type-list   ::= type { "," type }*
 
 type        ::= scalar-type { "[" expr "]" }*
-scalar-type ::= "i32" | "f32" | "usize"
+scalar-type ::= "i8" | "i16" | "i32" | "i64" | "isize"
+              | "u8" | "u16" | "u32" | "u64" | "usize"
+              | "f32" | "f64" | "bool"
 
 stmt        ::= write-stmt | call-stmt | for-stmt
 write-stmt  ::= lvalue "<--" kernel-call ";"
@@ -99,10 +104,11 @@ place-decl   ::= "place" ident "on" placement ";"
 placement    ::= ident | "{" ident { "," ident }* "}"
 
 loop-decl    ::= "loop" ident ":" loop-opt { "," loop-opt }* ";"
-loop-opt     ::= "partition" "=" ( "rows" | "blocks2d" )
+loop-opt     ::= "partition" "=" ( "rows" | "blocks2d" | "workers" )
                | "block" "=" int
                | "reuse"
                | "pipeline" "=" int
+               | "unroll" "=" int
 
 transfer-decl ::= "transfer" ident ":" xfer-opt { "," xfer-opt }* ";"
 xfer-opt      ::= "sync" | "async"
@@ -139,7 +145,12 @@ place-data-decl ::= "place_data" ident "in" ident ";"
 \texttt{place-decl}; an unplaced kernel, or a placement of a kernel the algorithm
 does not define, is a compile error (\cref{sec:lang-schedule}). A \texttt{loop-decl}
 and a \texttt{transfer-decl} refer to a loop variable or data symbol by the name the
-algorithm gave it. A data symbol that crosses workers must carry a
+algorithm gave it. The three partition kinds cut a distributed loop differently:
+\texttt{rows} into contiguous bands of the outer index, \texttt{blocks2d} into a
+two-dimensional grid, and \texttt{workers} into one contiguous band per worker over
+the loop range. The \texttt{unroll} option is accepted by the parser but is
+currently inert --- no transform pass consumes it --- and is retained in the grammar
+for completeness rather than as an exercised capability. A data symbol that crosses workers must carry a
 \texttt{transfer-decl}; omitting it is an error naming the symbol. Each transfer
 option is resolved against the chosen backend's capability declaration, so an
 \texttt{async} or buffered request on a backend that supports neither is rejected

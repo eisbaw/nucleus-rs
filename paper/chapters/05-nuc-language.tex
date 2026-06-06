@@ -145,8 +145,10 @@ unplaced kernel is a compile error.
 
 \paragraph{Loop transformations (time).} A \texttt{loop} directive attaches
 transformations to a loop variable by name. \texttt{block=N} tiles the iteration
-into chunks of $N$; \texttt{partition=rows} (and \texttt{partition=blocks2d})
-chooses how a distributed loop is cut across workers; \texttt{reuse} recycles
+into chunks of $N$; \texttt{partition} chooses how a distributed loop is cut across
+workers --- \texttt{partition=workers} assigns each worker a contiguous band of the
+loop range, \texttt{partition=rows} cuts the outer loop into contiguous row bands,
+and \texttt{partition=blocks2d} cuts a two-dimensional grid; \texttt{reuse} recycles
 loop-carried slices; \texttt{pipeline=D} software-pipelines with depth $D$.
 Combinations that make no sense --- a two-dimensional partition on a
 one-dimensional loop, a pipeline depth that exceeds the tile count --- are

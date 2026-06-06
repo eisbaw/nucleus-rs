@@ -45,7 +45,7 @@ There is a known route past this that does not abandon determinism:
 reproducible reductions that compute a fixed result regardless of summation order,
 for instance by accumulating into a wide fixed-point superaccumulator that absorbs
 each addend exactly, or by pre-rounding addends to a common granularity, so that the
-partial-sum tree becomes order-invariant. Adopting
+partial-sum tree becomes order-invariant~\cite{demmel2013reproducible}. Adopting
 one of these would let a distributed floating-point sum carry the same kind of
 byte-identity guarantee the integer combines already enjoy, extending the
 differential rig's reach into a large and important part of scientific computing.
@@ -76,7 +76,7 @@ would require a communication-synthesis pass that reasons about the index array'
 contents, which are not known at compile time, and so would need either a runtime
 exchange phase or a two-pass inspector/executor scheme --- a first pass that
 inspects the index array to plan the communication and a second that executes that
-plan --- of the kind sparse libraries use. This is well-trodden ground in distributed sparse computing, but importing it
+plan --- of the kind sparse libraries use~\cite{saltz1991runtime}. This is well-trodden ground in distributed sparse computing, but importing it
 here means admitting a runtime-determined communication pattern, which sits in
 tension with the static firing order; the open problem is to do so without losing
 the soundness gate, perhaps by bounding the runtime exchange within a statically

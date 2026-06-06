@@ -154,10 +154,15 @@
   doi       = {10.1109/5.24143},
 }
 
+% NOTE (human-confirm): the degree-granting institution for Petri's 1962
+% dissertation is Technische Hochschule Darmstadt (TH Darmstadt, now TU
+% Darmstadt) -- NOT Bonn. The Bonn imprint below is the report SERIES the
+% thesis was published in (the IIM at Universitaet Bonn), not the awarding
+% school. Confirm the exact historical institution name before submission.
 @phdthesis{petri1962kommunikation,
   author    = {Petri, Carl Adam},
   title     = {Kommunikation mit Automaten},
-  school    = {Universit{\"a}t Bonn},
+  school    = {Technische Hochschule Darmstadt},
   year      = {1962},
   note      = {Schriften des Rheinisch-Westf{\"a}lischen Instituts f{\"u}r
                Instrumentelle Mathematik an der Universit{\"a}t Bonn, Nr.~2},
@@ -210,11 +215,39 @@
 }
 
 % ---------------------------------------------------------------------------
+% Future-work technique families (cited in the future-work chapter):
+% reproducible floating-point reduction; inspector/executor communication.
+% ---------------------------------------------------------------------------
+
+@inproceedings{demmel2013reproducible,
+  author    = {Demmel, James and Nguyen, Hong Diep},
+  title     = {Fast Reproducible Floating-Point Summation},
+  booktitle = {Proceedings of the 21st IEEE Symposium on Computer Arithmetic
+               (ARITH)},
+  pages     = {163--172},
+  year      = {2013},
+  publisher = {IEEE},
+  doi       = {10.1109/ARITH.2013.9},
+}
+
+@article{saltz1991runtime,
+  author    = {Saltz, Joel H. and Mirchandaney, Ravi and Crowley, Kay},
+  title     = {Run-Time Parallelization and Scheduling of Loops},
+  journal   = {IEEE Transactions on Computers},
+  volume    = {40},
+  number    = {5},
+  pages     = {603--612},
+  year      = {1991},
+  publisher = {IEEE},
+  doi       = {10.1109/12.88484},
+}
+
+% ---------------------------------------------------------------------------
 % Implementation language.
 % ---------------------------------------------------------------------------
 
 @inproceedings{matsakis2014rust,
-  author    = {Matsakis, Nicholas D. and Klock, Felix S.},
+  author    = {Matsakis, Nicholas D. and Klock, II, Felix S.},
   title     = {The Rust Language},
   booktitle = {Proceedings of the 2014 ACM SIGAda Annual Conference on High
                Integrity Language Technology (HILT)},
@@ -251,5 +284,5 @@
   pages     = {79--92},
   year      = {2004},
   publisher = {USENIX Association},
-  url       = {https://www.usenix.org/legacy/events/lisa04/tech/dolstra.html},
+  url       = {https://www.usenix.org/conference/lisa-04/nix-safe-and-policy-free-system-software-deployment},
 }
