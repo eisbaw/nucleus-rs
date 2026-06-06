@@ -6,6 +6,7 @@
 %   middle-end/presentation). Backends chosen maximally diverse.
 \begin{figure}[tbp]
   \centering
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
       font=\small,
       src/.style={draw, rounded corners=3pt, fill=gray!14, align=center,
@@ -36,7 +37,7 @@
       {all byte-identical $\Rightarrow$ \textbf{pass}\\[1pt]
        \scriptsize any disagreement $=$ a boundary leak};
     \draw[a, thick] (ref) -- (verdict);
-  \end{tikzpicture}
+  \end{tikzpicture}}
   \caption[The bit-identical differential rig]{The cross-backend differential
     test, the thesis's falsification rig. One algorithm under one schedule is
     compiled to the seven tier-1 backends, chosen to be \emph{maximally diverse}

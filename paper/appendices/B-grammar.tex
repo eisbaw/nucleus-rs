@@ -33,8 +33,11 @@ item        ::= const-decl | data-decl | kernel-decl | stmt
 
 const-decl  ::= "const" ident ":" type "=" expr ";"
 data-decl   ::= "data" ident ":" type ";"
-kernel-decl ::= "kernel" ident ":" "(" [ type-list ] ")" "->" type purity ";"
+kernel-decl ::= "kernel" ident ":" "(" [ type-list ] ")" "->" type
+                purity [ combine-spec ] ";"
 purity      ::= "pure" | "effectful"
+combine-spec::= "combine" "=" combine-op
+combine-op  ::= "sum" | "or" | "xor" | "min" | "max" | "and"
 type-list   ::= type { "," type }*
 
 type        ::= scalar-type { "[" expr "]" }*

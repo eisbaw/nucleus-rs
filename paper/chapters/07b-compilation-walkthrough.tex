@@ -129,10 +129,10 @@ For the stencil this resolution is the first concrete sign of the decomposition.
 binds to the set $\{\texttt{w0},\texttt{w1},\texttt{w2},\texttt{w3}\}$.
 \texttt{img\_in} is therefore produced on the host and consumed on all four compute
 workers; \texttt{img\_out} is produced on the compute workers and consumed on the
-host. Those producer/consumer facts are precisely the data movements the later
+host. Those producer--consumer facts are precisely the data movements the later
 transfer pass must synthesise, but linking only records them; it inserts nothing
 yet. Linking also enforces completeness: every kernel must be placed, and every
-cross-worker producer/consumer pair must be reconcilable, or linking fails with a
+cross-worker producer--consumer pair must be reconcilable, or linking fails with a
 diagnostic.
 
 \section{The ACFG and its transforms}\label{sec:wt-acfg}
@@ -185,7 +185,10 @@ $a, a{+}1, \dots, b{-}1$.
         discharged by the reuse pass, which recognises that as \texttt{x} advances
         by one the three-wide window of \texttt{img\_in} reads shifts by one, so two
         of every three reads can be carried over. It annotates the loop with a
-        three-slot circular delay line per input row. This is the optimisation
+        three-slot circular delay line per input row --- a ring buffer of three
+        values that shifts by one on each \texttt{x} step, so the two values from the
+        previous step are reused and only one new \texttt{img\_in} read is needed per
+        column. This is the optimisation
         earlier iterations of the system could not express; here it falls out of a
         one-word directive and the access pattern.
 \end{itemize}
@@ -209,7 +212,7 @@ given a stable \emph{sync tag}, a compile-time identifier shared by every
 participant of that barrier (\cref{sec:arch-petri}), so the projection can match the
 same barrier across workers without a global walk.
 
-The transfer pass then consumes the producer/consumer facts from linking and the
+The transfer pass then consumes the producer--consumer facts from linking and the
 halo width from inference, and synthesises matched send/receive pairs. For
 \texttt{img\_in} it emits, for each compute worker, a transfer from the host
 carrying that worker's band \emph{plus its halo rows}: worker \texttt{w0}, which
@@ -287,7 +290,7 @@ keeping generated code compact regardless of trip count.
 
 \input{figures/wt-events}
 
-These event lists are the output of the middle end and the input to every backend.
+These event lists are the output of the middle-end and the input to every backend.
 The same host-and-four-workers lists just described are what the next sections lower
 to shared-memory threads, to MPI ranks, and to bare-metal microcontrollers --- the
 same events, three very different renderings.
@@ -318,8 +321,8 @@ course, differ). The two generated programs diverge only where a worker sends or
 receives a band or meets a barrier. The sections below show each of the three
 renderings of the same event lists from \cref{sec:wt-events} --- two of them, the
 hosted backends, running that exact distributed schedule, the third running a
-synchronous variant its transport requires --- and the last explains why all three
-agree to the byte.
+synchronous variant, as its transport requires --- and the last explains why all
+three agree to the byte.
 
 \section{Shared memory: the pthreads rendering}\label{sec:wt-pthreads}
 
@@ -351,10 +354,10 @@ single program that every rank runs, branching on its rank to execute that worke
 event list (\cref{sec:be-tier2,fig:mpi-spmd}). Where the shared-memory backend
 spawned four threads from a host \texttt{main}, the MPI backend emits one \texttt{match
 world.rank()} --- a branch on the process's rank within the MPI communicator --- with
-five arms: rank $0$ is the host, ranks $1$ through $4$ are the compute workers, and
-the program is launched as five processes with
-\texttt{mpiexec~-n~5}. The same event list that drove the host thread now drives
-rank $0$; the same list that drove the first compute thread now drives rank $1$.
+five arms. Rank $0$ is the host; ranks $1$ through $4$ are the compute workers; the
+program is launched as five processes with \texttt{mpiexec~-n~5}. The same event
+list that drove the host thread now drives rank $0$; the same list that drove the
+first compute thread now drives rank $1$.
 
 The transport primitives are entirely different from the ring buffers, yet they
 realise the same event semantics. A transfer channel becomes a small wrapper over an
@@ -373,7 +376,7 @@ tag to the transfer's compile-time identity --- every distinct transfer edge in 
 event list gets a unique tag --- so two concurrent transfers between the same pair of
 ranks carry different tags and cannot be matched by the wrong receive. The rank assignment, the message tags, and the receive slices are all
 computed by the same projection that produced the event lists; the backend only
-chooses how to spell a push and a wait.
+chooses how to render a push and a wait.
 
 And the inside of each rank is the shared compute body unchanged. Rank $1$ receives
 rows $0..6$ into the same array offset (\texttt{img\_in[0..96]}: six rows of sixteen
@@ -469,8 +472,9 @@ one worker to another --- is value-preserving: a ring, an \texttt{MPI\_Ibsend}, 
 or recomputing it, and the soundness gate has already established that none overflows
 or deadlocks for this program. For this stencil, whose workers write disjoint output
 bands with no cross-worker reduction, identical compute over a value-preserving
-transport yields identical output --- where workers instead combine into a shared
-accumulator, byte-identity additionally requires the combine to be order-independent,
-which the integer-arithmetic restriction supplies (\cref{sec:res-bitidentity}). The
+transport yields identical output. Where workers instead combine into a shared
+accumulator, byte-identity additionally requires the combine to be
+order-independent; the integer-arithmetic restriction supplies that guarantee
+(\cref{sec:res-bitidentity}). The
 cross-backend differential test of \cref{ch:validation} is the
 empirical check that this reasoning holds, and the walkthrough is why it holds.

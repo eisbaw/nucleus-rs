@@ -162,10 +162,11 @@ identifies one push/wait pair on a data channel, whereas a sync tag is a single
 identifier shared by every participant of one barrier. The contract also reserves \texttt{Alloc} and \texttt{Free} events
 for explicit memory-region placement; in the current system the backends manage
 local storage themselves and these two are not yet emitted, an honest gap noted
-here and revisited in \cref{ch:discussion}. Iteration tiles are described
-uniformly as rectangular slices in iteration space, and memory regions are opaque
-tags the backend interprets, so the same contract serves a shared-memory thread
-and a message-passing rank alike.
+here and revisited in \cref{ch:discussion}.
+
+Iteration tiles are described uniformly as rectangular slices in iteration space,
+and memory regions are opaque tags the backend interprets, so the same contract
+serves a shared-memory thread and a message-passing rank alike.
 
 \input{figures/petri}
 

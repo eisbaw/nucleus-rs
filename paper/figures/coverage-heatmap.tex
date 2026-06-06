@@ -31,18 +31,21 @@
       \foreach \cell [count=\ci from 1] in \row
         \node[cell, \cell] at (\ci, -\ri) {};
     }
-    % legend
-    \node[cell, P, anchor=west] (lp) at (9.0, -2) {};
-    \node[anchor=west, font=\scriptsize] at (9.6,-2) {all required cells pass};
-    \node[cell, M, anchor=west] (lm) at (9.0, -4) {};
-    \node[anchor=west, font=\scriptsize, align=left, text width=34mm] at (9.6,-4)
-      {mixed: some schedule cells skipped (capability mismatch, or an
-       embedded-tier example validated by the Renode gate instead)};
-    \node[cell, s, anchor=west] (ls) at (9.0, -7) {};
-    \node[anchor=west, font=\scriptsize, align=left, text width=34mm] at (9.6,-7)
-      {all skipped (carried by a capable sibling, or honestly unsupported)};
-    \node[anchor=west, font=\scriptsize\itshape, align=left, text width=34mm]
-      at (9.0,-11) {rows are the 26 examples in the tier-1 matrix
+    % legend --- anchored north-west so multi-line entries grow downward from a
+    % fixed top edge and cannot overlap their neighbours.
+    \node[cell, P, anchor=north west] at (9.0, -1.5) {};
+    \node[anchor=north west, font=\scriptsize, align=left, text width=37mm]
+      at (9.7,-1.4) {all required cells pass};
+    \node[cell, M, anchor=north west] at (9.0, -3.1) {};
+    \node[anchor=north west, font=\scriptsize, align=left, text width=37mm]
+      at (9.7,-3.0) {mixed: some schedule cells skipped (capability mismatch, or
+       an embedded-tier example validated by the Renode gate instead)};
+    \node[cell, s, anchor=north west] at (9.0, -7.4) {};
+    \node[anchor=north west, font=\scriptsize, align=left, text width=37mm]
+      at (9.7,-7.3) {all skipped (carried by a capable sibling, or honestly
+       unsupported)};
+    \node[anchor=north west, font=\scriptsize\itshape, align=left, text width=37mm]
+      at (9.0,-10.2) {rows are the 26 examples in the tier-1 matrix
       (22-dma-pio-demo is embedded-only); columns are the 7 tier-1 backends.};
   \end{tikzpicture}
   \caption[Tier-1 coverage heatmap]{The tier-1 differential matrix as an

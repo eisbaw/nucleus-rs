@@ -12,7 +12,7 @@ schedule, and target fail loudly if it leaks anywhere. The chapter presents that
 rig (\cref{sec:val-suite,sec:val-differential}), the compile-time soundness gate
 as a second, orthogonal guarantee (\cref{sec:val-gate}), the negative tests that
 prove every check actually bites (\cref{sec:val-negative}), the
-compile-mandatory/run-best-effort discipline for the cluster and embedded tiers
+compile-mandatory, run-best-effort discipline for the cluster and embedded tiers
 (\cref{sec:val-tiers}), and the reproducibility substrate the whole apparatus
 rests on (\cref{sec:val-repro}). \Cref{ch:results} reports what the rig has so far
 established and, as importantly, what it has not.
@@ -160,7 +160,8 @@ The static soundness gate is exercised adversarially by a separate, complementar
 means: rather than an end-to-end injection, its rejection capability is established
 by unit tests that hand the gate deliberately unsound nets --- an over-capacity net
 that must be rejected as a boundedness error, a stalling net that must be rejected
-as a deadlock, and a free-choice net that must be rejected as a conflict --- and
+as a deadlock, and a net with two consumer transitions competing for one place's
+token --- a free choice --- that must be rejected as a conflict, and
 assert that each is refused with the correct diagnosis. The gate's acceptance of
 sound nets, in turn, is witnessed by every passing cell in the matrix. So the
 positive and negative directions are both covered for the gate, just not by the

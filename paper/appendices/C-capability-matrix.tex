@@ -16,9 +16,10 @@ offers; \cref{tab:cap-substrate} says what a worker physically becomes on each
 backend and over what substrate workers communicate. The two together are the full
 declaration each backend commits as reviewable text.
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
-  \small
+  \footnotesize
+  \setlength{\tabcolsep}{5pt}
   \begin{tabular}{@{}llll@{}}
     \toprule
     Backend & Tier & Worker maps to & Substrate \\
@@ -64,7 +65,7 @@ raise. A schedule that raises none of them --- a single-worker schedule, or a
 multi-worker schedule using only synchronous, unbuffered, blocking transfers ---
 compiles on every backend.
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}lcccc@{}}

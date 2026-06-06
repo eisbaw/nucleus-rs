@@ -9,6 +9,7 @@
 %   deterministic walk + sorted worker map => byte-identical lists across builds.
 \begin{figure}[tbp]
   \centering
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
       font=\small,
       node/.style={draw, rounded corners=2pt, inner sep=3pt, fill=blue!8,
@@ -61,7 +62,7 @@
     \node[font=\scriptsize\itshape, align=center, text width=60mm] at (9.8,-3.1)
       {deterministic walk $+$ sorted worker map $\Rightarrow$
        byte-identical lists across builds};
-  \end{tikzpicture}
+  \end{tikzpicture}}
   \caption[Per-worker projection]{Per-worker projection turns the elaborated
     ACFG into one totally ordered event list per worker. The walk is depth-first
     in source order: a sequence visits its children left to right; a repeat wraps

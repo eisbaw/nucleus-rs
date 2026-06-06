@@ -9,6 +9,7 @@
 %   with Alloc/Free RESERVED but not yet emitted. Generic; stencil = fig:wt-net.
 \begin{figure}[tbp]
   \centering
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
       font=\small,
       place/.style={draw, circle, minimum size=9mm, inner sep=1pt, fill=green!10,
@@ -53,7 +54,7 @@
        $\bullet$ \texttt{Alloc} / \texttt{Free}\ \ \emph{reserved, not yet emitted}};
     \draw[a, thick] (5.0,0.35) to[out=40,in=180]
       node[below=0pt,font=\scriptsize,pos=0.45]{project} (6.55,0.55);
-  \end{tikzpicture}
+  \end{tikzpicture}}
   \caption[The Petri-net IR and the event contract]{The Petri-net IR and the
     event contract the backend actually consumes. In the net, \emph{places} hold
     state --- a data slot, a communication channel (whose capacity is the declared

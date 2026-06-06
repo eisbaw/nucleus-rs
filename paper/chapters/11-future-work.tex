@@ -127,7 +127,8 @@ The three tiers --- commodity CPU, message-passing cluster, embedded
 microcontroller --- cover a wide span but stop short of massively parallel
 accelerators. A GPU or neural-processing-unit tier is a plausible fourth, and the
 event contract is in principle agnostic enough to drive one. But the fit is not
-free: a GPU's execution model is bulk-synchronous over thousands of lanes with a
+free: a GPU's execution model is bulk-synchronous (alternating compute phases with global
+synchronisations across many parallel threads) over thousands of lanes, with a
 memory hierarchy the current contract does not model, and the \texttt{Alloc} and
 \texttt{Free} events (\cref{sec:arch-petri}), currently reserved in the event
 contract but emitted by no backend, would have to become load-bearing to place data

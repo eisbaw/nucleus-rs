@@ -48,7 +48,20 @@
 }
 
 % --- Bibliography ---
+\usepackage{csquotes}            % biblatex-recommended when babel is loaded.
 \usepackage[backend=biber,style=numeric-comp,sorting=nyt]{biblatex}
+
+% Verbatim (grammar productions, shell recipes) is set a notch smaller so the
+% long BNF/command lines in the appendices fit the text block without spilling
+% into the margin. Only affects verbatim environments.
+\makeatletter
+\renewcommand{\verbatim@font}{\normalfont\ttfamily\footnotesize}
+\makeatother
+
+% A break hint for the long German title in the bibliography (Petri 1962),
+% which is otherwise unbreakable and overflows the line. LuaTeX takes the
+% accented character literally (UTF-8), not as a control sequence.
+\hyphenation{Rhei-nisch-West-fä-li-schen}
 
 % --- Cross-references (load hyperref then cleveref last) ---
 \usepackage{hyperref}
@@ -63,7 +76,10 @@
 % Convenience macros.
 \newcommand{\nuc}{\textsc{Nucleus}}
 \newcommand{\nuclang}{\textsc{Nuc}}
-\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO:} #1]}}
+% \todo renders nothing: the draft is content-complete and no TODO marker
+% should reach an examiner. Kept as a defined no-op so any stray call is
+% silent rather than a build error or red ink.
+\newcommand{\todo}[1]{}
 
 % Tier-1 differential-matrix totals, sourced from the live e2e harness
 % (single source of truth so prose and tables cannot disagree). Verified

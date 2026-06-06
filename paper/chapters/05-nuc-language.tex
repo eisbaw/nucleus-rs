@@ -74,7 +74,7 @@ declaration is a \emph{contract} --- a shape-typed signature and a purity
 annotation --- whose body is an ordinary Rust function in a sibling file. The
 compiler generates the code that calls the kernel; it never substitutes text into
 the body. The blur kernel above is a pure function of nine integers returning
-their sum divided by nine; the I/O kernels read and write the image buffer.
+their sum divided by nine; the IO kernels read and write the image buffer.
 Aggregate parameters lower to a row-major \texttt{Vec<T>} on the Rust side, and a
 contract-checking pass verifies that each Rust function matches the shape and
 purity its declaration promises. Treating kernel bodies as opaque Rust buys the
@@ -86,6 +86,21 @@ or \texttt{effectful}. A pure kernel has no side effects and may be reordered,
 deduplicated, or eliminated; an effectful kernel has its ordering preserved
 within its block and is never duplicated. There is no third, unannotated case ---
 the annotation is required --- which closes a class of silent reordering bugs.
+
+\paragraph{Combine operators for distributed reduction.} A kernel that produces a
+partial result destined to be folded into a shared accumulator may carry a
+\emph{combine} annotation on its declaration --- written \texttt{combine=sum} (and
+likewise \texttt{or}, \texttt{xor}, \texttt{min}, \texttt{max}, \texttt{and}) after
+the purity keyword. The annotation names the associative, commutative operator by
+which worker-local partials are recombined into a global result, together with its
+algebraic identity element, so that when a schedule distributes the reduction the
+compiler knows how to initialise each accumulator and merge the partials
+order-independently. The annotation lives in the algorithm because it is a property
+of the arithmetic --- whether a result \emph{can} be combined associatively is not
+a scheduling choice --- while the decision to actually distribute the reduction
+remains in the schedule. This is the mechanism the cross-backend determinism result
+of \cref{sec:res-bitidentity} rests on, and the reason a floating-point
+\texttt{sum} combine is rejected: IEEE-754 addition is not associative.
 
 \paragraph{Affine, const-bounded iteration.} Loops have plain bounds and an
 iteration variable, and the bounds fold to compile-time constants. The iteration
@@ -145,11 +160,11 @@ unplaced kernel is a compile error.
 
 \paragraph{Loop transformations (time).} A \texttt{loop} directive attaches
 transformations to a loop variable by name. \texttt{block=N} tiles the iteration
-into chunks of $N$; \texttt{partition} chooses how a distributed loop is cut across
-workers --- \texttt{partition=workers} assigns each worker a contiguous band of the
-loop range, \texttt{partition=rows} cuts the outer loop into contiguous row bands,
-and \texttt{partition=blocks2d} cuts a two-dimensional grid; \texttt{reuse} recycles
-loop-carried slices; \texttt{pipeline=D} software-pipelines with depth $D$.
+into chunks of $N$; a \texttt{partition} directive chooses how a distributed loop is
+cut across workers --- into one contiguous band per worker (\texttt{workers}),
+contiguous row bands (\texttt{rows}), or a two-dimensional grid (\texttt{blocks2d});
+\texttt{reuse} recycles loop-carried slices; \texttt{pipeline=D} software-pipelines
+with depth $D$.
 Combinations that make no sense --- a two-dimensional partition on a
 one-dimensional loop, a pipeline depth that exceeds the tile count --- are
 rejected at compile time. Notably there is no \texttt{vectorize} directive: SIMD
@@ -221,7 +236,12 @@ algorithm sublanguage and no data-dependent loop termination. A loop that runs
 ``until converged'' cannot be written, because its trip count is not a
 compile-time constant and the firing order would no longer be statically
 determined. Iterative solvers with convergence-driven termination are therefore
-out of scope.
+out of scope. The grammar does admit one bounded early-exit surface --- an optional
+\texttt{until} clause that pairs a runtime halt predicate with a mandatory
+compile-time iteration cap, so the worst-case trip count stays statically known
+(\cref{app:grammar}) --- but it is reserved for a future bounded data-dependent
+iteration extension (\cref{sec:fw-affine}); on the current multi-worker path it is
+unsupported, and a cell using it is recorded as a skip rather than mis-compiled.
 
 \paragraph{Limited data-dependent indexing.} A data-dependent \emph{read} (a
 gather, where an array is indexed by another array's contents) and a

@@ -33,8 +33,8 @@ and practical, and \nuc{} adopts their discipline wholesale. The difference is
 one of \emph{what the schedule controls}. In all of them the schedule governs how
 \emph{computation} is laid out on a target whose communication and IO are fixed
 --- by a shared-memory backend, a tensor runtime, or a generated kernel that
-runs in one address space. None makes the \emph{decomposition across distributed
-workers} and the \emph{IO semantics} of the transfers between them
+runs in one address space. None of them makes the \emph{decomposition across
+distributed workers} and the \emph{IO semantics} of the transfers between them
 schedule-level directives. Tiramisu represents communication in its IR, but as a
 layer the compiler manages for its targets, not as a palette of
 synchronous/asynchronous, buffered/unbuffered, event/poll, shared-memory/socket/DMA
@@ -106,7 +106,10 @@ The static-dataflow scheduling tradition is the other relevant line. Synchronous
 dataflow~\cite{lee1987sdf} schedules graphs in which each actor produces and
 consumes a fixed number of data tokens per firing, so the whole schedule reduces
 to a static sequence of firings computed once at compile time --- a far simpler
-analysis than a general Petri net. Kahn process
+analysis than a general Petri net; the StreamIt language and
+compiler~\cite{thies2002streamit} operationalised this synchronous-dataflow
+discipline into a streaming language whose steady-state schedule the compiler
+computes once. Kahn process
 networks~\cite{kahn1974semantics} give a deterministic semantics to networks of
 sequential processes communicating over \emph{unbounded} channels. \nuc{}'s
 restricted nets sit in the same statically schedulable, deterministic region of
@@ -119,10 +122,53 @@ unified Petri-net IR as the single point where transfer synthesis,
 synchronisation, and the soundness gate all meet, and from which every backend's
 per-worker code is projected.
 
+\section{Static-schedule streaming and multi-backend array languages}\label{sec:pa-streaming}
+
+Two further lines sit especially close to this work's design point and deserve an
+explicit distinction, lest the contribution be mistaken for one of them. The first
+is the static-schedule streaming tradition that StreamIt~\cite{thies2002streamit}
+exemplifies: a stream graph of actors with fixed per-firing token rates, whose
+steady-state schedule the compiler computes once, at compile time --- exactly the
+property, a statically determined firing order, that this work's central trade also
+buys. The distinction lies in what is scheduled, and across what. StreamIt fixes a
+stream-graph structure over fixed token rates and targets primarily tiled and
+cluster architectures for throughput; \nuc{} instead separates an affine array
+\emph{algorithm} from a \emph{schedule} in which decomposition and IO semantics ---
+synchronous or asynchronous, buffered or unbuffered, event or poll, over shared
+memory, sockets, or DMA --- are user-selectable directives, retargeted across
+shared-memory, message-passing, and bare-metal embedded backends and gated by a
+Petri-net soundness check the streaming tradition has no direct analogue of.
+
+The second is the one-source, multi-backend array-language tradition, of which
+Futhark~\cite{henriksen2017futhark} is the canonical modern instance: a purely
+functional array program compiled, unchanged, to very different backends such as
+multicore CPU and GPU. \nuc{} shares the ``write the array computation once,
+compile it to many targets'' ambition but reaches it by the opposite route.
+Futhark's parallelism is \emph{discovered and mapped by the compiler} from a
+functional source with no user-facing schedule and no notion of IO semantics or
+distributed and embedded transports; \nuc{}'s portability is over an
+\emph{explicitly scheduled, programmer-annotated} decomposition with first-class IO
+directives and a compile-time communication-soundness gate, reaching the
+message-passing and embedded tiers Futhark does not target. The contrast also
+sharpens this work's deliberate non-goal: it does not discover parallelism
+(\cref{sec:prob-commitments}).
+
+Closest on the distributed-decomposition axis is Legion~\cite{bauer2012legion},
+which makes data partitioning and dependence-driven communication first-class,
+separately-described concerns on distributed-memory machines. Here the distinction
+is the scheduling regime. Legion schedules \emph{dynamically} at run time, through a
+deferred-execution model that discovers task dependences as the program runs,
+whereas \nuc{} fixes the firing order \emph{statically} to obtain its compile-time
+soundness gate and its byte-identical determinism --- trading Legion's dynamic
+adaptivity for decidable, ahead-of-time guarantees suited to hard-real-time and
+embedded targets. None of these three does what the next section identifies as the
+open gap: make IO semantics a schedule-level directive across distributed
+\emph{and} embedded targets under a single gated Petri-net IR.
+
 \section{From the 2013 prototype to this work}\label{sec:pa-v1}
 
 The ambition of this dissertation is not new to its author. A 2013
-prototype~\cite{mped2013nuc} introduced an earlier version of the Nuc language
+prototype~\cite{mped2013nuc} introduced an earlier version of the \nuclang{} language
 and sketched the same core idea: annotate a computation so that a compiler can
 produce decomposed, scheduled code --- firmware for one image-signal-processor
 platform. That prototype, however, had a single target --- it generated code for
@@ -183,5 +229,6 @@ the compute schedulers, extends the schedule to govern \emph{decomposition and I
 semantics} across distributed and embedded targets, unifies the result in a
 single restricted Petri-net IR that carries a compile-time soundness gate, and
 makes the whole claim falsifiable by a cross-backend bit-identical differential
-test. No prior system combines these; that combination is the contribution the
-remaining chapters develop and defend.
+test. We are not aware of a prior system that combines these --- the closest, set
+out in \cref{sec:pa-streaming}, each diverge on one of them --- and that
+combination is the contribution the remaining chapters develop and defend.

@@ -63,6 +63,49 @@
 }
 
 % ---------------------------------------------------------------------------
+% Static-dataflow streaming and one-source/multi-backend array compilation:
+% the systems closest to this work's design point.
+% ---------------------------------------------------------------------------
+
+@inproceedings{thies2002streamit,
+  author    = {Thies, William and Karczmarek, Michal and Amarasinghe, Saman},
+  title     = {{StreamIt}: A Language for Streaming Applications},
+  booktitle = {Compiler Construction, 11th International Conference (CC 2002)},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {2304},
+  pages     = {179--196},
+  year      = {2002},
+  publisher = {Springer},
+  doi       = {10.1007/3-540-45937-5_14},
+}
+
+@inproceedings{henriksen2017futhark,
+  author    = {Henriksen, Troels and Serup, Niels G. W. and Elsman, Martin and
+               Henglein, Fritz and Oancea, Cosmin E.},
+  title     = {Futhark: Purely Functional {GPU}-Programming with Nested
+               Parallelism and In-Place Array Updates},
+  booktitle = {Proceedings of the 38th ACM SIGPLAN Conference on Programming
+               Language Design and Implementation (PLDI)},
+  pages     = {556--571},
+  year      = {2017},
+  publisher = {ACM},
+  doi       = {10.1145/3062341.3062354},
+}
+
+@inproceedings{bauer2012legion,
+  author    = {Bauer, Michael and Treichler, Sean and Slaughter, Elliott and
+               Aiken, Alex},
+  title     = {Legion: Expressing Locality and Independence with Logical
+               Regions},
+  booktitle = {Proceedings of the International Conference on High Performance
+               Computing, Networking, Storage and Analysis (SC)},
+  articleno = {66},
+  year      = {2012},
+  publisher = {IEEE},
+  doi       = {10.1109/SC.2012.71},
+}
+
+% ---------------------------------------------------------------------------
 % Parallel runtimes and models: portable compute, hand-written IO per platform.
 % ---------------------------------------------------------------------------
 

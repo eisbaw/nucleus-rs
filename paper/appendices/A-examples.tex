@@ -1,10 +1,8 @@
 \chapter{Example Catalogue}\label{app:examples}
 
-The corpus of worked examples is the system's specification: a capability is
-considered to exist only when a committed example exercises it end-to-end
-(\cref{sec:val-suite}). This appendix catalogues the twenty-seven examples and, for
-each, names what it computes and the scheduling or compiler property it is there to
-stress. Most examples carry more than one schedule --- typically a single-worker
+The corpus of worked examples is the system's specification (\cref{sec:val-suite}).
+This appendix catalogues the twenty-seven examples and, for each, names what it
+computes and the scheduling or compiler property it is there to stress. Most examples carry more than one schedule --- typically a single-worker
 reference schedule and one or more distributed or transformed schedules that must
 reproduce the reference output byte-for-byte --- so the number of differential cells
 is several times the number of examples.
@@ -15,7 +13,7 @@ primary one.
 
 \section{Foundational dataflow and decomposition}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
@@ -41,7 +39,7 @@ primary one.
 
 \section{Stencils, halos, and loop transforms}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
@@ -71,7 +69,7 @@ primary one.
 
 \section{Reductions and the combine algebra}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
@@ -99,7 +97,7 @@ primary one.
 
 \section{Data-dependent indexing: gather and scatter}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
@@ -131,7 +129,7 @@ primary one.
 
 \section{Larger pipelines and networks}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
@@ -140,7 +138,7 @@ primary one.
     \midrule
     \texttt{07-matmul} & A blocked integer matrix product & Two-dimensional blocking
       on both axes and the triple-nested accumulator. \\
-    \texttt{09-producer-consumer} & A two-stage producer/consumer pipeline &
+    \texttt{09-producer-consumer} & A two-stage producer--consumer pipeline &
       Buffered, asynchronous, event-notified streaming between two compute workers. \\
     \texttt{12-bitonic-sort} & A bitonic sorting network & A static compare-exchange
       network checked byte-for-byte against a structurally different reference
@@ -159,7 +157,7 @@ primary one.
 
 \section{Embedded and boundary cases}
 
-\begin{table}[h]
+\begin{table}[htbp]
   \centering
   \small
   \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}

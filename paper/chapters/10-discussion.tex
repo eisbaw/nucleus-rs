@@ -44,10 +44,10 @@ with itself, and which here becomes a sharp, falsifiable, byte-for-byte test.
 Neither the soundness gate of \cref{sec:arch-gate} nor the differential rig of
 \cref{ch:validation} would be possible without the static firing order. They are
 not separate features bolted on; they are the two things the central restriction
-was traded for. The rest of this chapter is an attempt to judge whether the things
+was traded for. The rest of this chapter attempts to judge whether the things
 bought are worth the expressiveness given up --- a judgement that depends entirely
-on what one wants to build, and which the chapter therefore tries to make in terms
-concrete enough for a reader to apply to their own case.
+on what one wants to build, stated in terms concrete enough for a reader to apply
+to their own case.
 
 \section{Advantages}\label{sec:disc-advantages}
 
@@ -234,7 +234,14 @@ corpus, and a program shape absent from the corpus is outside the guarantee
 entirely. Bit-identity is shown over the exercised cells, not proved for every
 program the grammar admits. The corpus was assembled to be diverse, and the known
 gaps are recorded rather than hidden, but ``no counterexample in twenty-seven
-examples'' is empirical evidence, not a proof, and should be read as such.
+examples'' is empirical evidence, not a proof, and should be read as such. The
+natural way to push the claim from curated witnesses toward the boundary is
+generative: a property-based harness that synthesises affine, single-assignment
+programs and checks cross-backend byte-identity over them would attack the
+separation far harder than a fixed corpus can. That such a harness is not yet built
+--- the differential rig runs a curated corpus, not generated programs --- is the
+most pointed gap in the present validation, and a more direct piece of future work
+for a correctness claim than the performance study of \cref{sec:fw-quant}.
 
 \paragraph{Agreement could be common-mode rather than genuine.} The differential
 rig infers mutual byte-identity transitively, through a shared immutable reference

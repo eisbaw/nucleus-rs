@@ -111,7 +111,8 @@ unlikely to manifest identically across seven such different realisations.
 
 The two tier-2 backends target distributed-memory clusters through MPI, the
 dominant message-passing standard. Both emit single-program multiple-data (SPMD)
-code: one Rust binary that dispatches on its MPI rank, so rank $r$ executes
+code: one Rust binary that dispatches on its MPI rank --- the integer index
+identifying a process within the MPI communicator --- so rank $r$ executes
 worker $r$'s event list (\cref{fig:mpi-spmd}). SPMD is the natural fit for MPI,
 which launches many copies of one binary and lets each discover its identity by
 querying its rank; emitting a separate binary per worker, as the embedded tier
@@ -138,7 +139,9 @@ backends emit correct point-to-point communication that is merely not optimal.
 \section{Tier 3 --- Embedded}\label{sec:be-tier3}
 
 The tier-3 backend, \texttt{embedded-pattern}, targets \texttt{no\_std}
-microcontrollers. It emits target-agnostic event-list lowering and delegates all
+microcontrollers (\texttt{no\_std} is Rust's term for a target compiled without the
+standard library, and therefore without an operating system, heap allocator, or
+file system). It emits target-agnostic event-list lowering and delegates all
 hardware specifics --- DMA descriptors, interrupt-vector binding, memory-region
 addresses --- to a per-microcontroller \emph{shim} that implements a small
 hardware-abstraction trait. The generic backend is written once; each

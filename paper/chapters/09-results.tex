@@ -17,7 +17,8 @@ multiplication, histogram, producer--consumer pipelines, a wavefront, the game o
 life, bitonic sort, a small convolutional-network inference, a three-stage
 hearing-aid pipeline, transpose, Jacobi iteration, sparse matrix--vector
 multiplication, gather and scatter kernels, and a family of binned-combine
-reductions. Each example carries one or more schedules expressing different
+reductions (reductions that accumulate a partial result per bin, such as a per-bin
+exclusive-or or a per-bin minimum). Each example carries one or more schedules expressing different
 decompositions and IO disciplines, and the differential matrix declares, for each
 schedule, the set of backends required to support it.
 
@@ -132,11 +133,11 @@ All three reproduce their reference output byte-exactly: a two-microcontroller
 split-and-add over a 1024-byte payload; the real three-core hearing-aid pipeline,
 with heterogeneous front-end, DSP, and RF-controller workers and bidirectional
 dataflow, over a 512-byte output; and a two-microcontroller demonstration that
-drives two transfers by DMA and one by programmed IO over the same fabric,
-again byte-exact over 1024 bytes. The hearing-aid result is the load-bearing one:
-it demonstrates that the typed, heterogeneous, multi-worker form lowers all the way
-to a real multi-microcontroller system whose per-frame values are correct
-end-to-end, including the staged boot-order handling that a bare-metal UART channel
+drives two transfers by DMA and one by programmed-IO over the same fabric,
+again byte-exact over 1024 bytes. The hearing-aid result (\cref{sec:be-tier3}) is
+the load-bearing embedded demonstration: the typed, heterogeneous, multi-worker form
+lowers all the way to a real multi-microcontroller system whose per-frame values are
+correct end-to-end, including the staged boot-order handling that a bare-metal UART channel
 requires and that the hosted tiers never need.
 
 \section{What the falsification rig establishes, and its limits}\label{sec:res-limits}

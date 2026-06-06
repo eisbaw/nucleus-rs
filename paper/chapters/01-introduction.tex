@@ -109,7 +109,8 @@ The system that realises this statement is called \nuc. Its contributions are:
 
   \item \textbf{A compile-time soundness gate.} The gate is not a separate
         analysis bolted on; it is an intrinsic reading of the same IR. Because the
-        firing order is statically determined for the restricted net class,
+        firing order --- the order in which the program's operations execute --- is
+        statically determined for the restricted net class,
         boundedness (no declared buffer ever overflows) and deadlock-freedom (no
         required transfer ever waits on a value that is never produced) are
         decided at compile time and reported as compile errors, not discovered as
