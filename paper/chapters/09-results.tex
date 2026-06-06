@@ -1,13 +1,18 @@
 \chapter{Results}\label{ch:results}
 
 This chapter reports what the validation apparatus of \cref{ch:validation} has
-established. It is confined to correctness and coverage: how much of the
+established. Its core is correctness and coverage: how much of the
 schedule-by-backend space is exercised, whether the backends agree, whether the
 soundness gate behaves as designed, and how far the cluster and embedded tiers
-have been confirmed. Performance --- compile time, generated-code size, runtime
-scaling --- is out of scope for these results: the contribution this dissertation
-defends is the separation and its falsifiability, not the speed of the emitted
-code. Every number below is drawn from the live test apparatus.
+have been confirmed. The \emph{runtime speed} of the emitted code is out of scope:
+the contribution this dissertation defends is the separation and its falsifiability,
+not the performance of the generated programs, and a credible speed claim would
+demand a benchmarking methodology this work does not undertake (\cref{sec:fw-quant}).
+The chapter does, however, close with a set of \emph{static} engineering
+characteristics --- compile cost, generated-code footprint, and how the soundness
+gate's analysis scales (\cref{sec:res-quant}) --- reported as descriptive facts
+about the compiler, the cost of its genericity, rather than as performance claims.
+Every number below is drawn from the live toolchain.
 
 \section{Coverage: examples, schedules, and backends}\label{sec:res-coverage}
 
@@ -179,3 +184,175 @@ the central claim over a broad and diverse matrix, and has not --- while the mat
 documented edges mark exactly where the claim has not yet been put to the test.
 That distinction, between what has survived falsification and what has not been
 exposed to it, is the one this chapter is most concerned to keep clear.
+
+\section{Quantitative characteristics: the cost of genericity}\label{sec:res-quant}
+
+The results above concern correctness. This closing section reports a small set of
+\emph{static} engineering characteristics of the compiler and its output. They are
+deliberately not performance claims: none measures how fast the emitted programs
+run, which would require a benchmarking methodology this work does not undertake
+(\cref{sec:fw-quant}). What they characterise instead is the cost of the genericity
+the dissertation argues for --- how much code a backend takes to add, how large the
+generated projects are, and how the soundness gate's analysis scales with problem
+size. The structural figures (code lines, generated lines, net node counts) are
+\emph{exact and reproducible}, because the compiler's emission is deterministic
+(\cref{sec:val-repro}); the wall-times are indicative medians on the development
+machine, reported only to bound an order of magnitude. The measurement commands are
+given with the reproducibility material of \cref{app:reproducibility}.
+
+\subsection{Backend footprint}\label{sec:res-quant-footprint}
+
+\Cref{sec:be-cost} argued that a backend is cheap to add because the bulk of its
+logic is shared. \Cref{tab:quant-footprint} quantifies that claim by code lines.
+The shared codegen library is \qshared{} lines and the backend-independent
+middle-end a further \qmiddleend{}; against that common base, the two thinnest
+tier-1 backends are \qthinnest{} and 164 lines --- a synchronous transport over a
+socket, expressed almost entirely as a swap of the wire and notification calls. The
+event-reactor backends are larger (around a thousand lines) because they carry a
+reactor and per-channel queue machinery, and the embedded backend is the heaviest at
+\qembed{} lines, consistent with the tier's far higher cost. The numbers bear out the
+shape the architecture predicts: per-backend code is small relative to the shared
+base it sits on, and grows with the genuine novelty of the transport, not with
+boilerplate.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}llr@{}}
+    \toprule
+    Crate & Role & Code lines \\
+    \midrule
+    \texttt{nucleus-compiler} & backend-independent middle-end & 19{,}385 \\
+    \texttt{backend-common}   & shared codegen library         & 5{,}405 \\
+    \texttt{mp-tcp-common}    & shared socket-transport substrate & 612 \\
+    \midrule
+    \texttt{mp-tcp-bufsync}   & tier-1 (TCP, sync)             & 161 \\
+    \texttt{mp-tcp-poll}      & tier-1 (TCP, poll)             & 164 \\
+    \texttt{openmp-rs}        & tier-1 (work-stealing pool)    & 444 \\
+    \texttt{pthreads-async}   & tier-1 (threads, async)        & 864 \\
+    \texttt{mp-tcp-event}     & tier-1 (TCP, event reactor)    & 974 \\
+    \texttt{pthreads-sync}    & tier-1 (threads, sync)         & 985 \\
+    \texttt{mp-uds-event}     & tier-1 (Unix socket, reactor)  & 1{,}165 \\
+    \midrule
+    \texttt{mpi-blocking}     & tier-2 (MPI, blocking)         & 581 \\
+    \texttt{mpi-nonblocking}  & tier-2 (MPI, non-blocking)     & 658 \\
+    \texttt{embedded-pattern} & tier-3 (\texttt{no\_std} + shim) & 5{,}016 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Backend footprint, in code lines (comments and blanks excluded) of each
+  crate's source tree, measured with \texttt{tokei}; dedicated integration-test
+  directories are excluded uniformly across all rows, and the small amount of inline
+  unit-test code that remains in a few crates is likewise counted uniformly. The
+  shared base (\texttt{backend-common} plus the middle-end) is large;
+  individual tier-1 backends are small, the thinnest under two hundred lines.}
+  \label{tab:quant-footprint}
+\end{table}
+
+\subsection{Generated-code footprint}\label{sec:res-quant-gen}
+
+A second cost is the size of the projects the compiler emits.
+\Cref{tab:quant-gen} reports the generated Rust for one representative cell --- a
+two-worker split-and-add --- across the seven tier-1 backends, counting every emitted
+source line except the kernel bodies, which are copied verbatim from the algorithm's
+sibling file rather than generated. The shape is informative. The shared-memory
+backends emit a single compact driver of seventy to ninety-odd lines; the
+message-passing backends emit an order of magnitude more --- seven hundred to sixteen
+hundred lines --- because each materialises a wire-protocol module and one binary per
+worker, and the event-reactor variants add reactor scaffolding on top. The footprint
+is therefore a direct readout of how much machinery a transport genuinely needs:
+crossing an address-space boundary costs generated code that staying within one does
+not.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}llrr@{}}
+    \toprule
+    Backend & Worker model & Generated lines & Bytes \\
+    \midrule
+    \texttt{openmp-rs}      & shared memory (one driver)   & 70   & 2{,}779 \\
+    \texttt{pthreads-sync}  & shared memory (one driver)   & 71   & 2{,}726 \\
+    \texttt{pthreads-async} & shared memory (one driver)   & 94   & 3{,}391 \\
+    \texttt{mp-tcp-bufsync} & processes (wire + per-worker) & 716  & 29{,}803 \\
+    \texttt{mp-tcp-poll}    & processes (wire + per-worker) & 720  & 30{,}029 \\
+    \texttt{mp-uds-event}   & processes (wire + reactor)    & 1{,}133 & 44{,}700 \\
+    \texttt{mp-tcp-event}   & processes (wire + reactor)    & 1{,}607 & 66{,}741 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Generated source for one cell (the two-worker \texttt{02-split-add}
+  schedule) across the seven tier-1 backends, excluding the verbatim kernel file.
+  Shared-memory backends emit a single small driver; message-passing backends emit a
+  wire-protocol module plus one binary per worker, an order of magnitude larger.}
+  \label{tab:quant-gen}
+\end{table}
+
+Crucially, this footprint is a function of the \emph{program text and worker count},
+not of the problem size. The generated driver preserves loops rather than unrolling
+them (\cref{sec:arch-projection}): the $16\times16$ stencil compiles to a driver with
+two real \texttt{for} loops in eighteen lines, and a hypothetical $1024\times1024$
+stencil would compile to the same eighteen lines. Generated-code size is bounded by
+the schedule, not the data.
+
+\subsection{The analysis net and how the gate scales}\label{sec:res-quant-net}
+
+The one place where problem size does drive cost is the soundness gate. The gate
+replays a single firing order over the Petri net (\cref{sec:arch-gate}), and that net
+is \emph{expanded over the iteration space}: it carries roughly one place and one
+transition per kernel firing --- about two nodes per firing --- so its size grows
+linearly with the number of firings the program performs. \Cref{tab:quant-net} makes
+the contrast explicit. The generated driver stays around twenty lines across every
+example, but the analysis net ranges from about a hundred nodes for the small
+convolutional-network example to \qnetmatmul{} nodes for the $16\times16\times16$
+matrix multiply --- the latter about twice the $16^3 = 4096$ kernel firings its triple
+loop performs, since each firing contributes both a transition and a place.
+Decomposition adds to this too but far less steeply: the stencil's net grows from 397
+nodes on one compute worker to 1{,}041 across four, as per-worker channels and
+barriers are introduced.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}lrrr@{}}
+    \toprule
+    Example (naive schedule) & Approx.\ firings & Net nodes & Generated lines \\
+    \midrule
+    \texttt{13-cnn-inference} & (layered) & 101   & 20 \\
+    \texttt{05-stencil}       & $14^2$ (interior of $16^2$) & 397 & 18 \\
+    \texttt{01-elementwise-add} & $256$   & 519   & 17 \\
+    \texttt{03-reduction}     & $256$     & 523   & 21 \\
+    \texttt{07-matmul}        & $16^3$    & 8{,}199 & 21 \\
+    \bottomrule
+  \end{tabular}
+  \caption{The two cost regimes. Generated-code size is flat in problem size
+  (loop-structured), while the Petri net the soundness gate analyses is expanded
+  over the iteration space --- roughly one place and one transition per kernel firing,
+  so node count is about twice the firing count. Net node counts are exact
+  (deterministic emission); ``firings'' is the dominant loop volume.}
+  \label{tab:quant-net}
+\end{table}
+
+This is an honest limitation worth stating plainly. Because the gate's net is
+expanded per firing, its cost is linear in the number of kernel firings, not in the
+size of the program text. For the example corpus, whose firing counts run to a few
+thousand, this is cheap --- but a production-scale problem with billions of firings
+would produce a net the single-replay gate could not analyse in the same way. The
+gate as built is sound and inexpensive for the firing volumes this work targets;
+making it scale to far larger iteration spaces --- by analysing the looped structure
+symbolically rather than the expanded net --- is left as future work
+(\cref{sec:fw-quant}).
+
+\subsection{Compile cost}\label{sec:res-quant-time}
+
+End to end, a single cell compiles in roughly \qtmin{}--\qtmax{} milliseconds on the
+development machine: parse, link, elaborate, lower, run the gate, project, and emit.
+For the smaller examples this wall-time is dominated by process startup rather than
+by the pipeline, so the figures should be read as an order of magnitude, not a
+measurement. The one example whose pipeline rises above startup noise is the matrix
+multiply, whose \qnetmatmul{}-node net lifts the median to about \qtmax{}
+milliseconds; this is consistent with the gate's linear replay cost --- the matmul net
+is by far the largest --- though at these sizes the effect is small, and we did not
+instrument per-stage timing to attribute it precisely. The practical reading is that
+for this class of program the entire compile, soundness gate included, is comfortably
+sub-second, and qualitatively a small fraction of the downstream Rust build of the
+emitted project (which is seconds, not milliseconds); the genericity is not bought at
+a compile-time cost that would matter in practice at these sizes.

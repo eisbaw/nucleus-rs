@@ -148,26 +148,36 @@ claim that \cref{sec:disc-shortcomings} identified as currently the narrowest.
 
 \section{A quantitative performance and scaling study}\label{sec:fw-quant}
 
-This dissertation deliberately confined its results to correctness and coverage,
-because the contribution it defends is the separation and its falsifiability, not
-the speed of the emitted code (\cref{ch:results}). That scoping leaves an obvious
-empirical study undone, and it is worth stating precisely what it would measure, so
-that its absence is understood as a boundary rather than an oversight.
+This dissertation confined its main results to correctness and coverage, because the
+contribution it defends is the separation and its falsifiability, not the speed of
+the emitted code (\cref{ch:results}). It does report a set of \emph{static}
+engineering characteristics --- per-backend code footprint, generated-code size, and
+how the soundness gate's analysis net scales with problem size
+(\cref{sec:res-quant}) --- so the cost of the genericity is at least described. Two
+quantitative directions remain genuinely open, and it is worth stating each
+precisely.
 
-Three quantities are the natural subjects. First, \emph{compile time}: how the cost
-of the pipeline --- and in particular the soundness gate, whose single-order replay
-should be cheap --- scales with program size, worker count, and net size. Second,
-\emph{generated-code size}: how large the emitted projects are across backends, and
-how that grows with the worker count and the schedule's complexity. Third,
-\emph{runtime scaling}: how the emitted programs' wall-clock performance varies with
-worker count and schedule on real hardware, which is the measurement that would turn
-the portability claim from ``the same values everywhere'' into ``the same values,
-and here is what each decomposition costs.'' None of these bears on the
-correctness claims already established --- a slow but byte-identical program still
-falsifies nothing --- which is why they were separable and were separated. They are
-the principal piece of empirical work this thesis invites next, and the one most
-likely to inform whether the prescriptive-scheduling direction of
-\cref{sec:fw-prescriptive} is worth its cost.
+The first is a \emph{runtime} performance and scaling study: how the emitted
+programs' wall-clock time varies with worker count, schedule, and backend on real
+hardware --- and, for the cluster tier, on an actual cluster rather than a local
+launcher. This is the measurement that would turn the portability claim from ``the
+same values everywhere'' into ``the same values, and here is what each decomposition
+costs,'' and it is the input the prescriptive-scheduling direction of
+\cref{sec:fw-prescriptive} would need. It is deliberately undone here because a
+credible runtime study demands a benchmarking methodology --- worst-case inputs,
+controlled hardware, warm-up and variance discipline --- that is a project in itself,
+and because no runtime number bears on the correctness claims already established: a
+slow but byte-identical program still falsifies nothing.
+
+The second follows directly from the gate-scaling limitation that
+\cref{sec:res-quant-net} measured. Because the soundness gate replays a net expanded
+over the iteration space --- roughly one place and one transition per kernel firing
+--- its cost is linear in the number of firings, which is cheap for the corpus but
+would not scale to a problem with billions of firings. A symbolic analysis that reasoned about the
+\emph{looped} net structure directly, rather than its expansion, would lift that
+bound and let the gate match the loop-structured, problem-size-independent footprint
+of the generated code. That is the most concrete piece of compiler work the
+quantitative characteristics point to.
 
 Taken together, these directions share a common discipline: each is judged not only
 by what it would add but by what it would risk to the determinism the system is

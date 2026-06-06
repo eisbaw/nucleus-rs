@@ -103,3 +103,32 @@ The build is reproducible in the same sense as the compiler's: the flake pins th
 development shell at all, for a fully hermetic invocation. The figures are TikZ
 sources compiled inline with the document, so there is no separate figure-generation
 step to run first.
+
+\section{Reproducing the quantitative characteristics}\label{sec:repro-quant}
+
+The static figures of \cref{sec:res-quant} are collected with the same pinned
+toolchain. Per-crate code footprint (\cref{tab:quant-footprint}) is a line count of
+each crate's \texttt{src/} tree:
+
+\begin{verbatim}
+tokei <crate>/src           # code lines, excluding comments and blanks
+\end{verbatim}
+
+Generated-code size (\cref{tab:quant-gen}) and the analysis-net node counts
+(\cref{tab:quant-net}) come from emitting one cell and inspecting the output. The
+driver emits a project with \texttt{--out} and the Petri net with \texttt{--emit-pn};
+the generated lines are every emitted \texttt{.rs} except the verbatim
+\texttt{kernels.rs}, and the net nodes are the shape-bearing nodes of the emitted
+graph:
+
+\begin{verbatim}
+nucleus build --algo A.algo.nuc --sched S.sched.nuc \
+              --backend B --out OUT --emit-pn NET.dot
+find OUT -name '*.rs' ! -name kernels.rs | xargs cat | wc -l
+grep -c 'shape=' NET.dot
+\end{verbatim}
+
+Because emission is deterministic, these counts are exact and stable across runs.
+The compile wall-times of \cref{sec:res-quant-time} are medians of repeated
+\texttt{nucleus build} invocations and are machine-dependent; they are reported only
+to bound an order of magnitude, not as a controlled benchmark.

@@ -87,3 +87,22 @@
 \newcommand{\nmatrixtotal}{483}
 \newcommand{\nmatrixpass}{420}
 \newcommand{\nmatrixskip}{63}
+
+% Quantitative-characteristics headline figures, measured from the live
+% toolchain (single source of truth; methodology in sec:res-quant). All
+% structural figures are exact and deterministic; wall-times are indicative
+% medians on the development machine. Measured against the committed tree.
+%   Backend footprint: code lines (tokei) of each crate's src/ tree.
+\newcommand{\qshared}{5405}        % backend-common (shared codegen)
+\newcommand{\qmiddleend}{19385}    % nucleus-compiler (middle-end)
+\newcommand{\qthinnest}{161}       % thinnest tier-1 backend (mp-tcp-bufsync)
+\newcommand{\qembed}{5016}         % embedded-pattern (tier-3, the heaviest)
+%   Generated code (02-split-add, two-worker split): smallest vs largest.
+\newcommand{\qgensmall}{70}        % openmp-rs generated lines
+\newcommand{\qgenbig}{1607}        % mp-tcp-event generated lines
+%   Analysis-net scaling: nodes for the smallest vs the largest example net.
+\newcommand{\qnetcnn}{101}         % 13-cnn-inference naive
+\newcommand{\qnetmatmul}{8199}     % 07-matmul naive ($16^3$ firings)
+%   Compile wall-time band (median ms) over the example set.
+\newcommand{\qtmin}{6}
+\newcommand{\qtmax}{10}
