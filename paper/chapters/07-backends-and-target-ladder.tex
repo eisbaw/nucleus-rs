@@ -12,6 +12,8 @@ commodity CPU through message-passing clusters to embedded microcontrollers
 (\cref{fig:target-ladder}), and defends the capability matrix that makes backend
 choice orthogonal to the schedule.
 
+\input{figures/target-ladder}
+
 The three tiers differ not only in target but in how thoroughly each is tested.
 Tier-1 backends are both compiled and run on every continuous-integration
 invocation --- they are the cheap rig. Tier-2 backends must compile for every
@@ -57,6 +59,8 @@ all ten backends.
   the blocking backend does, plus asynchronous ones.}
   \label{tab:capabilities}
 \end{table}
+
+\input{figures/capability-matrix}
 
 Orthogonality is the property that backend choice is independent of the schedule,
 mediated only by this matrix. A schedule compiles against any backend whose
@@ -115,6 +119,8 @@ does, would require external orchestration that MPI does not provide. The
 generated project depends on the established Rust MPI bindings, and runs under
 \texttt{mpiexec}.
 
+\input{figures/mpi-spmd}
+
 \texttt{mpi-blocking} renders a push as a blocking \texttt{MPI\_Send} and a wait
 as a blocking \texttt{MPI\_Recv}, with barriers as \texttt{MPI\_Barrier};
 \texttt{mpi-nonblocking} renders a push as a buffered non-blocking send and a wait
@@ -147,7 +153,11 @@ the Renode instruction-set simulator. The interesting case is multiple
 microcontrollers co-simulated together (\cref{fig:embedded-multimcu}): the
 backend emits one binary per worker plus a generated Renode machine description
 that wires the binaries together over a UART hub, with one bounded FIFO per
-transfer channel. Two subtleties are handled here that have no analogue on the
+transfer channel.
+
+\input{figures/embedded-multimcu}
+
+Two subtleties are handled here that have no analogue on the
 hosted tiers, where the operating system and its socket buffers absorb startup
 races. First, a boot order is computed so that a receiver enables its input before
 a sender transmits: on a bare-metal UART channel there is no buffer to hold early

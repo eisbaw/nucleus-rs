@@ -9,6 +9,7 @@
 %     fig:wt-acfg.
 \begin{figure}[tbp]
   \centering
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
       font=\small,
       seq/.style={draw, rounded corners, fill=gray!15, inner sep=3pt, minimum height=6mm},
@@ -52,7 +53,7 @@
        $\bullet$ initial-marking depth \hfill (pipeline)};
     \draw[densely dotted, gray!55!black] (xfer.east) to[out=0,in=180]
       node[above=1pt,font=\scriptsize]{keyed by node id} (side.west);
-  \end{tikzpicture}
+  \end{tikzpicture}}
   \caption[The ACFG data structure]{The application control-flow graph (ACFG):
     a tree whose nodes are operations (a kernel firing with its read/write
     dataflow edges), sequences, and repeats (loops with a back-edge), later

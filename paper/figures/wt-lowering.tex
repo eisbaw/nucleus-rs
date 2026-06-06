@@ -1,0 +1,79 @@
+% fig:wt-lowering --- the shared compute renderer vs per-backend transport seams.
+% Faithful to chapters/07b-compilation-walkthrough.tex sec:wt-lowering /
+% sec:wt-byteident: the events that COMPUTE (Fire, Loop) go through ONE shared
+% single-worker renderer (byte-identical body across backends); only the events
+% that COMMUNICATE (Push, Wait, barrier) are rendered PER-BACKEND.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      ev/.style={draw, rounded corners=2pt, fill=gray!12, align=center,
+                 inner sep=3pt, minimum height=6mm},
+      shared/.style={draw, fill=green!12, align=center, inner sep=3pt,
+                     text width=46mm, minimum height=8mm},
+      perbe/.style={draw, fill=orange!14, align=center, inner sep=3pt,
+                    text width=46mm, minimum height=8mm},
+      ob/.style={draw, rounded corners=2pt, fill=blue!8, align=center,
+                  inner sep=2.5pt, font=\scriptsize, text width=33mm, minimum height=9mm},
+      a/.style={-{Latex[length=2mm]}, thick},
+      bnd/.style={densely dashed, thick, gray!55!black},
+    ]
+    % per-worker event list (the middle-end's output)
+    \node[ev, text width=42mm] (el) at (0,0)
+      {per-worker EventList\\\scriptsize \texttt{Fire} $\cdot$ \texttt{Loop}
+       $\cdot$ \texttt{Push} $\cdot$ \texttt{Wait} $\cdot$ \texttt{Sync}};
+    % boundary: the backend consumes only the EventList; everything below is
+    % presentation (the split + rendering).
+    \draw[bnd] (-6.0,-0.85) -- (6.0,-0.85);
+    \node[font=\scriptsize, fill=white, inner sep=1pt] at (0,-0.85)
+      {middle-end\,/\,presentation boundary (backend consumes only the EventList)};
+
+    % split into two classes
+    \node[ev, fill=green!10, text width=40mm] (cev) at (-3.0,-1.8)
+      {\textbf{compute} events\\\scriptsize \texttt{Fire}, \texttt{Loop}};
+    \node[ev, fill=orange!12, text width=40mm] (tev) at (3.0,-1.8)
+      {\textbf{transport} events\\\scriptsize \texttt{Push}, \texttt{Wait}, \texttt{Sync}};
+    \draw[a] (el.south -| cev) -- (cev);
+    \draw[a] (el.south -| tev) -- (tev);
+
+    % shared renderer (one) vs per-backend emitter (many)
+    \node[shared] (sr) at (-3.0,-3.3)
+      {\textbf{one shared} single-worker renderer};
+    \node[perbe] (pb) at (3.0,-3.3)
+      {\textbf{per-backend} transport emitter};
+    \draw[a] (cev) -- (sr);
+    \draw[a] (tev) -- (pb);
+
+    % left output: byte-identical compute body
+    \node[ob, fill=green!10, text width=44mm] (body) at (-3.0,-5.2)
+      {\textbf{byte-identical compute body}\\(same \texttt{blur3} calls $+$
+       reuse-buffer index arithmetic, character-for-character)};
+    \draw[a] (sr) -- (body);
+
+    % right outputs: 3 per-backend transports on a clean vertical bus at x=3.0
+    \node[ob, text width=30mm] (p1) at (4.8,-4.6) {\texttt{pthreads}:\\\texttt{ring.push} / \texttt{ring.wait}};
+    \node[ob, text width=30mm] (p2) at (4.8,-5.7) {\texttt{MPI}:\\\texttt{MPI\_Ibsend} / \texttt{MPI\_Mprobe}};
+    \node[ob, text width=30mm] (p3) at (4.8,-6.8) {\texttt{embedded}:\\\texttt{link\_push} / \texttt{link\_recv}};
+    \draw[thick] (pb.south) -- (3.0,-6.8);
+    \draw[a] (3.0,-4.6) -- (p1.west);
+    \draw[a] (3.0,-5.7) -- (p2.west);
+    \draw[a] (3.0,-6.8) -- (p3.west);
+  \end{tikzpicture}
+  \caption[One event list, three renderings]{Why one event list yields
+    byte-identical output across very different backends. A backend splits each
+    per-worker event list into two classes. The events that \emph{compute} ---
+    \texttt{Fire} and \texttt{Loop} --- go through \emph{one shared} single-worker
+    renderer, so the compute body (the \texttt{blur3} calls and their
+    reuse-buffer index arithmetic) is the \emph{same source text} on every
+    backend, character-for-character. Only the events that \emph{communicate} ---
+    \texttt{Push}, \texttt{Wait}, and the barrier \texttt{Sync} --- are rendered
+    per-backend (a \texttt{Wait}, for instance, lowers to \texttt{ring.wait},
+    \texttt{MPI\_Mprobe}, or \texttt{link\_recv}), into ring buffers
+    (\texttt{pthreads}), buffered non-blocking MPI sends (\texttt{MPI}), or HAL
+    trait calls (\texttt{embedded}); the dashed line marks the
+    middle-end/presentation boundary, above which is the compiler's output and
+    below which the backend's rendering. The shared
+    compute is what makes the cross-backend differential test pass; the
+    per-backend transport is value-preserving, so it cannot perturb a result.}
+  \label{fig:wt-lowering}
+\end{figure}

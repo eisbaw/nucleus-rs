@@ -1,0 +1,57 @@
+% fig:target-ladder --- the three-tier target ladder + cost / test classes.
+% Faithful to chapters/07-backends-and-target-ladder.tex (intro + tier sections
+% + sec:be-cost):
+%   tier 1 = 7 CPU backends, compiled AND run every CI (the cheap rig); add cost
+%            days-weeks.
+%   tier 2 = 2 MPI backends, compile-mandatory, run-best-effort where mpiexec is
+%            available; add cost weeks-months.
+%   tier 3 = 1 embedded backend, compile-mandatory, run in Renode where a shim
+%            exists; add cost months per microcontroller shim.
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\small,
+      rung/.style={draw, rounded corners=2pt, align=left, inner sep=4pt,
+                   text width=96mm, minimum height=13mm},
+      a/.style={-{Latex[length=2mm]}, thick},
+    ]
+    % three rungs ascending (tier 1 cheapest, at the bottom)
+    \node[rung, fill=green!12] (t1) at (0,0)
+      {\textbf{Tier 1 --- CPU} \hfill \emph{7 backends}\\
+       \scriptsize shared memory, TCP loopback, Unix sockets; sync/async,
+       buffered/unbuffered, blocking/poll/event.\\
+       \scriptsize \textbf{Test:} compiled \emph{and run} on every CI invocation
+       (the cheap differential rig). \quad \textbf{Cost:} days--weeks.};
+    \node[rung, fill=orange!14] (t2) at (1.6,1.8)
+      {\textbf{Tier 2 --- HPC clusters (MPI)} \hfill \emph{2 backends}\\
+       \scriptsize SPMD over \texttt{mpiexec}; \texttt{mpi-blocking} and
+       \texttt{mpi-nonblocking}.\\
+       \scriptsize \textbf{Test:} compile-mandatory; run-best-effort where an MPI
+       runtime exists. \quad \textbf{Cost:} weeks--months.};
+    \node[rung, fill=red!12] (t3) at (3.2,3.6)
+      {\textbf{Tier 3 --- Embedded} \hfill \emph{1 backend $+$ shims}\\
+       \scriptsize \texttt{no\_std}; DMA/UART via a per-microcontroller HAL shim;
+       run under Renode co-simulation.\\
+       \scriptsize \textbf{Test:} compile-mandatory; run in Renode where a shim
+       exists. \quad \textbf{Cost:} months per shim.};
+    % ascending cost arrow on the left
+    \draw[a, gray!60!black] (-5.4,-0.6) -- (-5.4,4.2)
+      node[midway, left, font=\scriptsize, rotate=90, anchor=south]
+      {increasing target distance \& cost to add a backend};
+  \end{tikzpicture}}
+  \caption[The three-tier target ladder]{The ten backends organised as a
+    three-tier ladder, ascending in target distance and in the cost of adding a
+    backend. \textbf{Tier 1} (seven CPU backends) is compiled \emph{and run} on
+    every continuous-integration invocation --- the cheap differential rig ---
+    and a new one costs days to weeks (copy a sibling, swap the wire and
+    notification calls, reuse the shared single-worker emitter). \textbf{Tier 2}
+    (two MPI backends) and \textbf{tier 3} (one embedded backend plus
+    per-microcontroller shims) follow a \emph{compile-mandatory, run-best-effort}
+    discipline: they must compile for every required schedule and are run where a
+    runtime (an MPI \texttt{mpiexec}, a Renode shim) is available. Their costs
+    rise to weeks--months and months-per-shim respectively. (Green, orange, and
+    red shade tiers 1, 2, and 3; ``target distance'' is how far the execution
+    environment is from a standard hosted operating-system runtime.)}
+  \label{fig:target-ladder}
+\end{figure}

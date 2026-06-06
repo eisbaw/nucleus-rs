@@ -1,0 +1,43 @@
+% fig:mpi-spmd --- the SPMD rank dispatch the tier-2 MPI backends emit.
+% Faithful to chapters/07-backends-and-target-ladder.tex sec:be-tier2:
+%   one Rust binary, launched mpiexec -n 5, that does `match world.rank()` with
+%   five arms: rank 0 = host, ranks 1..4 = compute workers w0..w3; rank r runs
+%   worker r's event list. (Five participants matches the stencil example.)
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      bin/.style={draw, rounded corners=3pt, fill=blue!10, align=center,
+                  inner sep=4pt, text width=42mm},
+      arm/.style={draw, fill=gray!10, align=center, inner sep=2.5pt,
+                  font=\footnotesize, text width=30mm, minimum height=8mm},
+      a/.style={-{Latex[length=1.8mm]}, thick},
+    ]
+    % one binary launched n=5
+    \node[bin] (bin) at (0,0)
+      {\textbf{one Rust binary}\\\scriptsize launched \texttt{mpiexec -n 5}\\[1pt]
+       \texttt{match world.rank()}};
+    % five arms
+    \node[arm, fill=green!12] (r0) at (4.6,2.4) {rank 0 $\Rightarrow$ \texttt{host}\\\scriptsize \texttt{load\_image}, push, barrier, $\dots$};
+    \node[arm] (r1) at (4.6,1.0) {rank 1 $\Rightarrow$ \texttt{w0}\\\scriptsize barrier, wait, loop \texttt{blur3}, push};
+    \node[arm] (r2) at (4.6,-0.4) {rank 2 $\Rightarrow$ \texttt{w1}};
+    \node[arm] (r3) at (4.6,-1.8) {rank 3 $\Rightarrow$ \texttt{w2}};
+    \node[arm] (r4) at (4.6,-3.2) {rank 4 $\Rightarrow$ \texttt{w3}};
+    \foreach \r in {r0,r1,r2,r3,r4} \draw[a] (bin.east) -- (\r.west);
+    \node[font=\scriptsize, align=center, text width=42mm] at (4.6,-4.3)
+      {rank $r$ executes worker $r$'s event list\\
+       (same lists as \cref{fig:wt-events}, here as MPI ranks)};
+    \node[font=\scriptsize\itshape, align=center, text width=34mm] at (0,-2.2)
+      {SPMD: every process runs the same binary and branches on its own rank};
+  \end{tikzpicture}
+  \caption[MPI SPMD rank dispatch]{The single-program multiple-data (SPMD)
+    dispatch the tier-2 MPI backends emit. Rather than one binary per worker, the
+    backend emits \emph{one} Rust binary, launched as five processes with
+    \texttt{mpiexec -n 5}, that branches on its MPI rank: a \texttt{match
+    world.rank()} with five arms sends rank $0$ to the host's event list and
+    ranks $1$ through $4$ to the four compute workers' lists. Rank $0$ (shaded) is
+    the host; ranks $2$--$4$ run the same structure as rank $1$ over their own
+    bands. SPMD is the natural fit for MPI, which launches many copies of one
+    binary and lets each discover its identity by querying its rank.}
+  \label{fig:mpi-spmd}
+\end{figure}

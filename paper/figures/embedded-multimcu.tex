@@ -1,0 +1,57 @@
+% fig:embedded-multimcu --- the multi-microcontroller UART-hub co-simulation.
+% Faithful to chapters/07-backends-and-target-ladder.tex sec:be-tier3:
+%   one binary per worker + a generated Renode machine description wiring them
+%   over a UART hub, ONE BOUNDED FIFO per transfer channel; a boot order so each
+%   receiver enables its input before its sender transmits (no buffer on a
+%   bare-metal UART); transport = link_push / link_recv on the HAL trait.
+%   Concrete load-bearing example: the 3-core hearing aid (front-end, DSP, RF).
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      mcu/.style={draw, rounded corners=3pt, fill=blue!10, align=center,
+                  inner sep=3pt, text width=24mm, minimum height=11mm},
+      fifo/.style={draw, fill=orange!14, font=\scriptsize, inner sep=1.5pt,
+                   minimum width=13mm},
+      a/.style={-{Latex[length=1.8mm]}, thick},
+    ]
+    % three MCUs (hearing aid: front-end, DSP, RF)
+    \node[mcu] (fe) at (0,2.0) {\textbf{MCU: front-end}\\\scriptsize \texttt{no\_std} binary};
+    \node[mcu] (dsp) at (0,0)  {\textbf{MCU: DSP}\\\scriptsize \texttt{no\_std} binary};
+    \node[mcu] (rf) at (0,-2.0) {\textbf{MCU: RF}\\\scriptsize \texttt{no\_std} binary};
+    % UART hub: container box with label ABOVE, FIFOs aligned with MCUs inside
+    \node[draw, fill=gray!15, rounded corners, minimum width=18mm,
+          minimum height=44mm] (hub) at (5.2,0) {};
+    \node[font=\footnotesize\bfseries, align=center, above=0.5mm of hub]
+      {UART hub\\\scriptsize (generated Renode machine)};
+    \node[fifo] (f1) at (5.2,2.0) {FIFO (cap)};
+    \node[fifo] (f2) at (5.2,0.0) {FIFO (cap)};
+    \node[fifo] (f3) at (5.2,-2.0) {FIFO (cap)};
+    \draw[a] (fe.east) -- node[above,font=\scriptsize]{\texttt{link\_push}} (f1.west);
+    \draw[a] (f2.west) -- node[below,font=\scriptsize]{\texttt{link\_recv}} (dsp.east);
+    \draw[a] (f3.west) -- node[below,font=\scriptsize]{\texttt{link\_recv}} (rf.east);
+
+    % boot-order + bounded-FIFO annotations (clear of the diagram, below)
+    \node[draw=gray!55!black, dashed, rounded corners, fill=yellow!10,
+          align=left, font=\scriptsize, text width=78mm, inner sep=3pt]
+          (note) at (2.4,-3.7)
+      {\textbf{boot order:} each receiver enables its link \emph{before} its
+       sender transmits (a bare-metal UART has no buffer for early bytes). \quad
+       \textbf{one bounded FIFO} per transfer channel; capacity from the buffer policy.};
+  \end{tikzpicture}
+  \caption[Multi-microcontroller UART-hub co-simulation]{The tier-3 backend's
+    multi-microcontroller path. The backend emits one \texttt{no\_std} binary per
+    worker plus a generated Renode machine description that wires them together
+    over a UART hub, with one bounded FIFO per transfer channel (depth from the
+    buffer policy). A cross-worker \texttt{Push} becomes a \texttt{link\_push} on
+    the hardware-abstraction trait and a \texttt{Wait} a matching
+    \texttt{link\_recv}. Two things have no analogue on the hosted tiers, where
+    the operating system absorbs startup races: a boot order is computed so that
+    every receiver enables its input before its sender transmits (a bare-metal
+    UART has no buffer to hold an early byte), and a control-only synchronisation
+    with no data edge is rejected, since there is no transfer to carry the
+    ordering. The load-bearing example is the three-core hearing aid (front-end,
+    DSP, RF), which reproduces its reference output byte-exactly under
+    co-simulation.}
+  \label{fig:embedded-multimcu}
+\end{figure}

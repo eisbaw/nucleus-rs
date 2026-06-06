@@ -1,0 +1,55 @@
+% fig:capability-matrix --- backend orthogonality as a superset check.
+% Faithful to chapters/07-backends-and-target-ladder.tex sec:be-matrix:
+%   a schedule compiles against a backend IFF the backend's capabilities are a
+%   SUPERSET of what the schedule demands; otherwise it is REJECTED AT COMPILE
+%   TIME naming the missing capability (never a silent downgrade).
+% Complements the numeric tab:capabilities; this is the orthogonality schematic.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      demand/.style={draw, rounded corners=2pt, fill=blue!10, align=left,
+                     inner sep=4pt, text width=40mm, font=\footnotesize},
+      be/.style={draw, rounded corners=2pt, align=left, inner sep=3pt,
+                 text width=44mm, font=\footnotesize},
+      ok/.style={-{Latex[length=2mm]}, thick, green!45!black},
+      no/.style={-{Latex[length=2mm]}, thick, red!55!black},
+    ]
+    % the schedule's demand vector
+    \node[demand] (d) at (0,0)
+      {\textbf{schedule demands}\\
+       \texttt{async}\\
+       \texttt{buffer = 2}\\
+       \texttt{notify = event}};
+    % three candidate backends
+    \node[be, fill=green!12] (b1) at (6.2,2.0)
+      {\texttt{pthreads-async}\\\scriptsize async, buffer 64, event\\
+       \textbf{caps} $\supseteq$ \textbf{demands} $\Rightarrow$ \textcolor{green!45!black}{compiles}};
+    \node[be, fill=green!12] (b2) at (6.2,0.0)
+      {\texttt{mp-tcp-event}\\\scriptsize async, buffer 64, event\\
+       \textbf{caps} $\supseteq$ \textbf{demands} $\Rightarrow$ \textcolor{green!45!black}{compiles}};
+    \node[be, fill=red!10] (b3) at (6.2,-2.1)
+      {\texttt{pthreads-sync}\\\scriptsize sync only, buffer 1, blocking\\
+       missing \texttt{async}, \texttt{buffer}, \texttt{event} $\Rightarrow$
+       \textcolor{red!55!black}{rejected at compile time}};
+    \draw[ok] (d.east) to[out=0,in=180] (b1.west);
+    \draw[ok] (d.east) -- (b2.west);
+    \draw[no] (d.east) to[out=0,in=180] (b3.west);
+    \node[font=\scriptsize\itshape, align=center, text width=40mm] at (0,-2.0)
+      {orthogonality: backend choice is mediated \emph{only} by this superset test};
+  \end{tikzpicture}
+  \caption[Backend orthogonality as a superset check]{Backend orthogonality
+    (backend choice does not change what the schedule computes, only whether it
+    compiles) made mechanical. Each backend declares a capability vector
+    (transport, notify,
+    async, buffer depth); a schedule declares a demand vector. A schedule
+    compiles against a backend exactly when the backend's capabilities are a
+    \emph{superset} of what the schedule demands. The stencil's distributed
+    schedule (\texttt{async}, \texttt{buffer=2}, \texttt{notify=event}) compiles
+    on \texttt{pthreads-async} and \texttt{mp-tcp-event}, but is \emph{rejected at
+    compile time} on \texttt{pthreads-sync}, whose matrix offers neither async nor
+    buffering --- with a diagnostic naming each missing capability, never a silent
+    downgrade that would make one schedule mean different things on different
+    backends. The full ten-backend matrix is \cref{tab:capabilities}.}
+  \label{fig:capability-matrix}
+\end{figure}

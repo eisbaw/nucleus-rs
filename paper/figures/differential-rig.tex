@@ -1,0 +1,53 @@
+% fig:differential-rig --- the bit-identical cross-backend differential test.
+% Faithful to chapters/08-validation.tex sec:val-differential:
+%   ONE (algorithm, schedule) compiled to the SEVEN tier-1 backends; each emits,
+%   builds, runs; outputs compared against the immutable reference. Byte-identity
+%   across all => pass; any disagreement = a boundary leak (algo/schedule or
+%   middle-end/presentation). Backends chosen maximally diverse.
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      font=\small,
+      src/.style={draw, rounded corners=3pt, fill=gray!14, align=center,
+                  inner sep=4pt, text width=34mm},
+      be/.style={draw, fill=blue!9, align=center, inner sep=2pt, font=\scriptsize,
+                 text width=30mm, minimum height=5mm},
+      ref/.style={draw, rounded corners=2pt, fill=green!12, align=center,
+                  inner sep=3pt, text width=26mm},
+      a/.style={-{Latex[length=1.8mm]}},
+    ]
+    % one source pair
+    \node[src] (s) at (0,0) {\textbf{one algorithm}\\$+$ \textbf{one schedule}};
+    % seven diverse tier-1 backends
+    \def\ys{2.7,1.8,0.9,0.0,-0.9,-1.8,-2.7}
+    \node[be] (b1) at (4.2,2.7) {\texttt{openmp-rs} \scriptsize(shared mem)};
+    \node[be] (b2) at (4.2,1.8) {\texttt{pthreads-sync} \scriptsize(sync)};
+    \node[be] (b3) at (4.2,0.9) {\texttt{pthreads-async} \scriptsize(async)};
+    \node[be] (b4) at (4.2,0.0) {\texttt{mp-tcp-bufsync} \scriptsize(TCP)};
+    \node[be] (b5) at (4.2,-0.9) {\texttt{mp-tcp-poll} \scriptsize(poll)};
+    \node[be] (b6) at (4.2,-1.8) {\texttt{mp-tcp-event} \scriptsize(epoll)};
+    \node[be] (b7) at (4.2,-2.7) {\texttt{mp-uds-event} \scriptsize(Unix sock)};
+    \foreach \b in {b1,b2,b3,b4,b5,b6,b7} \draw[a] (s.east) -- node[above,pos=0.6,font=\scriptsize]{} (\b.west);
+    % compare against reference (each backend emits/builds/runs, then converges here)
+    \node[ref] (ref) at (9.7,0) {compare every output to the \textbf{immutable reference}};
+    \foreach \b in {b1,b2,b3,b4,b5,b6,b7} \draw[a] (\b.east) to[out=0,in=180] (ref.west);
+    \node[draw, rounded corners=2pt, fill=green!16, align=center, inner sep=3pt,
+          text width=30mm, font=\footnotesize] (verdict) at (9.9,-2.6)
+      {all byte-identical $\Rightarrow$ \textbf{pass}\\[1pt]
+       \scriptsize any disagreement $=$ a boundary leak};
+    \draw[a, thick] (ref) -- (verdict);
+  \end{tikzpicture}
+  \caption[The bit-identical differential rig]{The cross-backend differential
+    test, the thesis's falsification rig. One algorithm under one schedule is
+    compiled to the seven tier-1 backends, chosen to be \emph{maximally diverse}
+    --- shared memory, TCP loopback, and Unix sockets; synchronous and
+    asynchronous; buffered and unbuffered; blocking, polled, and event-reactor
+    notification. Each backend emits, builds, and runs, and every output is
+    compared against the example's immutable reference. Byte-identity across all
+    seven is the pass condition; any disagreement is direct evidence that the
+    algorithm/schedule or middle-end/presentation boundary has leaked --- a
+    decision that should have been confined to one layer has bled into another.
+    The diversity is the point: an error would have to corrupt the output
+    \emph{identically} across seven such different runtimes to escape detection.}
+  \label{fig:differential-rig}
+\end{figure}

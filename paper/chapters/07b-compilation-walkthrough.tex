@@ -306,6 +306,8 @@ lowering from the per-backend rendering of transport --- made mechanical: there 
 emitter for the inside of a worker and a small per-backend emitter for the seams
 between workers.
 
+\input{figures/wt-lowering}
+
 The consequence is literal, not approximate. Emitting the stencil's distributed event
 lists to the shared-memory \texttt{pthreads-async} backend and to the
 distributed-memory \texttt{mpi-nonblocking} backend produces, for each compute
