@@ -1,18 +1,279 @@
 \chapter{Discussion}\label{ch:discussion}
-% Content cycle: C5. Intent: weigh what the model buys against what it costs,
-% honestly. Advantages AND shortcomings get equal billing.
+
+The preceding chapters described what the system is and what the validation rig
+has established. This chapter steps back to weigh it. The central question is not
+whether the system works on its corpus --- \cref{ch:results} answered that --- but
+whether the one design decision underneath everything was worth making, and at what
+price. That decision is a single trade, made once and propagated everywhere: the
+model gives up expressiveness in exchange for a statically determined,
+deterministic firing order. \Cref{sec:disc-trade} examines the trade directly;
+\cref{sec:disc-advantages} sets out what it buys; \cref{sec:disc-shortcomings}
+sets out what it costs, in equal detail and without softening; and
+\cref{sec:disc-threats} asks where the evidence of the previous two chapters could
+itself be misleading.
+
+\section{The central trade}\label{sec:disc-trade}
+
+Every restriction the language imposes --- affine and constant-bounded loops,
+single-assignment arrays, mandatory purity annotations, no data-dependent control
+flow, no recursion, an explicit rather than discovered decomposition --- is a
+facet of one underlying commitment: that the order in which the program's
+operations fire is fixed at compile time rather than at run time. A conventional
+concurrent program decides, dynamically, which of several ready operations runs
+next, according to which inputs happen to arrive first. This system forbids that.
+It derives one firing order from the dataflow and the source order, and that order
+is the program's behaviour on every backend and every run.
+
+The cost of this commitment is expressiveness, and it is not a small cost. A whole
+class of useful programs cannot be written at all: anything whose control flow
+depends on the values it computes --- an iterative solver that runs until it
+converges, a search that stops when it finds what it is looking for, a workload
+balanced dynamically across workers as data arrives. These are not exotic
+programs; they are the bread and butter of numerical computing and systems work,
+and the model excludes them by construction, not by omission.
+
+What the commitment buys is the subject of the next section, but the shape of the
+bargain can be stated now. A statically determined firing order is precisely the
+condition under which two otherwise intractable questions become cheap. The first
+is whether the concurrent program is sound --- bounded and deadlock-free --- which
+for an arbitrary concurrent system is a state-space search, and which here
+collapses to replaying one known order. The second is whether two backends compiled
+from the same algorithm and schedule must agree --- which for nondeterministic
+programs is not even well-posed, since a nondeterministic program need not agree
+with itself, and which here becomes a sharp, falsifiable, byte-for-byte test.
+Neither the soundness gate of \cref{sec:arch-gate} nor the differential rig of
+\cref{ch:validation} would be possible without the static firing order. They are
+not separate features bolted on; they are the two things the central restriction
+was traded for. The rest of this chapter is an attempt to judge whether the things
+bought are worth the expressiveness given up --- a judgement that depends entirely
+on what one wants to build, and which the chapter therefore tries to make in terms
+concrete enough for a reader to apply to their own case.
 
 \section{Advantages}\label{sec:disc-advantages}
-% Portability for the algorithm class; swappable IO; compile-time soundness;
-% falsifiable genericity.
+
+\paragraph{Portability for the algorithm class, demonstrated rather than asserted.}
+Within the restricted class, the separation delivers on its promise: one algorithm
+file, unchanged, is decomposed across shared-memory threads, message-passing
+processes, distributed-memory ranks, and bare-metal microcontrollers by editing
+only the schedule. This is the property that motivated the work, and it is not
+merely claimed --- it is the thing the differential matrix tests on every build.
+Twenty-seven algorithms, each written once, are driven across the ten backends on
+three tiers; every required cell a runtime can execute agrees byte-for-byte, with
+the documented exceptions --- such as the convergence example off its single-worker
+path --- recorded as skips rather than hidden. The arithmetic was written once and
+never rewritten for a target; the expensive, error-prone part --- the decomposition
+and the IO --- became a short, swappable description.
+
+\paragraph{IO semantics swappable per target without touching the algorithm.}
+The contribution that distinguishes this work from the compute-scheduling
+languages it borrows from is that IO is a first-class schedule concern, not a
+property of a fixed runtime. Synchronous or asynchronous, buffered or unbuffered,
+event-driven or polled, over shared memory or sockets or DMA: each is a directive
+the schedule sets and the compiler resolves against the chosen backend's declared
+capabilities. The same algorithm can be given a blocking, unbuffered transport on
+one target and an asynchronous, double-buffered, event-notified one on another,
+and the change is local to the schedule. Hand-written parallel code couples these
+decisions to the source; here they are dials.
+
+\paragraph{Compile-time soundness in place of runtime surprise.} Boundedness and
+deadlock-freedom are decided before any code is emitted, and a violation is a
+compile error that names the offending place or stalled transition rather than a
+hang discovered under load. For the targets this work most cares about --- embedded
+systems with no operating system to absorb a buffer overrun and no debugger
+attached in the field --- moving these failures from run time to compile time is
+not a convenience but a change in kind. A class of bugs that would otherwise be
+found late, intermittently, and expensively is instead found at the desk, every
+build, deterministically.
+
+\paragraph{Falsifiable genericity.} The separation claim is unusual among
+software-architecture claims in being mechanically refutable. ``The algorithm is
+independent of schedule and backend'' is not a matter of taste or of code review;
+it is a prediction that a specific test will stay green, and any leak that makes
+two backends diverge --- which a leak across the algorithm/schedule or
+middle-end/presentation boundary will, unless it happens to corrupt every backend
+identically --- turns it red by naming a backend that disagrees. The one case the
+rig cannot catch by construction is a common-mode leak in the shared middle-end
+that corrupts all backends alike; it is the residual risk taken up in
+\cref{sec:disc-threats}. The negative falsifiers of \cref{sec:val-negative} close
+the loop by proving the test can go red, so a green result carries information.
+This is a higher evidential standard than separation claims usually meet, and it is
+a direct consequence of the determinism the central trade bought.
+
+\paragraph{A genuinely thin backend boundary.} The event contract is narrow enough
+that most of a new backend is shared code. Adding a tier-1 backend is days to
+weeks, not a rewrite, because the event-list walker, the renderers, the
+host-election rule, and the check-loop templates are reused, and only the
+transport-specific calls differ (\cref{sec:be-cost}). The low marginal cost of a
+backend is itself evidence that the middle-end/presentation boundary is real: if
+target-specific knowledge had leaked above the contract, a new backend could not
+be so thin.
 
 \section{Honest shortcomings}\label{sec:disc-shortcomings}
-% The restricted algorithm class (affine/static/single-assignment, no
-% scatter, no recursion, no dynamic scheduling); greedy non-optimal schedule;
-% single-order soundness scope; integer-only bit-identity and the float-sum
-% boundary; check is descriptive, not prescriptive (no cost model); shim
-% sprawl; the cost of cluster/HIL CI.
+
+The advantages are real, but so are the costs, and an honest accounting gives them
+equal weight. None of the following is a defect to be fixed by more engineering on
+the same design; each is a consequence of the central trade, and several are
+permanent given that trade.
+
+\paragraph{The restricted algorithm class is narrow.} The headline limitation is
+the class of programs admitted at all. Loops must be affine and constant-bounded;
+arrays are single-assignment with no aliasing; arithmetic is integer-valued, or
+floating-point only where reductions do not reorder; there is no data-dependent
+control flow, no recursion, no higher-order kernels, and no dynamic scheduling or
+work-stealing. This excludes convergence-driven iterative solvers, recursive
+divide-and-conquer, irregular and pointer-chasing computations, and any workload
+whose balance must be decided at run time. The corpus reflects the boundary
+honestly: an example written to express data-dependent loop termination compiles
+and runs only on the single-worker path, and is recorded as a skip on the
+multi-worker and cross-backend paths rather than papered over. The class is large
+enough to contain stencils, dense linear algebra, separable filters, histograms,
+sorting networks, small neural-network inference, and a real multi-core signal
+pipeline --- but it is a class, and a reader whose problem lies outside it is not
+served by this system.
+
+\paragraph{The schedule is greedy and non-optimal.} The compiler is faithful to
+the schedule it is given; it does not search for a better one. There is no cost
+model, no autotuner, and no attempt to choose a block size, a partition, or a
+pipeline depth automatically. A schedule that decomposes badly compiles into a
+correct program that runs badly, and the system will not warn that a different
+decomposition would be faster. This is a deliberate scoping decision --- the
+contribution is the separation and its soundness, not performance --- but it means
+the system delivers portability and correctness, not speed, and the burden of
+finding a good schedule rests entirely on the programmer.
+
+\paragraph{Soundness is scoped to coordination, not value-correctness, and to one
+net class.} Two distinct boundaries on the soundness claim must both be kept in
+view. First, the gate proves that the concurrent coordination is sound --- that
+buffers do not overflow and the program does not deadlock --- and says nothing
+about whether the arithmetic is correct. A kernel that computes the wrong function
+passes the gate as readily as a correct one; value-correctness is established only
+by the differential rig against a reference output, and only over the exercised
+cells. The gate and the rig are complementary, and neither subsumes the other.
+Second, even the coordination guarantee is bounded to the statically-ordered net
+class the language produces. The gate is an exact replay over one firing order,
+sound for that class precisely because those nets have no nondeterministic token
+routing; it is not a general boundedness or reachability decision procedure for
+arbitrary Petri nets, and it makes no claim outside its class. Both boundaries are
+stated wherever the gate is discussed because conflating ``the coordination is
+sound'' with ``the program is correct,'' or ``sound for these nets'' with ``sound
+for all nets,'' would overstate the result.
+
+\paragraph{Bit-identity is integer-only, with float-sum as the determinism
+boundary.} The byte-for-byte guarantee rests on the arithmetic being deterministic,
+and IEEE-754 addition is not associative: a distributed floating-point sum would
+produce different bytes depending on the order in which workers' partial results
+arrive, which legitimately varies across backends. The system's response is to
+refuse the operation --- a floating-point \emph{sum} combine is rejected at compile
+time --- rather than emit code that happens to agree on the test input and diverges
+on another. This is the honest choice, but it is also a real limit: a large part of
+scientific computing is floating-point reduction, and this model cannot offer it
+byte-identity. Order-independent floating-point combines that are safe --- a float
+minimum, which the system does support --- are the exception; the general case is
+excluded, and the determinism boundary runs straight through floating-point
+summation.
+
+\paragraph{Check assertions are descriptive, not prescriptive.} The schedule can
+attach a timing assertion --- a latency bound on a loop, say --- and the compiler
+will inject code that measures and reports whether the hand-written schedule meets
+it. But it is a thermometer, not a thermostat. There is no cost model behind it and
+no closed loop: the compiler does not adjust the schedule to satisfy the bound, and
+cannot, because it has no model of what any schedule would cost on any target. A
+reader expecting the assertion to \emph{drive} scheduling will be disappointed; it
+only observes.
+
+\paragraph{Conservative transfer inference can over-communicate.} When a
+partitioned index is affine and contiguous, each worker receives a precise slice;
+when it is not --- a sparse, multi-variable, or data-dependent index --- the
+compiler conservatively broadcasts the whole array. This is always correct, because
+the whole array is a superset of what any worker could read, but it can move far
+more data than necessary. The two data-dependent forms take this whole-array path
+differently: a gather broadcasts the whole indexed input and needs no combine,
+whereas a scatter replicates the whole target accumulator across workers and
+recombines the partials under the declared combine operator --- which is why the
+scatter path is tied to the reduction algebra and the gather path is not. A scatter
+whose target would have to be split along an affine partition axis is rejected
+outright rather than mis-compiled. The boundary is therefore drawn for safety, not
+for communication efficiency, and an irregular kernel can pay for that safety in
+bandwidth.
+
+\paragraph{Shim sprawl is real and, in principle, unbounded.} The embedded tier's
+generic backend is written once, but every microcontroller family needs its own
+shim supplying concrete DMA controllers, interrupt-vector tables, memory layout,
+linker scripts, and real-time validation under \texttt{no\_std} constraints --- the
+most expensive class of backend work, months per family. The system caps its own
+commitment at a single reference shim and treats further families as out-of-tree
+contributions, with the capability matrix and the hardware-abstraction trait as the
+contract such a contribution must meet. This is an honest containment of the cost,
+not an elimination of it: hardware portability beyond the one demonstrated family is
+future work that someone must do, family by family.
+
+\paragraph{The cheap tier carries the formal claim.} The full bit-identical matrix
+runs only on the seven tier-1 CPU backends, because they are the only ones cheap
+enough to build and run on every continuous-integration invocation. The cluster and
+embedded tiers run under a compile-mandatory, run-best-effort discipline: every
+backend must compile for every required schedule, but the cluster tier is executed
+only where a local message-passing launcher is present and the embedded tier only
+under a simulator gate that the default development shell does not carry. The
+practical consequence is that the strongest, most-exercised evidence comes from the
+commodity-CPU tier, while the distributed and embedded tiers are confirmed more
+narrowly --- value-correctness on a local launcher rather than a production cluster,
+and byte-exact co-simulation of three examples rather than a broad embedded matrix.
+The claim is therefore strongest exactly where the targets are least exotic, which
+is the reverse of where extra assurance would be most valuable.
 
 \section{Threats to validity}\label{sec:disc-threats}
 
-\todo{Write Chapter 10 (cycle C5).}
+Beyond the design limits, it is worth asking where the evidence itself could
+mislead --- where a green result might mean less than it appears to.
+
+\paragraph{The specification is the corpus, so coverage bounds the claim.} The
+test suite is the specification: a capability exists only when a committed example
+exercises it. The strength of this is that the specification cannot drift from the
+implementation; the weakness is that the guarantee is exactly as complete as the
+corpus, and a program shape absent from the corpus is outside the guarantee
+entirely. Bit-identity is shown over the exercised cells, not proved for every
+program the grammar admits. The corpus was assembled to be diverse, and the known
+gaps are recorded rather than hidden, but ``no counterexample in twenty-seven
+examples'' is empirical evidence, not a proof, and should be read as such.
+
+\paragraph{Agreement could be common-mode rather than genuine.} The differential
+rig infers mutual byte-identity transitively, through a shared immutable reference
+file. This is sound only if a defect could not corrupt all backends and the
+reference identically. The design defends against this on two fronts: the reference
+is produced once by an independent implementation and then frozen, so it cannot
+drift in lockstep with a later compiler bug; and the seven backends are chosen to
+be maximally diverse in transport and notification discipline, so an error would
+have to produce the same wrong bytes on a spinning poll loop, an event reactor, and
+a barrier-synchronised thread pool to escape. A common-mode fault in the shared
+middle-end --- above the point where the backends diverge --- is the residual risk
+the rig cannot catch by construction, since every backend inherits the same
+middle-end. The soundness gate offers only partial protection here, being itself
+middle-end code that such a fault could equally corrupt; the genuinely orthogonal
+defence is the independent, frozen reference of the previous paragraph, produced by
+a separate implementation that shares none of the compiler's middle-end. That
+defence is real but bounded: it catches a middle-end fault only where the fault
+changes the output bytes, not where it leaves them unchanged.
+
+\paragraph{The negative falsifiers could themselves rot.} A negative test that
+silently becomes a no-op is permanently and invisibly green, and would leave a check
+unguarded while appearing to guard it. The apparatus addresses this directly: each
+falsifier reports a signal proving its injection actually perturbed something --- a
+count of perturbed cells, a divergence pinned to exactly the corrupted backend ---
+and fails if that signal is absent. This is a guard on the guard, and it reduces but
+does not abolish the regress; at some level a test apparatus must be trusted.
+
+\paragraph{Toolchain confounds are pinned out, but the pin is itself an
+assumption.} A disagreement between two backends built with two different compiler
+versions would be an artefact of the toolchain, not evidence of a boundary leak. The
+Nix flake pins the entire environment so that this confound cannot arise, and the
+single pinned toolchain is also the sole source of truth for the minimum supported
+compiler version. The residual assumption is that the pinned environment is itself
+faithfully reproduced, which content-addressing makes very strong but not absolute.
+
+The honest summary of this chapter is that the central trade is favourable for
+exactly the audience the work targets --- people moving a regular, deterministic
+algorithm across heterogeneous parallel and embedded targets, who value
+correctness and portability over peak performance and can live within an affine,
+static, single-assignment class --- and unfavourable for everyone else. The next
+chapter takes the most pressing of these limits and asks which could be lifted, and
+at what cost to the guarantees that make the rest of the system worth having.

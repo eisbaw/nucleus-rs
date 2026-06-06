@@ -1,6 +1,194 @@
 \chapter{Example Catalogue}\label{app:examples}
-% Content cycle: C5. Intent: tabulate the driving examples and what each
-% stresses (the test suite that is the specification).
 
-\todo{Catalogue the driving examples and the property each one exercises
-(cycle C5).}
+The corpus of worked examples is the system's specification: a capability is
+considered to exist only when a committed example exercises it end-to-end
+(\cref{sec:val-suite}). This appendix catalogues the twenty-seven examples and, for
+each, names what it computes and the scheduling or compiler property it is there to
+stress. Most examples carry more than one schedule --- typically a single-worker
+reference schedule and one or more distributed or transformed schedules that must
+reproduce the reference output byte-for-byte --- so the number of differential cells
+is several times the number of examples.
+
+The examples are grouped by the concern they principally exercise. The grouping is
+expository only; many examples touch more than one concern, and the table notes the
+primary one.
+
+\section{Foundational dataflow and decomposition}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{01-elementwise-add} & $c_i = a_i + b_i$ & Smoke test: single worker, no
+      transfers; the minimal positive control. \\
+    \texttt{02-split-add} & The same sum, split across two workers & First
+      cross-worker dataflow and the first inferred transfer pair; also a tier-3
+      multi-microcontroller fixture. \\
+    \texttt{23-dot-product} & $r = \sum_k a_k b_k$ & Map-then-reduce composition over
+      two inputs; an explicit intermediate product, since nested kernel calls are not
+      written inline. \\
+    \texttt{24-outer-product} & $c_{ij} = a_i b_j$ & Rank expansion (the dual of
+      reduction): two one-dimensional reads under two distinct index variables, one
+      write per cell, no accumulation. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Foundational examples.}
+  \label{tab:examples-foundational}
+\end{table}
+
+\section{Stencils, halos, and loop transforms}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{05-stencil} & A $3\times3$ box-blur over an image & Halo inference from
+      kernel access offsets; blocking; row-band and two-dimensional partitions; the
+      worked example of \cref{sec:lang-example}. \\
+    \texttt{06-separable-filter} & A two-pass separable box filter & An intermediate
+      buffer whose lifetime spans two passes on one worker; clamp-to-edge boundary
+      handling. \\
+    \texttt{16-jacobi} & A fixed number of $4$-tap Jacobi sweeps & A
+      multi-iteration stencil with a cross-iteration read-after-write; the
+      banded-slice copy the distributed form requires. \\
+    \texttt{10-wavefront} & An accumulated-cost recurrence over a grid & A
+      kernel-level recurrence the algorithm surface sees only as a wrapping dataflow
+      edge; order-independent combine operators. \\
+    \texttt{11-game-of-life} & Eight generations of a toroidal life rule & A
+      cross-iteration stencil with a double-buffered, pipelined transfer between
+      generations. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Stencil and loop-transform examples.}
+  \label{tab:examples-stencil}
+\end{table}
+
+\section{Reductions and the combine algebra}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{03-reduction} & A sum reduction to a scalar & The distributed
+      accumulator pattern: per-worker partials combined at a host under an
+      associative, commutative operator. \\
+    \texttt{25-bin-parity} & Per-bin parity (count modulo two) & A bitwise-xor
+      combine with a zero identity; an operator-form rather than method-form
+      accumulator. \\
+    \texttt{26-bin-min} & Per-bin minimum over keyed values & A minimum combine
+      whose identity is the type maximum, not zero; identity-aware accumulator
+      initialisation, with an empty bin forcing the identity to show. \\
+    \texttt{27-bin-fmin} & Per-bin floating-point minimum & An order-independent
+      \emph{float} combine that is admitted (with its $+\infty$ identity), in
+      deliberate contrast to a float \emph{sum}, which is rejected for
+      non-associativity. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Reduction examples spanning the supported combine operators.}
+  \label{tab:examples-reduction}
+\end{table}
+
+\section{Data-dependent indexing: gather and scatter}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{08-histogram} & A binned count over an input stream & A data-dependent
+      \emph{write} (scatter); the replicate-and-recombine handling of a
+      conservatively-distributed scatter target. \\
+    \texttt{19-histogram-unconstrained} & A histogram over an unconstrained input &
+      A non-trivial bucketing kernel in index position, with an input whose
+      post-bucket distribution is genuinely non-uniform. \\
+    \texttt{17-spmv} & A sparse matrix--vector product (dense-stored) & A
+      data-dependent \emph{read} (gather) in the right-hand side; conservative
+      whole-array handling of the indexed dimension. \\
+    \texttt{18-multigather} & Two arrays crossing one channel & When both pushes are
+      lifted to the same schedule point, their order must still match the producer's
+      declaration order, caught by the strict-FIFO message-passing backend if
+      reversed. \\
+    \texttt{20-index-cast-permute} & A reversal permutation & A pure kernel in
+      array-subscript index position taking a bare iteration variable, forcing the
+      lowering that coerces an iteration variable to an array-index type before
+      codegen. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Data-dependent indexing examples.}
+  \label{tab:examples-indexing}
+\end{table}
+
+\section{Larger pipelines and networks}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{07-matmul} & A blocked integer matrix product & Two-dimensional blocking
+      on both axes and the triple-nested accumulator. \\
+    \texttt{09-producer-consumer} & A two-stage producer/consumer pipeline &
+      Buffered, asynchronous, event-notified streaming between two compute workers. \\
+    \texttt{12-bitonic-sort} & A bitonic sorting network & A static compare-exchange
+      network checked byte-for-byte against a structurally different reference
+      sorter. \\
+    \texttt{13-cnn-inference} & A small convolutional-network forward pass & One
+      algorithm under three orthogonal decompositions --- serial, batch-parallel, and
+      pipeline-parallel. \\
+    \texttt{15-transpose} & A matrix transpose & The first example whose output axis
+      disagrees with its input axis, exercising the axis-mapping and
+      contiguous-prefix machinery. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Pipeline and network examples.}
+  \label{tab:examples-pipelines}
+\end{table}
+
+\section{Embedded and boundary cases}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}p{0.20\textwidth}p{0.34\textwidth}p{0.38\textwidth}@{}}
+    \toprule
+    Example & Computes & Stresses \\
+    \midrule
+    \texttt{14-hearing-aid} & A three-core hearing-aid signal pipeline & The
+      load-bearing embedded demonstration: heterogeneous worker classes, named memory
+      regions, bidirectional dataflow, and staged boot order, byte-exact under
+      co-simulation. \\
+    \texttt{22-dma-pio-demo} & A fixed-point gain stage & Per-edge transport-mode
+      hints contrasting a DMA-driven bulk transfer with a programmed-IO control
+      transfer on the same fabric; tier-3 value-correctness. \\
+    \texttt{04-prefix-sum} & An inclusive prefix sum & A carried recurrence expressed
+      as a multi-pass rectangular accumulator, since the surface forbids a carried
+      scan directly. \\
+    \texttt{21-jacobi-converge} & A Jacobi sweep with convergence-driven termination &
+      The deliberate boundary marker: a data-dependent loop exit that compiles and
+      runs only on the single-worker path and is recorded as a skip elsewhere. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Embedded examples and the boundary cases that mark the edges of the
+  supported class.}
+  \label{tab:examples-boundary}
+\end{table}
+
+The last two rows of \cref{tab:examples-boundary} are the most informative for a
+reader probing the limits: \texttt{04-prefix-sum} shows how a pattern outside the
+surface grammar (a carried scan) is expressed within it as a kernel-level idiom, and
+\texttt{21-jacobi-converge} shows where the static-firing-order boundary is drawn and
+how the corpus records, rather than hides, a shape it does not yet support across all
+paths.

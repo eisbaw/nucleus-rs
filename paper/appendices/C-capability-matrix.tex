@@ -1,4 +1,109 @@
 \chapter{Capability Matrix}\label{app:capability-matrix}
-% Content cycle: C5. Intent: the full backend capability matrix.
 
-\todo{Tabulate the full backend capability matrix (cycle C5).}
+\Cref{sec:be-matrix} introduced the capability matrix and reproduced its
+transport, notification, asynchrony, and buffering columns for all ten backends
+(\cref{tab:capabilities}). This appendix gives the matrix from the complementary
+direction --- the one a schedule author needs --- by recording, for each backend,
+the concurrency substrate it maps a worker onto, and then tabulating which schedule
+\emph{demands} each backend accepts. Together these answer the practical question
+the matrix exists to answer: given a schedule, which backends can compile it, and
+which reject it and why.
+
+\section{Backends and their concurrency substrate}
+
+The capability columns of \cref{tab:capabilities} say what IO mechanisms a backend
+offers; \cref{tab:cap-substrate} says what a worker physically becomes on each
+backend and over what substrate workers communicate. The two together are the full
+declaration each backend commits as reviewable text.
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}llll@{}}
+    \toprule
+    Backend & Tier & Worker maps to & Substrate \\
+    \midrule
+    \texttt{openmp-rs}       & 1 & task on a work-stealing pool & shared memory \\
+    \texttt{pthreads-sync}   & 1 & operating-system thread      & shared memory \\
+    \texttt{pthreads-async}  & 1 & operating-system thread      & shared memory, ring buffers \\
+    \texttt{mp-tcp-bufsync}  & 1 & operating-system process     & TCP loopback socket \\
+    \texttt{mp-tcp-poll}     & 1 & operating-system process     & TCP loopback socket \\
+    \texttt{mp-tcp-event}    & 1 & operating-system process     & TCP loopback socket \\
+    \texttt{mp-uds-event}    & 1 & operating-system process     & Unix-domain socket \\
+    \texttt{mpi-blocking}    & 2 & MPI rank                     & MPI \\
+    \texttt{mpi-nonblocking} & 2 & MPI rank                     & MPI \\
+    \texttt{embedded-pattern}& 3 & microcontroller core         & UART fabric, DMA/PIO \\
+    \bottomrule
+  \end{tabular}
+  \caption{The concurrency substrate of each backend: what one worker becomes, and
+  how workers communicate. The two shared-memory synchronous backends,
+  \texttt{openmp-rs} and \texttt{pthreads-sync}, are deliberately
+  capability-identical but run on different substrates (a work-stealing pool versus
+  raw threads), so a disagreement between just those two would implicate the
+  substrate rather than the schedule.}
+  \label{tab:cap-substrate}
+\end{table}
+
+\section{Schedule demands and backend acceptance}
+
+Orthogonality means backend choice is mediated only by the matrix: a schedule
+compiles against a backend exactly when the backend can satisfy what the schedule
+demands, and is rejected at compile time, with a message naming the missing
+capability, otherwise (\cref{sec:be-matrix}). The demands fall into two kinds, and
+the resolution rule differs between them. The \texttt{async} and \texttt{buffer}
+demands are \emph{ordered}: asking for asynchrony, or for a buffer depth $N$,
+succeeds against any backend whose declared maximum meets or exceeds it, so this
+axis is a genuine superset relation. The notification discipline is instead a
+\emph{partition}: a schedule's \texttt{notify} selects exactly one discipline, and a
+backend accepts it precisely when that discipline is in the backend's declared
+notify-set, rejecting the others. The disciplines do not form a lattice ---
+\texttt{notify=poll} is not ``less than'' \texttt{notify=event} --- so a backend
+offering only the event discipline rejects a poll-notified schedule and vice versa.
+\Cref{tab:cap-demands} tabulates both kinds for the four IO demands a schedule can
+raise. A schedule that raises none of them --- a single-worker schedule, or a
+multi-worker schedule using only synchronous, unbuffered, blocking transfers ---
+compiles on every backend.
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    Backend & \texttt{async} & \texttt{buffer>1} & \texttt{notify=event} & \texttt{notify=poll} \\
+    \midrule
+    \texttt{openmp-rs}       & --- & --- & --- & --- \\
+    \texttt{pthreads-sync}   & --- & --- & --- & --- \\
+    \texttt{pthreads-async}  & yes & yes (to 64) & yes & --- \\
+    \texttt{mp-tcp-bufsync}  & --- & --- & --- & --- \\
+    \texttt{mp-tcp-poll}     & --- & --- & --- & yes \\
+    \texttt{mp-tcp-event}    & yes & yes (to 64) & yes & --- \\
+    \texttt{mp-uds-event}    & yes & yes (to 64) & yes & --- \\
+    \texttt{mpi-blocking}    & --- & --- & --- & --- \\
+    \texttt{mpi-nonblocking} & yes & yes (to 64) & yes & --- \\
+    \texttt{embedded-pattern}& --- & --- & --- & --- \\
+    \bottomrule
+  \end{tabular}
+  \caption{Which schedule IO demand each backend accepts. ``\texttt{async}'' is an
+  asynchronous transfer; ``\texttt{buffer>1}'' is an in-flight depth greater than
+  one, up to the stated maximum; the two \texttt{notify} columns are the wakeup
+  disciplines. A dash means the backend rejects a schedule raising that demand, at
+  compile time. Every backend additionally accepts the synchronous, unbuffered,
+  barrier-or-blocking baseline, which is why a schedule using only that baseline is
+  universally portable. \texttt{mpi-nonblocking} is a strict superset of
+  \texttt{mpi-blocking}.}
+  \label{tab:cap-demands}
+\end{table}
+
+Two consequences of this table are worth drawing out, as they govern how the
+differential matrix is populated. First, a schedule that demands an asynchronous,
+event-notified, double-buffered transfer is accepted only by the four asynchronous
+backends (\texttt{pthreads-async}, \texttt{mp-tcp-event}, \texttt{mp-uds-event},
+and \texttt{mpi-nonblocking}); the matrix records such a schedule's \emph{required}
+column --- the set of backends the harness must hold to byte-identity --- as exactly
+those four, and the synchronous backends correctly reject it rather than silently
+downgrading. Second, the polled discipline is offered by only one
+backend, \texttt{mp-tcp-poll}, so a schedule that specifically demands
+\texttt{notify=poll} isolates that backend's notification path. The matrix is what
+makes these required-column choices mechanical rather than ad hoc: the set of
+backends a cell requires is computed from the schedule's demands against these
+declarations, and the harness then holds exactly that set to byte-identity.

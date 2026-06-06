@@ -1,4 +1,153 @@
 \chapter{The \nuclang{} Grammar}\label{app:grammar}
-% Content cycle: C5. Intent: the algorithm and schedule sublanguage grammars.
 
-\todo{Give the algorithm and schedule sublanguage grammars (cycle C5).}
+This appendix gives the grammar of the two \nuclang{} sublanguages introduced by
+example in \cref{ch:language}. The notation is a lightweight EBNF: \texttt{|}
+separates alternatives, \texttt{[\,]} encloses an optional element,
+\texttt{\{\,\}*} a zero-or-more repetition, and terminals are set in
+\texttt{typewriter}. The grammar describes the surface syntax; semantic
+restrictions that the parser accepts but later passes reject --- single assignment,
+affine bounds, mandatory placement, capability resolution --- are stated as notes
+rather than encoded in the productions, since they are enforced by typed
+diagnostics downstream rather than by the grammar.
+
+\section{Lexical conventions}
+
+Comments run from \texttt{//} to end of line. Identifiers are the usual
+alphanumeric-with-underscore form. Integer and size literals may carry a unit
+suffix in the schedule's resource and timing positions (for example \texttt{64KB},
+\texttt{10ms}, \texttt{1ns}). A type is a scalar element type --- \texttt{i32},
+\texttt{f32}, \texttt{usize} --- optionally followed by one or more bracketed
+dimension extents, each a constant-folding expression over declared constants.
+
+\section{The algorithm sublanguage}
+
+An algorithm file declares constants, data arrays, kernel contracts, and a dataflow
+body of single-assignment writes and affine loops.
+
+\begin{verbatim}
+algo-file   ::= { item }*
+item        ::= const-decl | data-decl | kernel-decl | stmt
+
+const-decl  ::= "const" ident ":" type "=" expr ";"
+data-decl   ::= "data" ident ":" type ";"
+kernel-decl ::= "kernel" ident ":" "(" [ type-list ] ")" "->" type purity ";"
+purity      ::= "pure" | "effectful"
+type-list   ::= type { "," type }*
+
+type        ::= scalar-type { "[" expr "]" }*
+scalar-type ::= "i32" | "f32" | "usize"
+
+stmt        ::= write-stmt | call-stmt | for-stmt
+write-stmt  ::= lvalue "<--" kernel-call ";"
+call-stmt   ::= kernel-call ";"
+for-stmt    ::= "for" ident ":" expr ".." expr [ "until" rel-expr ]
+                "{" { stmt }* "}"
+
+kernel-call ::= ident "(" [ arg-list ] ")"
+arg-list    ::= rvalue { "," rvalue }*
+rvalue      ::= kernel-call | expr
+lvalue      ::= ident { "[" expr "]" }*
+
+rel-expr    ::= expr [ cmp-op expr ]
+cmp-op      ::= "<=" | "<" | "==" | "!=" | ">" | ">="
+expr        ::= mul-expr { ( "+" | "-" ) mul-expr }*
+mul-expr    ::= unary-expr { ( "*" | "/" | "%" ) unary-expr }*
+unary-expr  ::= [ "-" ] atom
+atom        ::= literal | ident | kernel-call
+              | ident { "[" expr "]" }* | "(" expr ")"
+\end{verbatim}
+
+\paragraph{Notes.} The expression grammar is stratified by precedence ---
+additive over multiplicative over unary over atom --- so it is unambiguous without
+a separate precedence declaration; index and loop-bound positions reuse the same
+\texttt{expr} nonterminal. Loop bounds and array-index expressions are affine in
+the enclosing iteration variables and declared constants, and fold to compile-time
+constants where a constant is required; a non-affine or non-constant bound is
+rejected by a later pass, not by the grammar. A comparison (\texttt{cmp-op}) is
+admitted only inside an \texttt{until} clause, never in an index, bound, or shape
+position, where it is rejected as a typed error. The optional \texttt{until}
+clause is the bounded early-exit surface of \cref{sec:lang-limits}: the
+\texttt{..}-bound remains the compile-time iteration cap that keeps the worst-case
+firing order statically analysable, while the \texttt{until} condition is a runtime
+halt predicate. Each array location is written at most once across the whole body
+(single assignment). A \texttt{write-stmt} whose kernel is \texttt{pure} is a
+value-producing dataflow edge; a \texttt{call-stmt} invokes an \texttt{effectful}
+kernel for its side effect (program IO) and preserves its order within the
+enclosing block. Kernel \emph{bodies} are not part of this grammar: a
+\texttt{kernel-decl} is a contract only, and the body is an ordinary Rust function
+in a sibling file checked against the contract separately.
+
+\section{The schedule sublanguage}
+
+A schedule file binds an algorithm's kernels and loops to a worker topology and
+chooses IO semantics. It has a simple flat form, suitable for homogeneous CPU and
+cluster targets, and a richer typed form that additionally declares worker classes
+and memory regions for heterogeneous targets. The two share the placement, loop,
+transfer, and check directives.
+
+\begin{verbatim}
+sched-file  ::= "schedule" "for" string "{" { sched-item }* "}"
+sched-item  ::= class-decl | region-decl | workers-decl
+              | place-decl | place-data-decl
+              | loop-decl | transfer-decl | check-decl
+
+workers-decl ::= "workers" "=" "{" worker-entry { "," worker-entry }* "}" ";"
+worker-entry ::= ident                      // flat form
+               | ident ":" ident            // typed form: worker : class
+
+place-decl   ::= "place" ident "on" placement ";"
+placement    ::= ident | "{" ident { "," ident }* "}"
+
+loop-decl    ::= "loop" ident ":" loop-opt { "," loop-opt }* ";"
+loop-opt     ::= "partition" "=" ( "rows" | "blocks2d" )
+               | "block" "=" int
+               | "reuse"
+               | "pipeline" "=" int
+
+transfer-decl ::= "transfer" ident ":" xfer-opt { "," xfer-opt }* ";"
+xfer-opt      ::= "sync" | "async"
+                | "buffer" "=" int
+                | "notify" "=" ( "event" | "poll" )
+                | "mode" "=" ( "dma" | "pio" )
+
+check-decl    ::= "check" "loop" ident ":" check-prop
+                  [ "," "on_violation" "=" viol-action ] ";"
+check-prop    ::= "latency_max" "=" duration
+viol-action   ::= "panic" | "count" | "log"
+\end{verbatim}
+
+The typed form adds worker-class and memory-region declarations and a directive
+that binds data to a region:
+
+\begin{verbatim}
+class-decl   ::= "worker_class" ident "{" { class-attr }* "}" ";"
+class-attr   ::= "simd" "=" simd-spec ";"
+               | "memory" "=" mem-spec ";"
+simd-spec    ::= "none" | ident                   // e.g. neon128
+mem-spec     ::= region-ref { "+" region-ref }*
+region-ref   ::= "shared" | ident [ "[" size "]" ]
+
+region-decl  ::= "memory_region" ident "{" { region-attr }* "}" ";"
+region-attr  ::= "size" "=" size ";"
+               | "accessible_by" "=" "{" ident { "," ident }* "}" ";"
+               | "per_worker" "=" bool ";"
+
+place-data-decl ::= "place_data" ident "in" ident ";"
+\end{verbatim}
+
+\paragraph{Notes.} Every kernel the algorithm defines must have exactly one
+\texttt{place-decl}; an unplaced kernel, or a placement of a kernel the algorithm
+does not define, is a compile error (\cref{sec:lang-schedule}). A \texttt{loop-decl}
+and a \texttt{transfer-decl} refer to a loop variable or data symbol by the name the
+algorithm gave it. A data symbol that crosses workers must carry a
+\texttt{transfer-decl}; omitting it is an error naming the symbol. Each transfer
+option is resolved against the chosen backend's capability declaration, so an
+\texttt{async} or buffered request on a backend that supports neither is rejected
+rather than silently downgraded. On a homogeneous backend the typed form collapses
+to the flat form: the worker classes carry a single default class and the memory
+regions a single default region, so the same algorithm and schedule extend from a
+thread pool to a heterogeneous system-on-chip without a second sublanguage. The
+\texttt{check} directive's three violation actions --- \texttt{panic},
+\texttt{count}, and \texttt{log} --- are each exercised by a dedicated schedule in
+the corpus, so the surface the grammar admits here is one the example suite
+demonstrates rather than one merely declared.

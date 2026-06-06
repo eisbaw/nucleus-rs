@@ -1,21 +1,184 @@
 \chapter{Future Work and Open Problems}\label{ch:future-work}
-% Content cycle: C5. Intent: the credible next steps the model invites.
+
+The limitations weighed in \cref{ch:discussion} are not all equal: some are
+permanent consequences of the central trade, while others are boundaries the
+current system draws conservatively and could move with more work. This chapter is
+concerned with the second kind. Each direction below is grounded in a limit the
+system actually has, and each is described with an honest estimate of what it would
+take and --- crucially --- what it would risk, because several of these extensions
+push directly against the static-determinism property that the soundness gate and
+the differential rig depend on. A direction that quietly sacrifices that property
+would not be an extension of this work but a different system; where that danger
+exists, it is named.
 
 \section{Prescriptive scheduling}\label{sec:fw-prescriptive}
-% From a checkable latency assertion to a solved latency budget.
+
+The schedule today is hand-written and the compiler is faithful to it; the
+\texttt{check} assertions observe whether a bound is met but do nothing to meet it
+(\cref{sec:lang-schedule}). The natural next step is to close that loop: turn a
+checkable latency assertion into a solved latency budget, so that a schedule states
+a goal --- a per-loop latency ceiling, a memory footprint, a worker count --- and
+the compiler searches the schedule space for a decomposition that satisfies it.
+
+This is the direction in which the compute-scheduling languages have invested most
+heavily, through cost models and autotuners, and the same machinery is applicable
+here. But it is genuinely hard, and it changes the contract: a solver needs a cost
+model of each target, and a cost model is exactly the thing this work deliberately
+does not have, because a faithful one is target-specific and a wrong one would
+silently choose bad schedules. A credible version would likely begin narrowly ---
+solving for one parameter, such as block size or pipeline depth, against a measured
+rather than modelled cost on one target --- and treat full multi-objective schedule
+synthesis as a long-term goal rather than a near-term feature. The value of the
+present architecture for this work is that the search space is already explicit and
+the soundness gate already rejects unsound candidates, so a solver could explore
+schedules knowing that every accepted one is sound by construction.
 
 \section{Floating-point determinism}\label{sec:fw-float}
-% Order-independent reductions to extend bit-identity beyond integers.
 
-\section{Beyond the affine class}\label{sec:fw-affine}
-% Distributed gather/scatter; data-dependent control flow; sparse solvers;
-% polyhedral analysis for non-affine indexing.
+The bit-identity guarantee stops at floating-point summation, because IEEE-754
+addition is not associative and a distributed float-sum cannot be made order-
+independent without changing its result (\cref{sec:disc-shortcomings}). The system
+handles this honestly today by rejecting a floating-point sum combine at compile
+time, which is correct but restrictive.
 
-\section{New tiers}\label{sec:fw-tiers}
-% GPU/NPU as a possible tier-4.
+There is a known route past this that does not abandon determinism:
+reproducible reductions that compute a fixed result regardless of summation order,
+for instance by accumulating into a wide fixed-point superaccumulator that absorbs
+each addend exactly, or by pre-rounding addends to a common granularity, so that the
+partial-sum tree becomes order-invariant. Adopting
+one of these would let a distributed floating-point sum carry the same kind of
+byte-identity guarantee the integer combines already enjoy, extending the
+differential rig's reach into a large and important part of scientific computing.
+There is a subtlety that makes this less self-contained than it first appears: a
+reproducible reduction is order-independent, but it does not in general equal the
+naive left-to-right IEEE-754 sum that a single-worker reference would compute. The
+immutable reference --- the trust anchor of the whole rig --- would therefore have
+to adopt the same reproducible scheme, so that cross-backend agreement is also
+agreement with the oracle. The change is thus not purely additive: the reduction
+lowering, the kernel contract, and the reference implementation must move in
+lockstep. The risk is nonetheless contained, because it touches the reduction path
+and the oracle rather than the language surface or the soundness gate, and the new
+combine can be made opt-in. It remains among the higher-value directions, because
+it lifts a limit that excludes a whole numerical domain --- but it is not the
+trivial drop-in that the opt-in framing alone would suggest.
+
+\section{Beyond the affine, static class}\label{sec:fw-affine}
+
+The hardest and most consequential limits are the ones that define the algorithm
+class itself, and they come in several grades of difficulty.
+
+\paragraph{Distributed gather and scatter.} Data-dependent indexing is supported
+today only conservatively: a gather broadcasts the whole indexed array and a
+scatter replicates and recombines its target, and a scatter onto an affine-
+partitioned target is rejected (\cref{sec:arch-transfer}). A precise distributed
+gather/scatter --- one that moves only the elements a worker actually touches ---
+would require a communication-synthesis pass that reasons about the index array's
+contents, which are not known at compile time, and so would need either a runtime
+exchange phase or a two-pass inspector/executor scheme --- a first pass that
+inspects the index array to plan the communication and a second that executes that
+plan --- of the kind sparse libraries use. This is well-trodden ground in distributed sparse computing, but importing it
+here means admitting a runtime-determined communication pattern, which sits in
+tension with the static firing order; the open problem is to do so without losing
+the soundness gate, perhaps by bounding the runtime exchange within a statically
+sound envelope.
+
+\paragraph{Data-dependent control flow.} Convergence-driven termination --- a loop
+that runs ``until converged'' --- is the single most-requested capability the model
+lacks, and the corpus already contains an example written against a bounded
+early-exit surface --- the optional \texttt{until} clause whose production is given
+in \cref{app:grammar} --- to mark exactly where the boundary lies. Lifting this fully is
+the deepest change, because a data-dependent trip count means the firing order is no
+longer statically determined, which is the property everything else rests on. A
+plausible middle path is bounded data-dependent iteration: a loop with a
+compile-time maximum trip count and a runtime early exit, so that the worst-case
+firing order remains statically analysable for soundness even though the actual run
+may stop early. This preserves the soundness gate, whose worst-case replay is
+bounded by the cap. It does not, by itself, preserve the \emph{other} pillar, the
+differential test: byte-identity across backends additionally requires that the
+early-exit decision be a deterministic, backend-agnostic function of the data, so
+that every backend stops at the same iteration. That holds for an exact integer
+convergence predicate but is itself at risk under a floating-point convergence
+test, which ties this direction back to the float-determinism limit above. With
+that caveat, it would admit a useful subset of iterative solvers --- those with a
+known iteration cap and an exact termination test --- without surrendering static
+analysability, and is a more realistic target than unbounded data-dependent control
+flow.
+
+\paragraph{Sparse iterative solvers.} A full sparse solver needs both of the
+above --- data-dependent indexing and convergence-driven termination --- which is
+why it sits entirely outside the present model. It is listed here not as a
+near-term target but as the natural destination if the two preceding directions
+both succeed, and as an honest marker of how far the current class is from
+general numerical computing.
+
+\paragraph{Polyhedral analysis for non-affine indexing.} The transfer-inference
+pass degrades to whole-array broadcast whenever an index is not an affine,
+contiguous function of the partition variables. A polyhedral analysis, using an
+established integer-set library, could compute precise transferred regions for a
+broader class of affine and piecewise-affine index expressions than the current
+prefix-based inference handles, reducing over-communication without changing the
+language. This is an internal precision improvement rather than a class extension:
+it makes existing programs communicate less, and risks nothing in the guarantees,
+which makes it a comparatively safe direction with a concrete payoff.
+
+\section{New target tiers}\label{sec:fw-tiers}
+
+The three tiers --- commodity CPU, message-passing cluster, embedded
+microcontroller --- cover a wide span but stop short of massively parallel
+accelerators. A GPU or neural-processing-unit tier is a plausible fourth, and the
+event contract is in principle agnostic enough to drive one. But the fit is not
+free: a GPU's execution model is bulk-synchronous over thousands of lanes with a
+memory hierarchy the current contract does not model, and the \texttt{Alloc} and
+\texttt{Free} events (\cref{sec:arch-petri}), currently reserved in the event
+contract but emitted by no backend, would have to become load-bearing to place data
+across that hierarchy. The honest assessment is that a
+GPU tier is a research project in its own right, not a matter of writing one more
+shim, and that claiming the architecture ``extends to GPUs'' without having done it
+would be exactly the kind of overclaim this dissertation has tried to avoid. It is
+listed as an open direction, not a promised one.
+
+The cheaper and more certain tier work is breadth within the existing embedded
+tier: the system ships a single reference microcontroller shim, and additional
+families --- each a separate shim against the committed hardware-abstraction trait
+--- would broaden the hardware-portability evidence from one family to several. This
+is bounded, well-specified engineering rather than research, but it is real work,
+months per family, and it is the most direct way to strengthen the part of the
+claim that \cref{sec:disc-shortcomings} identified as currently the narrowest.
 
 \section{A quantitative performance and scaling study}\label{sec:fw-quant}
-% Compile-time, generated-code size, and schedule scaling (the deferred
-% measurements addendum).
 
-\todo{Write Chapter 11 (cycle C5).}
+This dissertation deliberately confined its results to correctness and coverage,
+because the contribution it defends is the separation and its falsifiability, not
+the speed of the emitted code (\cref{ch:results}). That scoping leaves an obvious
+empirical study undone, and it is worth stating precisely what it would measure, so
+that its absence is understood as a boundary rather than an oversight.
+
+Three quantities are the natural subjects. First, \emph{compile time}: how the cost
+of the pipeline --- and in particular the soundness gate, whose single-order replay
+should be cheap --- scales with program size, worker count, and net size. Second,
+\emph{generated-code size}: how large the emitted projects are across backends, and
+how that grows with the worker count and the schedule's complexity. Third,
+\emph{runtime scaling}: how the emitted programs' wall-clock performance varies with
+worker count and schedule on real hardware, which is the measurement that would turn
+the portability claim from ``the same values everywhere'' into ``the same values,
+and here is what each decomposition costs.'' None of these bears on the
+correctness claims already established --- a slow but byte-identical program still
+falsifies nothing --- which is why they were separable and were separated. They are
+the principal piece of empirical work this thesis invites next, and the one most
+likely to inform whether the prescriptive-scheduling direction of
+\cref{sec:fw-prescriptive} is worth its cost.
+
+Taken together, these directions share a common discipline: each is judged not only
+by what it would add but by what it would risk to the determinism the system is
+built on. Two of them sit off that risk axis entirely --- prescriptive scheduling
+and the quantitative study change no guarantee, the first being an optimisation
+question and the second an empirical one. Of the rest, the order-independent float
+reduction and the polyhedral precision improvement add capability without touching
+the guarantees, even though the polyhedral work is grouped, by topic, inside the
+affine-class section; bounded data-dependent iteration and a precise distributed
+scatter push against the static firing order and must be done carefully if at all;
+and unbounded data-dependent control flow and a GPU tier would, if done naively,
+dismantle the very properties that make the present system worth having. The
+interesting future work is therefore not simply to lift the limits, but to lift them
+while keeping the soundness gate sound and the differential test meaningful --- which
+is the same constraint that shaped the original design.

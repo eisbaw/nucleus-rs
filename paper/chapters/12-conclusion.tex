@@ -1,5 +1,74 @@
 \chapter{Conclusion}\label{ch:conclusion}
-% Content cycle: C5. Intent: restate the contribution, what was demonstrated,
-% and the bet the work makes; close cleanly without overclaiming.
 
-\todo{Write Chapter 12 (cycle C5).}
+This dissertation began with a narrow, concrete complaint: that porting a parallel
+algorithm across CPU threads, a message-passing cluster, and an embedded
+microcontroller means rewriting it, because the decomposition and the IO --- not the
+arithmetic --- are written by hand and tangled into the source, separately for each
+target. Compute scheduling has long had first-class language support; IO scheduling
+has not. The work set out to give it that support and to make the resulting
+separation claim something stronger than a design aspiration.
+
+The contribution is best stated soberly. The system rests on a strict separation
+between an algorithm sublanguage, which says what to compute and contains no worker,
+buffer, transport, or synchronisation, and a schedule sublanguage, in which
+decomposition, IO semantics, and target are first-class directives the algorithm
+never sees. The two are unified by a single Petri-net intermediate representation
+that carries transfer synthesis, synchronisation, and a compile-time soundness gate
+together, so that boundedness and deadlock-freedom are reported as compile errors
+rather than discovered as runtime hangs. And the genericity claim is made
+mechanically falsifiable by a cross-backend differential test: the same algorithm,
+under every schedule and capable backend, must produce byte-identical output, and
+any leak across the algorithm/schedule or middle-end/presentation boundary that
+makes two backends diverge turns that test red. The implementation drives
+twenty-seven worked algorithms through ten
+backends across three tiers --- seven commodity-CPU backends, two message-passing
+cluster backends, and one embedded backend with multi-microcontroller co-simulation.
+
+What was demonstrated is correspondingly bounded. The seven CPU backends agree
+byte-for-byte across the exercised schedule-by-backend matrix; the soundness gate
+accepts every sound schedule in the corpus and is shown, by adversarial tests, able
+to reject unsound nets; every check that underwrites these claims has a negative
+test proving it can fail, so a green result is informative rather than vacuous; and
+the cluster and embedded tiers are confirmed to value-correctness on a local
+message-passing launcher and to byte-exact co-simulation respectively. None of this
+is a proof that every program the grammar admits is byte-identical everywhere; it is
+the result of a falsification rig that has had every opportunity over a broad and
+diverse corpus to refute the central claim and has not, with its documented edges
+marking exactly where the claim has not yet been tested.
+
+The work is equally clear about its price. The whole architecture is bought with a
+single trade --- expressiveness for a statically determined, deterministic firing
+order --- and that trade defines a real boundary. The algorithm class is affine,
+static, single-assignment, and integer-valued, with floating-point summation
+excluded by the determinism it would break; there is no data-dependent control flow,
+no recursion, and no dynamic scheduling; the schedule is checked, not optimised, and
+carries no cost model; the soundness guarantee is scoped to coordination within a
+restricted net class, not to value-correctness or to arbitrary nets; and the cheap
+CPU tier carries the strongest form of the formal claim while the more exotic tiers
+are confirmed more narrowly. These are consequences of the central commitment, not
+oversights, and the dissertation has tried throughout to weigh them with the same
+seriousness as the advantages.
+
+The bet the work makes is that for a particular and not uncommon audience --- people
+moving regular, deterministic algorithms across heterogeneous parallel and embedded
+targets, who value portability and provable coordination over peak performance and
+can live within the affine, static class --- a system that makes IO a first-class
+schedule concern, decides soundness at compile time, and renders its genericity
+claim falsifiable is worth more than a more expressive system whose portability is
+asserted rather than tested. Whether that bet generalises beyond the demonstrated
+class is the substance of the future work --- including order-independent
+floating-point reduction, bounded data-dependent iteration, precise distributed
+communication, further hardware families, prescriptive scheduling, and the deferred
+quantitative study --- each of which would widen the audience or sharpen the
+evidence, and the discipline that
+shaped the original design --- lift a limit only while keeping the soundness gate
+sound and the differential test meaningful --- is the constraint under which that
+widening must happen.
+
+The smallest honest summary is this. The expensive part of portable parallel
+software is not the arithmetic; it is the decomposition and the IO. This work
+factored those out into a separate, swappable schedule, unified them in one analysable
+representation, and then --- rather than asking to be believed --- built the
+instrument that would expose the separation if it leaked, and ran it on every build.
+Across the corpus, it did not leak. That is a modest claim, precisely scoped, and it
+is the one the dissertation stands behind.

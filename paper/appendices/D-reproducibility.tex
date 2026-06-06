@@ -1,6 +1,105 @@
 \chapter{Reproducibility}\label{app:reproducibility}
-% Content cycle: C5. Intent: how to build and run the compiler, the example
-% matrix, and this dissertation, from a pinned environment.
 
-\todo{Document the pinned build/run instructions for the compiler, the
-example matrix, and this document (cycle C5).}
+Every result in this dissertation is reproducible from a pinned environment, which
+is itself part of the contribution: a differential test across backends is only
+trustworthy if the toolchain that builds those backends is identical between them
+and over time (\cref{sec:val-repro}). This appendix records how to obtain the
+environment and how to build and run the compiler, the example matrix, and this
+document. Commands are given as task-runner recipes; the recipe names are stable
+entry points, and a reader who prefers the underlying invocations can read them off
+the \texttt{Justfile} at the repository root.
+
+\section{The pinned environment}
+
+The entire build environment --- the Rust compiler version, every crate dependency,
+the message-passing libraries, the embedded cross-compiler, and the instruction-set
+simulator --- is described by a Nix flake~\cite{dolstra2004nix}, a content-addressed,
+declaratively pinned specification. Entering the development shell materialises
+exactly that environment:
+
+\begin{verbatim}
+nix develop
+\end{verbatim}
+
+All compiler and matrix commands below are run inside that shell. The single pinned
+toolchain is also the sole source of truth for the minimum supported compiler
+version, so there is no second place for it to drift. Two heavier tiers have their
+own shells, entered on demand: a message-passing shell carrying a local launcher
+for the cluster tier, and a simulator closure for the embedded tier, both described
+in \cref{sec:matrix-repro} below. Keeping these out of the default shell is
+deliberate, so that the common case --- building the compiler and running the
+tier-1 matrix --- needs only the light environment.
+
+\section{Building and testing the compiler}
+
+The compiler is a Rust workspace. Within the development shell:
+
+\begin{verbatim}
+just build          # build all crates in the workspace
+just test           # unit tests, development profile (debug assertions on)
+just test-release   # unit tests, release profile
+just check          # fast type-check without code generation
+just clippy         # lint; warnings are errors
+\end{verbatim}
+
+The release-profile test run is not redundant with the development one: debug
+assertions are stripped in release, so any test that pins a debug-assertion bite
+would diverge between profiles, and running both makes that skew visible rather than
+hidden.
+
+\section{Running the example matrix}\label{sec:matrix-repro}
+
+The tier-1 differential matrix --- every required cell across the seven CPU backends
+--- is a single recipe, and it is the gate that establishes the central
+byte-identity result:
+
+\begin{verbatim}
+just e2e            # full tier-1 differential matrix; a non-zero
+                    # required-cell failure count fails the build
+just ci             # the full hard gate: build, lint, both test
+                    # profiles, the structural checks, and e2e
+\end{verbatim}
+
+The harness emits one line per cell and a totals line; on success it reclaims its
+scratch directories, and on failure it retains them with a diagnostic so the
+offending cell can be inspected. The matrix can also be scoped to a milestone tier
+of required cells for a faster, narrower run. A single cell can be reproduced by
+hand by invoking the compiler driver to emit one project to a directory, then
+building and running that project against the example's fixed input and comparing
+the output bytes to the committed reference; because the compiler is deterministic,
+two such emissions of the same cell are byte-identical source.
+
+The cluster and embedded tiers follow the compile-mandatory, run-best-effort
+discipline (\cref{sec:val-tiers}) and have their own recipes, each entering its own
+pinned shell:
+
+\begin{verbatim}
+just e2e-mpi              # the message-passing differential arm, run
+                          # under a local mpiexec in the MPI shell;
+                          # hard-fails if no launcher is present
+just renode-multimcu-gate # the embedded co-simulation gate: emit the
+                          # bare-metal binaries, cross-compile, co-
+                          # simulate the wired microcontrollers, and
+                          # byte-diff the captured output
+\end{verbatim}
+
+Both diff against the same immutable reference files the tier-1 rig uses, so the
+cluster and embedded tiers are held to byte-exact value-correctness where their
+runtimes are present, not merely to compiling.
+
+\section{Building this dissertation}
+
+The dissertation is itself built from a pinned environment, separate from the
+compiler's, carrying a complete \TeX{} distribution and the same task runner. From
+the document directory:
+
+\begin{verbatim}
+cd paper
+nix develop --command just build   # lualatex + biber via latexmk
+\end{verbatim}
+
+The build is reproducible in the same sense as the compiler's: the flake pins the
+\TeX{} distribution, and a corresponding package output builds the PDF without a
+development shell at all, for a fully hermetic invocation. The figures are TikZ
+sources compiled inline with the document, so there is no separate figure-generation
+step to run first.
