@@ -19,7 +19,8 @@ polled, shared-memory or message-passing or DMA), and target are first-class
 schedule directives that the algorithm never sees: one algorithm composes with
 many schedules, and each schedule composes with many backends. A single
 Petri-net intermediate representation unifies transfer synthesis,
-synchronisation, and a compile-time soundness gate, so boundedness and
+synchronisation, and a compile-time soundness gate, so that --- for the restricted
+class of nets the language produces --- boundedness and
 deadlock-freedom are reported as compile errors rather than runtime surprises.
 The genericity claim is made mechanically falsifiable by a cross-backend
 bit-identical differential test: the same algorithm, under every schedule and

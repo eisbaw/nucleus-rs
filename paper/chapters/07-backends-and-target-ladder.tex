@@ -56,7 +56,11 @@ all ten backends.
   the backend supports; ``Async'' is whether it supports asynchronous transfers;
   ``Buffer'' is the maximum in-flight buffer depth. \texttt{mpi-nonblocking} is a
   strict superset of \texttt{mpi-blocking}: it accepts every synchronous schedule
-  the blocking backend does, plus asynchronous ones.}
+  the blocking backend does, plus asynchronous ones. Its \emph{event} notification
+  is the MPI analogue of a reactor --- non-blocking point-to-point
+  (\texttt{MPI\_Ibsend}/\texttt{MPI\_Imrecv}) with completion tracked by
+  \texttt{MPI\_Wait} on request handles --- not an operating-system event loop of the
+  kind the tier-1 reactor backends use.}
   \label{tab:capabilities}
 \end{table}
 
@@ -152,8 +156,8 @@ The backend emits in two modes. A library mode produces a self-contained
 \texttt{no\_std} crate per worker that compiles against a do-nothing stub shim ---
 enough to prove the lowering type-checks on the embedded target without hardware.
 A binary mode, given a concrete shim, produces bare-metal binaries that run under
-the Renode instruction-set simulator --- an open-source, scriptable tool that emulates
-a configurable set of microcontrollers and their peripherals wired together. The interesting case is multiple
+the Renode instruction-set simulator~\cite{renode} --- an open-source, scriptable tool
+that emulates a configurable set of microcontrollers and their peripherals wired together. The interesting case is multiple
 microcontrollers co-simulated together (\cref{fig:embedded-multimcu}): the
 backend emits one binary per worker plus a generated Renode machine description
 that wires the binaries together over a UART hub, with one bounded FIFO per

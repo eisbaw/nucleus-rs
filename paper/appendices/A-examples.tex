@@ -7,7 +7,9 @@ reference schedule and one or more distributed or transformed schedules that mus
 reproduce the reference output byte-for-byte --- so the number of differential cells
 is several times the number of examples.
 
-The examples are grouped by the concern they principally exercise. The grouping is
+The examples are grouped by the concern they principally exercise, in six tables
+(\cref{tab:examples-foundational,tab:examples-stencil,tab:examples-reduction,%
+tab:examples-indexing,tab:examples-pipelines,tab:examples-boundary}). The grouping is
 expository only; many examples touch more than one concern, and the table notes the
 primary one.
 
@@ -147,8 +149,9 @@ primary one.
       algorithm under three orthogonal decompositions --- serial, batch-parallel, and
       pipeline-parallel. \\
     \texttt{15-transpose} & A matrix transpose & The first example whose output axis
-      disagrees with its input axis, exercising the axis-mapping and
-      contiguous-prefix machinery. \\
+      disagrees with its input axis, exercising the compiler's handling of
+      non-matching output--input axis order and the conservative whole-array
+      transfer it falls back to. \\
     \bottomrule
   \end{tabular}
   \caption{Pipeline and network examples.}

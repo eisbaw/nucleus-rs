@@ -167,10 +167,14 @@ refuse the operation --- a floating-point \emph{sum} combine is rejected at comp
 time --- rather than emit code that happens to agree on the test input and diverges
 on another. This is the honest choice, but it is also a real limit: a large part of
 scientific computing is floating-point reduction, and this model cannot offer it
-byte-identity. Order-independent floating-point combines that are safe --- a float
-minimum, which the system does support --- are the exception; the general case is
-excluded, and the determinism boundary runs straight through floating-point
-summation.
+byte-identity. Order-independent floating-point combines --- a float
+minimum, which the system does support --- are the exception, and even these carry a
+caveat: float \texttt{min}/\texttt{max} is order-independent only for distinct,
+finite, non-NaN values, because IEEE-754 treats $-0.0$ and $+0.0$ as equal and
+ignores NaN, so a bin mixing signed zeros or containing only NaNs is not guaranteed
+bit-stable under reordering (the committed fixture is chosen NaN-free with distinct
+finite values). The general case is excluded, and the determinism boundary runs
+straight through floating-point summation.
 
 \paragraph{Check assertions are descriptive, not prescriptive.} The schedule can
 attach a timing assertion --- a latency bound on a loop, say --- and the compiler
@@ -266,7 +270,7 @@ silently becomes a no-op is permanently and invisibly green, and would leave a c
 unguarded while appearing to guard it. The apparatus addresses this directly: each
 falsifier reports a signal proving its injection actually perturbed something --- a
 count of perturbed cells, a divergence pinned to exactly the corrupted backend
-(\cref{sec:val-negative}) --- and fails if that signal is absent. This is a guard on the guard, and it reduces but
+(\cref{sec:val-negative}) --- and fails if that signal is absent. This is one further level of meta-testing, and it reduces but
 does not abolish the regress; at some level a test apparatus must be trusted.
 
 \paragraph{Toolchain confounds are pinned out, but the pin is itself an

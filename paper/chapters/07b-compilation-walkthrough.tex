@@ -48,54 +48,41 @@ deterministic, sound, per-worker execution.
 
 \section{The algorithm sublanguage, precisely}\label{sec:wt-semantics}
 
-Before tracing the passes, it is worth stating precisely what the algorithm means,
-because several later passes are sound only because of these semantics
-(\cref{sec:lang-algorithm} introduced them; here they are pinned down on the
-example).
+Before tracing the passes, it is worth pinning four properties of the algorithm to
+this example, because several later passes are sound only because of them
+(\cref{sec:lang-algorithm} introduced them in general).
 
-\paragraph{Shaped, statically-sized arrays.} Every array has a shape fixed at
-compile time. The constants \texttt{H} and \texttt{W} are evaluated to $16$ during
-lowering, so \texttt{img\_in} and \texttt{img\_out} have fully concrete type
-\texttt{i32[16][16]}. There are no runtime-sized arrays, and every index expression
-can therefore be reasoned about as an affine function of the loop variables.
+\paragraph{Shaped, statically-sized arrays.} The constants \texttt{H} and
+\texttt{W} evaluate to $16$ during lowering, so \texttt{img\_in} and
+\texttt{img\_out} have the fully concrete type \texttt{i32[16][16]}; every index
+expression is therefore an affine function of the loop variables, reasoned about at
+compile time.
 
-\paragraph{Shape-typed kernels with declared purity.} A kernel's signature gives
-the shapes of its arguments and result, and a purity. \texttt{blur3} is
-\emph{pure}: its result depends only on its arguments, so the compiler is free to
-reorder, duplicate, or eliminate its calls. The reuse pass relies on the
-elimination licence --- carrying a previously-read value over rather than re-reading
-it --- and the partition pass relies on replication: because a pure kernel has no
-hidden shared state, each worker may run it independently over its own band.
-\texttt{load\_image} and \texttt{save\_image} are
-\emph{effectful}: their relative order within a basic block is preserved and they
-are never duplicated, because they touch the outside world. The kernel bodies live
-in a sibling Rust file and are checked against these signatures before scheduling
-begins; the algorithm sublanguage itself sees only the signatures.
+\paragraph{Shape-typed kernels with declared purity.} \texttt{blur3} is
+\emph{pure}, so the compiler may reorder, duplicate, or eliminate its calls: the
+reuse pass uses the elimination licence (carrying a previously-read value over
+rather than re-reading it) and the partition pass uses replication (each worker runs
+it independently over its own band, since a pure kernel has no hidden shared state).
+\texttt{load\_image} and \texttt{save\_image} are \emph{effectful}: their order
+within a block is preserved and they are never duplicated, because they touch the
+outside world.
 
 \paragraph{Single assignment.} Each interior \texttt{img\_out[y][x]} is written
-exactly once, and the lowering rejects a program that assigns the same datum twice
-in one scope. Single assignment makes each datum's producer \emph{unique}; together
-with the affine, static indices described below, that producer is also statically
-\emph{identifiable}. At link time the compiler uses the coarser of these two facts
---- which kernel is placed on which worker --- to compute, for every array, its
-producing and consuming worker sets; the partition pass later refines this to which
-worker owns which cell.
+exactly once, which makes each datum's producer \emph{unique}; together with the
+affine static indices below, that producer is also statically \emph{identifiable},
+so linking can compute each array's producing and consuming worker sets and the
+partition pass can later refine this to which worker owns which cell.
 
 \paragraph{Affine loops and the static firing model.} The loop bounds
 (\texttt{1..H-1}) and every array index (\texttt{y-1}, \texttt{x+1}, and so on) are
-affine in the loop variables with compile-time-constant coefficients. There is no
-data-dependent control flow and no data-dependent trip count. As a consequence the
-entire \emph{firing schedule} --- which kernel instances run, in what order, reading
-and writing which array cells --- is determined statically, before any value is
-known. This is the property that the entire middle-end leans on: because the firing
-order is fixed by the program text rather than by runtime data, the compiler can
-reason about decomposition, transfers, and soundness once, at compile time. That
-answer --- which kernel instances fire, what data moves where, and whether the
-coordination is bounded and deadlock-free --- is a property of the program text and
-therefore holds for every input, independent of the values being computed; it is a
-claim about the schedule and its coordination, not about the numerical results. The
-price is the restricted class
-(\cref{sec:lang-limits}); the return is everything that follows in this chapter.
+affine in the loop variables with constant coefficients, and there is no
+data-dependent control flow or trip count. The entire \emph{firing schedule} ---
+which kernel instances run, in what order, reading and writing which cells --- is
+therefore fixed by the program text, before any value is known. This is what lets
+the middle-end reason about decomposition, transfers, and soundness once, at compile
+time, with an answer that holds for every input: it is a claim about the schedule
+and its coordination, not about the numerical results. The price is the restricted
+class (\cref{sec:lang-limits}); the return is everything that follows in this chapter.
 
 \section{Parsing and lowering to the algorithm IR}\label{sec:wt-algoir}
 
@@ -211,7 +198,7 @@ has the input ready, and one after they finish, before the host collects the
 output. Each barrier names its participants --- here all five workers --- and is
 given a stable \emph{sync tag}, a compile-time identifier shared by every
 participant of that barrier (\cref{sec:arch-petri}), so the projection can match the
-same barrier across workers without a global walk.
+same barrier across workers locally, without consulting any other worker's event list.
 
 The transfer pass then consumes the producer--consumer facts from linking and the
 halo width from inference, and synthesises matched send/receive pairs. For
@@ -240,19 +227,21 @@ receives, and the host's \texttt{save\_image} firing. A channel place has a fini
 capacity drawn from the transfer's buffer policy --- two for the asynchronous
 \texttt{img\_in} channels, one for the synchronous \texttt{img\_out} channels.
 
-The gate runs its three checks in a fixed order (\cref{sec:arch-gate}). It first
-confirms \emph{conflict-freedom}: no place offers a token to two competing
-consumers. This is the load-bearing precondition. For the restricted net class this
-language produces --- which by construction has no data-dependent token routing ---
-conflict-freedom removes the only remaining source of choice, so every firing order
-is a permutation of one partial order and reaches the same states; that is what
-makes a single replayed order representative of all of them. The argument is
-specific to this class and is not a general Petri-net property. On that basis the
-gate derives one deterministic firing order and replays it, checking
+The gate runs its three checks in a fixed order (\cref{sec:arch-gate}). The first
+concerns \emph{conflict-freedom}: that no place offers its token to two competing
+consumers. This is the load-bearing precondition, and for the nets this language
+produces it holds \emph{by construction} --- the lowering threads a single-token
+control place through each worker, serialising its transitions, so no data-dependent
+token routing can arise. With that source of choice removed, every firing order is a
+permutation of one partial order and reaches the same states, which is what makes a
+single replayed order representative of all of them; the argument is specific to this
+class and is not a general Petri-net property. The in-gate conflict check guards
+against a regression in the lowering rather than supplying the guarantee. On that
+basis the gate derives one deterministic firing order and replays it, checking
 \emph{boundedness} --- no channel place ever exceeds the capacity its buffer policy
-sets --- and \emph{deadlock-freedom} --- no required transition is left permanently
-un-fireable, whether because an input place never receives its token or because a
-bounded output place stays full in a cyclic wait. For the stencil the net passes:
+sets, which also catches a producer blocked because its output channel stays full ---
+and \emph{deadlock-freedom} --- no required transition is left permanently
+un-fireable because an input place never receives its token. For the stencil the net passes:
 the two-deep input buffers never overflow, because the host pushes exactly one band
 into each per-worker channel before reaching the barrier, well within the two-deep
 capacity; and the barriers admit a completing order. Had the schedule
@@ -320,10 +309,10 @@ loop, the same nine-argument \texttt{blur3} call, the same circular-buffer index
 arithmetic, down to the character (the transport sections of the two files, of
 course, differ). The two generated programs diverge only where a worker sends or
 receives a band or meets a barrier. The sections below show each of the three
-renderings of the same event lists from \cref{sec:wt-events} --- two of them, the
-hosted backends, running that exact distributed schedule, the third running a
-synchronous variant, as its transport requires --- and the last explains why all
-three agree to the byte.
+renderings of the same event lists from \cref{sec:wt-events}: two use the hosted
+backends running that exact distributed schedule, and the third uses the embedded
+backend running a synchronous variant, as its transport requires. The final section
+explains why all three agree to the byte.
 
 \section{Shared memory: the pthreads rendering}\label{sec:wt-pthreads}
 

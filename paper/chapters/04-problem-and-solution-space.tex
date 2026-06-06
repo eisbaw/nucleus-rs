@@ -125,8 +125,9 @@ marking; boundedness becomes the question of whether any place exceeds its
 capacity, and deadlock becomes the reachability of a marking in which no
 transition can fire. One representation carries transfer synthesis,
 synchronisation, and the soundness questions together, and the code emitted for
-each worker is a projection of that same net --- so the analysis and the artefact
-cannot drift apart.
+each worker is a projection of that same net --- its per-worker slice of events,
+extracted as defined in \cref{sec:arch-projection} --- so the analysis and the
+artefact cannot drift apart.
 
 Using the full theory of Petri nets would be both unnecessary and expensive. The
 nets this work builds are deliberately a small, restricted subclass --- bounded

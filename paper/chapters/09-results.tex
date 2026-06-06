@@ -12,7 +12,9 @@ The chapter does, however, close with a set of \emph{static} engineering
 characteristics --- compile cost, generated-code footprint, and how the soundness
 gate's analysis scales (\cref{sec:res-quant}) --- reported as descriptive facts
 about the compiler, the cost of its genericity, rather than as performance claims.
-Every number below is drawn from the live toolchain.
+Every \emph{structural} number below (cell counts, code and generated-code sizes,
+net node counts) is drawn from the live toolchain; the wall-times of
+\cref{sec:res-quant-time} are indicative medians on one machine, not measurements.
 
 \section{Coverage: examples, schedules, and backends}\label{sec:res-coverage}
 
@@ -35,12 +37,13 @@ not silent gaps: the matrix records a reason for every one, and they fall into a
 well-defined categories. The largest group, thirty-five cells, are embedded-tier fixtures
 that are validated by the simulator gate of \cref{sec:res-tiers} rather than by the
 tier-1 runtime rig, since the embedded backend emits \texttt{no\_std} code that the
-hosted run-and-diff harness cannot execute. The remainder are genuine capability
+hosted run-and-diff harness cannot execute. The remaining twenty-eight divide cleanly: twenty are genuine capability
 mismatches --- an asynchronous, buffered schedule asked of a synchronous,
 single-buffer backend, which is rejected at compile time as the capability matrix
-prescribes (\cref{sec:be-matrix}) and whose required column is carried by a capable
-sibling backend --- together with a small number of language shapes that are
-honestly unsupported on the multi-worker path and documented as such
+prescribes (\cref{sec:be-matrix}), with the schedule's differential requirement met
+instead by a backend that does offer asynchrony --- and eight are language shapes
+honestly unsupported on the multi-worker path (a \texttt{for..until} break loop, and
+an in-loop worker-to-worker push), documented as such
 (\cref{sec:res-limits}). \Cref{fig:coverage-heatmap} renders the matrix as an
 example-by-backend heatmap.
 
@@ -228,7 +231,7 @@ boilerplate.
     \midrule
     \texttt{mp-tcp-bufsync}   & tier-1 (TCP, sync)             & 161 \\
     \texttt{mp-tcp-poll}      & tier-1 (TCP, poll)             & 164 \\
-    \texttt{openmp-rs}        & tier-1 (work-stealing pool)    & 444 \\
+    \texttt{openmp-rs}        & tier-1 (shared memory, rayon scope) & 444 \\
     \texttt{pthreads-async}   & tier-1 (threads, async)        & 864 \\
     \texttt{mp-tcp-event}     & tier-1 (TCP, event reactor)    & 974 \\
     \texttt{pthreads-sync}    & tier-1 (threads, sync)         & 985 \\
@@ -244,7 +247,12 @@ boilerplate.
   directories are excluded uniformly across all rows, and the small amount of inline
   unit-test code that remains in a few crates is likewise counted uniformly. The
   shared base (\texttt{backend-common} plus the middle-end) is large;
-  individual tier-1 backends are small, the thinnest under two hundred lines.}
+  individual tier-1 backends are small, the thinnest under two hundred lines. The
+  \texttt{embedded-pattern} figure is an outlier not because of a large per-chip
+  shim --- the reference shim is a small stub --- but because the generic tier-3
+  backend carries multi-microcontroller machinery the hosted tiers do not need
+  (boot-order computation, the UART-hub plan, cross-MCU control-sync) together with
+  its inline tests.}
   \label{tab:quant-footprint}
 \end{table}
 
@@ -329,8 +337,8 @@ barriers are introduced.
   so node count is about twice the firing count. Net node counts are exact
   (deterministic emission); ``firings'' is the dominant loop volume. The
   \texttt{13-cnn-inference} firing count is marked \emph{layered} because it is
-  spread across several heterogeneous convolution and pooling loops rather than a
-  single dominant loop volume.}
+  spread across several heterogeneous convolution and pooling kernel invocations
+  rather than a single dominant loop volume.}
   \label{tab:quant-net}
 \end{table}
 

@@ -76,7 +76,8 @@ a form that contains no decomposition and no IO, and then be mapped onto
 shared-memory threads, a message-passing cluster, and an embedded
 microcontroller purely by changing a separate schedule --- with the compiler
 synthesising all data transfers and synchronisation, guaranteeing at compile
-time that no declared communication buffer overflows and that the program cannot
+time --- for the restricted class of nets the language produces --- that no declared
+communication buffer overflows and that the program cannot
 deadlock, and with the claim that the algorithm is genuinely unchanged made
 mechanically falsifiable by requiring byte-identical output across every schedule
 and every CPU backend.}
@@ -163,7 +164,7 @@ access patterns, which is a narrower and decidable problem). Data-dependent arra
 \emph{indexing} is supported, in both single-worker and distributed form: a
 data-dependent \emph{read} (a gather, $x[c[k]]$ where $c$ is itself data) and a
 data-dependent \emph{write} (a scatter, such as a histogram indexed by data) both
-compile and run bit-identically across the CPU backends. The data-dependent
+compile and run byte-identically across the CPU backends. The data-dependent
 dimension is handled conservatively --- the gathered array is broadcast in whole
 rather than sliced, and a scattered target is replicated per worker and
 recombined --- which preserves correctness at some cost in communication volume.
@@ -197,6 +198,9 @@ claim could not be falsified because it had a single target.
 space. \Cref{ch:language} presents the two sublanguages; \cref{ch:architecture}
 the compilation pipeline (\cref{fig:pipeline}) and the Petri-net IR; and
 \cref{ch:backends} the ten backends and the target ladder.
+\Cref{ch:walkthrough} then traces a single program --- the $3\times3$ stencil ---
+through every compiler stage, from the two source files to generated code on three
+backends, making the abstract pipeline concrete before the validation chapters.
 \Cref{ch:validation,ch:results} present the validation methodology --- the
 bit-identical differential rig, the soundness gate, and the negative falsifiers
 that prove the checks bite --- and the results obtained.

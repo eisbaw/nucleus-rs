@@ -3,7 +3,7 @@
 This chapter walks the compiler from its two source files to per-worker code,
 defends the two boundaries the architecture rests on, and explains the soundness
 gate and why it is sound for the restricted class of programs the language
-admits. The compiler is implemented in Rust~\cite{matsakis2014rust}; the description here is of the
+admits. The compiler is implemented in Rust~\cite{matsakis2014rust}. The description here is of the
 shipping system, not an idealised sketch.
 
 \section{The compilation pipeline}\label{sec:arch-pipeline}
@@ -125,9 +125,9 @@ discovery: the compiler computes the consequences of a decomposition the
 programmer chose, a far narrower and decidable problem.
 
 The inference is careful at its edges. When a partitioned index is affine and
-forms a contiguous prefix of the partition dimensions, each worker receives a
-precise tiled slice; when it is not --- a sparse, multi-variable, or
-data-dependent index --- the pass conservatively degrades to broadcasting the
+involves only the partitioned axes, in order (a \emph{contiguous prefix} of those
+axes), each worker receives a precise tiled slice; when it does not --- a sparse,
+multi-variable, or data-dependent index --- the pass conservatively degrades to broadcasting the
 whole array, which is always a correct superset of what the worker might read, at
 some cost in communication volume. Data-dependent indices (gather and scatter)
 take this whole-array path on the data-dependent dimension; a scatter whose target
@@ -178,12 +178,19 @@ build, not only under a diagnostic flag (\cref{fig:pipeline}). A failure is a
 compile error, with a message naming the offending place or the stalled
 transition --- never a runtime hang discovered later.
 
-The gate has three parts, run in order. A \emph{conflict-freedom} check confirms
-that no place has two consumer transitions simultaneously enabled --- so every
-token has at most one possible consumer, and the firing order therefore
-determines a single execution trace rather than a branching set of them. This is
-the precondition that makes the next two checks sound: with one trace to consider,
-they need only replay it. A \emph{boundedness} check
+The gate has three parts, run in order. The first concerns \emph{conflict-freedom}:
+that no place offers its token to two consumer transitions that could both be
+enabled, so every token has at most one possible consumer and the firing order
+determines a single execution trace rather than a branching set of them. This
+property is the precondition that makes the next two checks sound --- with one
+trace to consider, they need only replay it --- and it holds \emph{by construction}
+for the nets this compiler emits: the lowering threads a single-token control place
+through each worker, serialising that worker's transitions, so a free-choice
+conflict cannot arise. The in-gate conflict-freedom check is therefore a regression
+tripwire rather than the source of the guarantee: it is a complete search on small
+contested nets and a sound (never-false-rejecting) single-order under-approximation
+on the larger multi-worker nets, where an exhaustive search would be costly and the
+by-construction argument has already ruled conflict out. A \emph{boundedness} check
 replays the firing order and rejects any firing that would push a place past its
 capacity, reporting the place and the overflowing marking. A
 \emph{deadlock-freedom} check replays the same order and rejects the first stall
@@ -194,12 +201,13 @@ error, so the diagnosis matches the underlying fault.
 
 The crucial point is \emph{why} this is sound despite being far cheaper than a
 general Petri-net analysis. The firing order is statically determined: the
-compiler derives one deterministic order (source order, refined by dataflow
-constraints), and for the restricted net class --- bounded by construction, and
-with no non-deterministic token routing (no point at which the choice of which
-transition consumes a token could change the outcome) --- replaying that single
-order is equivalent to exploring every reachable marking. The gate is therefore an exact replay over one
-order, not a reachability or coverability search. This is a real limitation, and
+compiler derives one deterministic order --- source order, except where a dataflow
+dependence forces a producer to fire before its consumer. These nets are
+structurally bounded by construction --- every place has a finite declared
+capacity, so the reachable state space is finite --- and, as just argued, free of
+non-deterministic token routing; for that class replaying the single derived order
+is equivalent to exploring every reachable marking. The gate is therefore an exact
+replay over one order, not a reachability or coverability search. This is a real limitation, and
 it is stated as such: the gate is sound for the statically-ordered nets this
 language produces, and is emphatically not a general model checker for arbitrary
 Petri nets. Within its class it is both sound and inexpensive.

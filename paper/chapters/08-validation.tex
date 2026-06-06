@@ -1,8 +1,10 @@
 \chapter{Validation}\label{ch:validation}
 
-A genericity claim --- one algorithm, many schedules, many backends, all in
-agreement --- is only worth as much as the instrument that could refute it. This
-chapter describes that instrument. The central design decision is to make the
+\Cref{ch:walkthrough} traced one program through the compiler and argued,
+concretely, why the same algorithm under different backends must produce the same
+bytes. A genericity claim --- one algorithm, many schedules, many backends, all in
+agreement --- is only worth as much as the instrument that could refute that
+reasoning empirically. This chapter describes that instrument. The central design decision is to make the
 claim \emph{mechanically falsifiable} rather than merely plausible: every worked
 example is run through every applicable schedule on every capable backend, and any
 disagreement, by a single byte, is a hard failure that names the offending cell.
@@ -160,8 +162,8 @@ The static soundness gate is exercised adversarially by a separate, complementar
 means: rather than an end-to-end injection, its rejection capability is established
 by unit tests that hand the gate deliberately unsound nets --- an over-capacity net
 that must be rejected as a boundedness error, a stalling net that must be rejected
-as a deadlock, and a net with two consumer transitions competing for one place's
-token --- a free choice --- that must be rejected as a conflict, and
+as a deadlock, and a net in which two consumer transitions compete for one place's
+token (a free-choice conflict) that must be rejected as a conflict --- and the tests
 assert that each is refused with the correct diagnosis. The gate's acceptance of
 sound nets, in turn, is witnessed by every passing cell in the matrix. So the
 positive and negative directions are both covered for the gate, just not by the
@@ -173,7 +175,7 @@ has been shown to fail on a corpus engineered to break it --- the difference bet
 a claim that is true and a claim that is testable. A green differential matrix is
 only meaningful because the cross-backend falsifier proves the matrix can go red.
 
-\section{Tier-2 and tier-3 validation}\label{sec:val-tiers}
+\section{Tier-2 and Tier-3 validation}\label{sec:val-tiers}
 
 The tier-1 backends are cheap enough to run in full on every build. The cluster and
 embedded tiers are not: they need a message-passing runtime or an
