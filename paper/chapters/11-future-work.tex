@@ -43,8 +43,9 @@ time, which is correct but restrictive.
 
 There is a known route past this that does not abandon determinism:
 reproducible reductions that compute a fixed result regardless of summation order,
-for instance by accumulating into a wide fixed-point superaccumulator that absorbs
-each addend exactly, or by pre-rounding addends to a common granularity, so that the
+for instance by accumulating into a wide fixed-point superaccumulator --- an integer
+accumulator wide enough to represent any partial sum exactly --- that absorbs
+each addend without rounding, or by pre-rounding addends to a common granularity, so that the
 partial-sum tree becomes order-invariant~\cite{demmel2013reproducible}. Adopting
 one of these would let a distributed floating-point sum carry the same kind of
 byte-identity guarantee the integer combines already enjoy, extending the

@@ -30,7 +30,7 @@ together, and the parts that differ between them --- the decomposition and the I
 --- are exactly the parts most prone to deadlock, buffer mismanagement, and
 ordering errors.
 
-A precise statement of the goal follows directly. We want a representation in
+A precise statement of the goal follows directly. The goal is a representation in
 which $C$ is written \emph{once}, with no decomposition and no IO in it, together
 with a separate, per-target description of the decomposition and IO, such that a
 compiler can mechanically produce each $P_i$. Success is not subjective: if the

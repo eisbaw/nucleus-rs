@@ -14,8 +14,9 @@ the \texttt{Justfile} at the repository root.
 The entire build environment --- the Rust compiler version, every crate dependency,
 the message-passing libraries, the embedded cross-compiler, and the instruction-set
 simulator --- is described by a Nix flake~\cite{dolstra2004nix}, a content-addressed,
-declaratively pinned specification. Entering the development shell materialises
-exactly that environment:
+declaratively pinned specification, so that the same inputs reproducibly
+materialise the same environment on any machine that evaluates it. Entering the
+development shell materialises exactly that environment:
 
 \begin{verbatim}
 nix develop

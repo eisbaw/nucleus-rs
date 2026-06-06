@@ -327,7 +327,10 @@ barriers are introduced.
   (loop-structured), while the Petri net the soundness gate analyses is expanded
   over the iteration space --- roughly one place and one transition per kernel firing,
   so node count is about twice the firing count. Net node counts are exact
-  (deterministic emission); ``firings'' is the dominant loop volume.}
+  (deterministic emission); ``firings'' is the dominant loop volume. The
+  \texttt{13-cnn-inference} firing count is marked \emph{layered} because it is
+  spread across several heterogeneous convolution and pooling loops rather than a
+  single dominant loop volume.}
   \label{tab:quant-net}
 \end{table}
 
@@ -350,7 +353,7 @@ by the pipeline, so the figures should be read as an order of magnitude, not a
 measurement. The one example whose pipeline rises above startup noise is the matrix
 multiply, whose \qnetmatmul{}-node net lifts the median to about \qtmax{}
 milliseconds; this is consistent with the gate's linear replay cost --- the matmul net
-is by far the largest --- though at these sizes the effect is small, and we did not
+is by far the largest --- though at these sizes the effect is small, and this work did not
 instrument per-stage timing to attribute it precisely. The practical reading is that
 for this class of program the entire compile, soundness gate included, is comfortably
 sub-second, and qualitatively a small fraction of the downstream Rust build of the

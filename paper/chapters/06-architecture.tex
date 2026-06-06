@@ -155,14 +155,15 @@ small fixed vocabulary. A \texttt{Fire} runs a kernel over an iteration tile; a
 \texttt{Push} sends a data tile to a destination worker under a sequence tag, and
 a matching \texttt{Wait} receives it; a \texttt{Sync} is a control-only barrier
 over a set of participants, each carrying the same stable sync tag so that
-disjoint per-worker lists agree on which barrier is which without a global walk;
+disjoint per-worker lists agree on which barrier is which without any worker
+inspecting another's list;
 and a \texttt{Loop} preserves an iteration's structure rather than unrolling it. A
 sync tag plays a different role from a sequence tag: a sequence tag uniquely
 identifies one push/wait pair on a data channel, whereas a sync tag is a single
 identifier shared by every participant of one barrier. The contract also reserves \texttt{Alloc} and \texttt{Free} events
 for explicit memory-region placement; in the current system the backends manage
 local storage themselves and these two are not yet emitted, an honest gap noted
-here and revisited in \cref{ch:discussion}.
+here and revisited in \cref{sec:fw-tiers}.
 
 Iteration tiles are described uniformly as rectangular slices in iteration space,
 and memory regions are opaque tags the backend interprets, so the same contract

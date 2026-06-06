@@ -9,7 +9,7 @@
 The previous chapters described the language, the pipeline, and the backends one
 concern at a time. This chapter puts them together. It takes a single program ---
 the $3\times3$ stencil of \cref{lst:algo} under the distributed schedule of
-\cref{lst:sched}, already familiar from \cref{sec:lang-example} --- and follows it
+\cref{lst:sched}, already familiar from \cref{sec:lang-schedule,sec:lang-example} --- and follows it
 through every stage of the compiler, from the two source files to the per-worker
 event lists and then, in the second half, to generated code on three different
 backends. Nothing here is new machinery; everything is a concrete instance of a
@@ -166,9 +166,10 @@ $a, a{+}1, \dots, b{-}1$.
         is consumed by the row-band pass, which overrides each compute worker's
         \texttt{y} range with its band. The outer range $1..15$ likewise has length
         14, which does not divide evenly by four; the compiler distributes the
-        remainder with a floor-with-spillover policy, handing
+        remainder by handing
         $\lceil 14/4 \rceil = 4$ rows to the first two workers and
-        $\lfloor 14/4 \rfloor = 3$ to the last two, giving the contiguous bands
+        $\lfloor 14/4 \rfloor = 3$ to the last two --- a floor-with-spillover policy
+        that concentrates the surplus in the leading workers --- giving the contiguous bands
         $1..5$, $5..9$, $9..12$, $12..15$ (\cref{fig:wt-bands}). The partition passes for
         per-worker ranges, row bands, and two-dimensional grids are mutually
         exclusive alternatives selected by the directive; here only the row-band
@@ -188,8 +189,8 @@ $a, a{+}1, \dots, b{-}1$.
         three-slot circular delay line per input row --- a ring buffer of three
         values that shifts by one on each \texttt{x} step, so the two values from the
         previous step are reused and only one new \texttt{img\_in} read is needed per
-        column. This is the optimisation
-        earlier iterations of the system could not express; here it falls out of a
+        column. This is the optimisation the 2013 prototype (\cref{sec:pa-v1})
+        could not express; here it falls out of a
         one-word directive and the access pattern.
 \end{itemize}
 
@@ -344,8 +345,8 @@ consumer blocks when it is empty --- so the asynchronous, event-notified semanti
 the schedule asked for are realised by the operating system's condition variables
 rather than by any polling. The host stages the four input bands into the
 two-deep rings, both barriers pass, and the four output bands are collected; the
-compute worker for the first band runs exactly the loop \cref{sec:wt-acfg}
-described, reading its received rows $0..6$ and writing its band rows $1..5$.
+compute worker for the first band runs exactly the loop described in
+\cref{sec:wt-acfg}, reading its received rows $0..6$ and writing its band rows $1..5$.
 
 \section{Distributed memory: the MPI rendering}\label{sec:wt-mpi}
 

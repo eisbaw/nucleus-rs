@@ -152,7 +152,8 @@ The backend emits in two modes. A library mode produces a self-contained
 \texttt{no\_std} crate per worker that compiles against a do-nothing stub shim ---
 enough to prove the lowering type-checks on the embedded target without hardware.
 A binary mode, given a concrete shim, produces bare-metal binaries that run under
-the Renode instruction-set simulator. The interesting case is multiple
+the Renode instruction-set simulator --- an open-source, scriptable tool that emulates
+a configurable set of microcontrollers and their peripherals wired together. The interesting case is multiple
 microcontrollers co-simulated together (\cref{fig:embedded-multimcu}): the
 backend emits one binary per worker plus a generated Renode machine description
 that wires the binaries together over a UART hub, with one bounded FIFO per

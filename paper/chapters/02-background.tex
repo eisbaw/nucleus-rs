@@ -88,7 +88,7 @@ available --- or statically, at compile time, fixing the order before the
 program runs.
 
 Dynamic scheduling adapts to data-dependent and machine-dependent variation, at
-the cost of run-time overhead, nondeterminism, and analyses that can only be
+the cost of runtime overhead, nondeterminism, and analyses that can only be
 approximate. Static scheduling gives up that adaptivity but gains three
 properties this work depends on. First, \emph{determinism}: a fixed firing order
 means a fixed result and a fixed communication pattern, which is what makes
@@ -99,7 +99,7 @@ one order, rather than searching a reachable state space. Third, \emph{suitabili
 for embedded real-time targets}, where dynamic scheduling is often unacceptable
 regardless. Static scheduling of dataflow has a long pedigree --- synchronous
 dataflow~\cite{lee1987sdf} schedules a restricted graph entirely at compile time
-precisely to remove run-time overhead --- and this work sits firmly in that
+precisely to remove runtime overhead --- and this work sits firmly in that
 static tradition. The scope restrictions stated in \cref{sec:intro-scope} ---
 affine bounds, single-assignment arrays, and a statically fixed decomposition ---
 are exactly what place this work in the static-scheduling camp and make the

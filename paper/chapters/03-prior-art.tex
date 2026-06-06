@@ -122,7 +122,7 @@ unified Petri-net IR as the single point where transfer synthesis,
 synchronisation, and the soundness gate all meet, and from which every backend's
 per-worker code is projected.
 
-\section{Static-schedule streaming and multi-backend array languages}\label{sec:pa-streaming}
+\section{Static-schedule streaming, multi-backend array languages, and data-partitioning systems}\label{sec:pa-streaming}
 
 Two further lines sit especially close to this work's design point and deserve an
 explicit distinction, lest the contribution be mistaken for one of them. The first
@@ -148,7 +148,7 @@ Futhark's parallelism is \emph{discovered and mapped by the compiler} from a
 functional source with no user-facing schedule and no notion of IO semantics or
 distributed and embedded transports; \nuc{}'s portability is over an
 \emph{explicitly scheduled, programmer-annotated} decomposition with first-class IO
-directives and a compile-time communication-soundness gate, reaching the
+directives and a compile-time soundness gate, reaching the
 message-passing and embedded tiers Futhark does not target. The contrast also
 sharpens this work's deliberate non-goal: it does not discover parallelism
 (\cref{sec:prob-commitments}).
@@ -229,6 +229,6 @@ the compute schedulers, extends the schedule to govern \emph{decomposition and I
 semantics} across distributed and embedded targets, unifies the result in a
 single restricted Petri-net IR that carries a compile-time soundness gate, and
 makes the whole claim falsifiable by a cross-backend bit-identical differential
-test. We are not aware of a prior system that combines these --- the closest, set
+test. No prior system is known to combine these --- the closest, set
 out in \cref{sec:pa-streaming}, each diverge on one of them --- and that
 combination is the contribution the remaining chapters develop and defend.
