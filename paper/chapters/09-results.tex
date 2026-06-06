@@ -5,7 +5,7 @@ established. Its core is correctness and coverage: how much of the
 schedule-by-backend space is exercised, whether the backends agree, whether the
 soundness gate behaves as designed, and how far the cluster and embedded tiers
 have been confirmed. The \emph{runtime speed} of the emitted code is out of scope:
-the contribution this dissertation defends is the separation and its falsifiability,
+the contribution this document defends is the separation and its falsifiability,
 not the performance of the generated programs, and a credible speed claim would
 demand a benchmarking methodology this work does not undertake (\cref{sec:fw-quant}).
 The chapter does, however, close with a set of \emph{static} engineering
@@ -117,7 +117,7 @@ It bears repeating where the boundary of this result lies. The gate is sound for
 statically-ordered net class the language produces, by exact replay over one firing
 order, and is not a general Petri-net model checker (\cref{sec:val-gate}). The
 result is ``the gate correctly classifies the nets this system generates,'' not
-``the gate decides boundedness for arbitrary nets,'' and the dissertation claims
+``the gate decides boundedness for arbitrary nets,'' and the document claims
 only the former.
 
 \section{Cluster and embedded value-correctness}\label{sec:res-tiers}
@@ -200,7 +200,7 @@ The results above concern correctness. This closing section reports a small set 
 deliberately not performance claims: none measures how fast the emitted programs
 run, which would require a benchmarking methodology this work does not undertake
 (\cref{sec:fw-quant}). What they characterise instead is the cost of the genericity
-the dissertation argues for --- how much code a backend takes to add, how large the
+the document argues for --- how much code a backend takes to add, how large the
 generated projects are, and how the soundness gate's analysis scales with problem
 size. The structural figures (code lines, generated lines, net node counts) are
 \emph{exact and reproducible}, because the compiler's emission is deterministic

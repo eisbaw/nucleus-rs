@@ -1,6 +1,6 @@
 \chapter{Conclusion}\label{ch:conclusion}
 
-This dissertation began with a narrow, concrete complaint: that porting a parallel
+This document began with a narrow, concrete complaint: that porting a parallel
 algorithm across CPU threads, a message-passing cluster, and an embedded
 microcontroller means rewriting it, because the decomposition and the IO --- not the
 arithmetic --- are written by hand and tangled into the source, separately for each
@@ -46,7 +46,7 @@ carries no cost model; the soundness guarantee is scoped to coordination within 
 restricted net class, not to value-correctness or to arbitrary nets; and the cheap
 CPU tier carries the strongest form of the formal claim while the more exotic tiers
 are confirmed more narrowly. These are consequences of the central commitment, not
-oversights, and the dissertation has tried throughout to weigh them with the same
+oversights, and the document has tried throughout to weigh them with the same
 seriousness as the advantages.
 
 The bet the work makes is that for a particular and not uncommon audience --- people
@@ -71,4 +71,4 @@ factored those out into a separate, swappable schedule, unified them in one anal
 representation, and then --- rather than asking to be believed --- built the
 instrument that would expose the separation if it leaked, and ran it on every build.
 Across the corpus, it did not leak. That is a modest claim, precisely scoped, and it
-is the one the dissertation stands behind.
+is the one the document stands behind.

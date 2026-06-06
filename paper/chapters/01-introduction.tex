@@ -25,7 +25,7 @@ kernel bodies are small and stable --- but the decomposition and IO glue, which
 is large, platform-specific, and the part most likely to harbour a deadlock, a
 buffer overrun, or a subtle ordering bug.
 
-This dissertation argues that the duplication is avoidable, and that avoiding it
+This document argues that the duplication is avoidable, and that avoiding it
 requires treating decomposition and IO not as code to be written but as
 \emph{schedule directives} to be chosen --- separately from, and without
 modifying, the algorithm they apply to.
@@ -47,7 +47,7 @@ laid out, but the \emph{IO} that connects parallel workers --- the transport,
 the synchronisation, the buffering discipline --- is either implicit in a fixed
 runtime or written by hand outside the language. There is no schedule directive
 for ``use asynchronous double-buffered transfers here, blocking unbuffered ones
-there.'' This dissertation makes IO semantics a first-class schedule directive,
+there.'' This document makes IO semantics a first-class schedule directive,
 swappable per target without touching the algorithm.
 
 \paragraph{Hardware changes faster than algorithms do.} An algorithm written for
@@ -183,7 +183,7 @@ hand-written schedule meets a stated latency or buffer bound, but has no cost
 model and does not search for a schedule that does. \Cref{ch:discussion} returns
 to these limits as honest threats to the contribution.
 
-\section{Structure of this dissertation}\label{sec:intro-structure}
+\section{Structure of this document}\label{sec:intro-structure}
 
 \Cref{ch:background} introduces the background concepts the rest of the work
 builds on --- parallel decomposition and separation of concerns, IO semantics as

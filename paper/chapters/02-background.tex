@@ -1,6 +1,6 @@
 \chapter{Background}\label{ch:background}
 
-This chapter introduces the concepts the rest of the dissertation depends on. It
+This chapter introduces the concepts the rest of the document depends on. It
 is deliberately neutral: it presents established ideas --- separation of
 concerns in parallel programming, the dimensions of IO semantics, static versus
 dynamic scheduling, Petri nets, and differential testing --- without yet
@@ -36,7 +36,7 @@ retargeted across schedules by orders of magnitude in performance without
 touching its definition. The polyhedral
 compilers~\cite{baghdadi2019tiramisu,bondhugula2008pluto} pursue the same
 separation through a more powerful mathematical model. What unites them is the
-discipline that the algorithm never mentions the schedule. This dissertation
+discipline that the algorithm never mentions the schedule. This document
 adopts that discipline and extends it from scheduling computation \emph{within a
 single machine} (intra-node) to decomposition and IO \emph{across many machines
 or workers} (inter-node). A middle ground between fully manual and fully

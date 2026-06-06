@@ -1,0 +1,1011 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.2 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global}
+    \entry{renode}{misc}{}
+      \name{author}{1}{}{%
+        {{hash=d83e57e5d597e00fd02d41b068f7edfe}{%
+           family={{Antmicro}},
+           familyi={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \strng{fullhash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \strng{bibnamehash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \strng{authorbibnamehash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \strng{authornamehash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \strng{authorfullhash}{d83e57e5d597e00fd02d41b068f7edfe}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{howpublished}{\url{https://renode.io/}}
+      \field{note}{Scriptable instruction-set simulator with multi-microcontroller co-simulation; accessed June 2026}
+      \field{title}{Renode: Open Source Simulation Framework for Embedded Systems}
+      \field{year}{2010}
+    \endentry
+    \entry{baghdadi2019tiramisu}{inproceedings}{}
+      \name{author}{9}{}{%
+        {{hash=b93e7e5ecd67ea40af5982107181de3f}{%
+           family={Baghdadi},
+           familyi={B\bibinitperiod},
+           given={Riyadh},
+           giveni={R\bibinitperiod}}}%
+        {{hash=6f5bc48643b933057116cc4842dc4591}{%
+           family={Ray},
+           familyi={R\bibinitperiod},
+           given={Jessica},
+           giveni={J\bibinitperiod}}}%
+        {{hash=8e721fde2b592ea68433cb1d4d35d736}{%
+           family={Romdhane},
+           familyi={R\bibinitperiod},
+           given={Malek\bibnamedelima Ben},
+           giveni={M\bibinitperiod\bibinitdelim B\bibinitperiod}}}%
+        {{hash=f8993f2b628bd1556160d5e41fd8aa02}{%
+           family={Del\bibnamedelima Sozzo},
+           familyi={D\bibinitperiod\bibinitdelim S\bibinitperiod},
+           given={Emanuele},
+           giveni={E\bibinitperiod}}}%
+        {{hash=e4184bf22f5c09fb46753041857c74bd}{%
+           family={Akkas},
+           familyi={A\bibinitperiod},
+           given={Abdurrahman},
+           giveni={A\bibinitperiod}}}%
+        {{hash=dc4af744ebf0798a6a1e52c77da2735a}{%
+           family={Zhang},
+           familyi={Z\bibinitperiod},
+           given={Yunming},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=82706737714e4348fc5f5db05e0a548a}{%
+           family={Suriana},
+           familyi={S\bibinitperiod},
+           given={Patricia},
+           giveni={P\bibinitperiod}}}%
+        {{hash=804f70e575015a1bc78123759a08dde4}{%
+           family={Kamil},
+           familyi={K\bibinitperiod},
+           given={Shoaib},
+           giveni={S\bibinitperiod}}}%
+        {{hash=dcb28881d25e46cc6308d0471f0df07c}{%
+           family={Amarasinghe},
+           familyi={A\bibinitperiod},
+           given={Saman},
+           giveni={S\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{5bb9983d626c6c7390365e227e5c4e51}
+      \strng{fullhash}{e691e2c2c4ad29c70efe5774e4988c02}
+      \strng{bibnamehash}{5bb9983d626c6c7390365e227e5c4e51}
+      \strng{authorbibnamehash}{5bb9983d626c6c7390365e227e5c4e51}
+      \strng{authornamehash}{5bb9983d626c6c7390365e227e5c4e51}
+      \strng{authorfullhash}{e691e2c2c4ad29c70efe5774e4988c02}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the IEEE/ACM International Symposium on Code Generation and Optimization (CGO)}
+      \field{title}{Tiramisu: A Polyhedral Compiler for Expressing Fast and Portable Code}
+      \field{year}{2019}
+      \field{pages}{193\bibrangedash 205}
+      \range{pages}{13}
+      \verb{doi}
+      \verb 10.1109/CGO.2019.8661197
+      \endverb
+    \endentry
+    \entry{bauer2012legion}{inproceedings}{}
+      \name{author}{4}{}{%
+        {{hash=e3aaf99037fdbf7a9ce99497cd543989}{%
+           family={Bauer},
+           familyi={B\bibinitperiod},
+           given={Michael},
+           giveni={M\bibinitperiod}}}%
+        {{hash=63f01523432d1dc0b061f6fee6d7e9cb}{%
+           family={Treichler},
+           familyi={T\bibinitperiod},
+           given={Sean},
+           giveni={S\bibinitperiod}}}%
+        {{hash=bf56b91f48eefc569354c6e8628206c9}{%
+           family={Slaughter},
+           familyi={S\bibinitperiod},
+           given={Elliott},
+           giveni={E\bibinitperiod}}}%
+        {{hash=7b4be770da7d4fe41717b6d75f1fa596}{%
+           family={Aiken},
+           familyi={A\bibinitperiod},
+           given={Alex},
+           giveni={A\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{d8d2e28a8adb14dccb32f1de55f837f0}
+      \strng{fullhash}{03e269ce9335b04013969ab3a5f32a03}
+      \strng{bibnamehash}{d8d2e28a8adb14dccb32f1de55f837f0}
+      \strng{authorbibnamehash}{d8d2e28a8adb14dccb32f1de55f837f0}
+      \strng{authornamehash}{d8d2e28a8adb14dccb32f1de55f837f0}
+      \strng{authorfullhash}{03e269ce9335b04013969ab3a5f32a03}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the International Conference on High Performance Computing, Networking, Storage and Analysis (SC)}
+      \field{title}{Legion: Expressing Locality and Independence with Logical Regions}
+      \field{year}{2012}
+      \verb{doi}
+      \verb 10.1109/SC.2012.71
+      \endverb
+    \endentry
+    \entry{bondhugula2008pluto}{inproceedings}{}
+      \name{author}{4}{}{%
+        {{hash=44beb2efd6fff24cc11c2165be3061df}{%
+           family={Bondhugula},
+           familyi={B\bibinitperiod},
+           given={Uday},
+           giveni={U\bibinitperiod}}}%
+        {{hash=57b3ed80566730ae8690e600b0cc3ea2}{%
+           family={Hartono},
+           familyi={H\bibinitperiod},
+           given={Albert},
+           giveni={A\bibinitperiod}}}%
+        {{hash=b2ba49dd5054acb327f4b13c0244d660}{%
+           family={Ramanujam},
+           familyi={R\bibinitperiod},
+           given={J.},
+           giveni={J\bibinitperiod}}}%
+        {{hash=678723b7d5fe26c89fef36bdcbec64f2}{%
+           family={Sadayappan},
+           familyi={S\bibinitperiod},
+           given={P.},
+           giveni={P\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{13c86e51ebe686efde0c49aabeeaf56f}
+      \strng{fullhash}{e3c2dfa00ab74931696399647d852399}
+      \strng{bibnamehash}{13c86e51ebe686efde0c49aabeeaf56f}
+      \strng{authorbibnamehash}{13c86e51ebe686efde0c49aabeeaf56f}
+      \strng{authornamehash}{13c86e51ebe686efde0c49aabeeaf56f}
+      \strng{authorfullhash}{e3c2dfa00ab74931696399647d852399}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 29th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)}
+      \field{title}{A Practical Automatic Polyhedral Parallelizer and Locality Optimizer}
+      \field{year}{2008}
+      \field{pages}{101\bibrangedash 113}
+      \range{pages}{13}
+      \verb{doi}
+      \verb 10.1145/1375581.1375595
+      \endverb
+    \endentry
+    \entry{chen2018tvm}{inproceedings}{}
+      \name{author}{12}{}{%
+        {{hash=48461ccdf50ba5a54e29a354aa734c0b}{%
+           family={Chen},
+           familyi={C\bibinitperiod},
+           given={Tianqi},
+           giveni={T\bibinitperiod}}}%
+        {{hash=f9b4c211d643465fa419270a09de73d6}{%
+           family={Moreau},
+           familyi={M\bibinitperiod},
+           given={Thierry},
+           giveni={T\bibinitperiod}}}%
+        {{hash=d0bfb033dcb9f0196768d37fbbf4c340}{%
+           family={Jiang},
+           familyi={J\bibinitperiod},
+           given={Ziheng},
+           giveni={Z\bibinitperiod}}}%
+        {{hash=0beb8f75088bfac1e81ca3840d0e89f0}{%
+           family={Zheng},
+           familyi={Z\bibinitperiod},
+           given={Lianmin},
+           giveni={L\bibinitperiod}}}%
+        {{hash=0ff83d5677675a4580c2a9f7da98ed09}{%
+           family={Yan},
+           familyi={Y\bibinitperiod},
+           given={Eddie},
+           giveni={E\bibinitperiod}}}%
+        {{hash=3cd7ab414f6089922b00291217182ca0}{%
+           family={Shen},
+           familyi={S\bibinitperiod},
+           given={Haichen},
+           giveni={H\bibinitperiod}}}%
+        {{hash=59a9060cccfc8db82616926a7bb94fa6}{%
+           family={Cowan},
+           familyi={C\bibinitperiod},
+           given={Meghan},
+           giveni={M\bibinitperiod}}}%
+        {{hash=9c7fb226244ca819d3d71f56ac505a34}{%
+           family={Wang},
+           familyi={W\bibinitperiod},
+           given={Leyuan},
+           giveni={L\bibinitperiod}}}%
+        {{hash=f27cb75949e5d4423b381ba7e8488195}{%
+           family={Hu},
+           familyi={H\bibinitperiod},
+           given={Yuwei},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=77e3f2ba7079549607687ed447face63}{%
+           family={Ceze},
+           familyi={C\bibinitperiod},
+           given={Luis},
+           giveni={L\bibinitperiod}}}%
+        {{hash=c9ab8ac486d7f85ac914b1a8e51e512b}{%
+           family={Guestrin},
+           familyi={G\bibinitperiod},
+           given={Carlos},
+           giveni={C\bibinitperiod}}}%
+        {{hash=04f860aabbcc66922143c48686ffbd89}{%
+           family={Krishnamurthy},
+           familyi={K\bibinitperiod},
+           given={Arvind},
+           giveni={A\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {USENIX Association}%
+      }
+      \strng{namehash}{4a1b902110b26e322484f62946cb7718}
+      \strng{fullhash}{257c0849be9b43c3ffa9d44e500b6bc5}
+      \strng{bibnamehash}{4a1b902110b26e322484f62946cb7718}
+      \strng{authorbibnamehash}{4a1b902110b26e322484f62946cb7718}
+      \strng{authornamehash}{4a1b902110b26e322484f62946cb7718}
+      \strng{authorfullhash}{257c0849be9b43c3ffa9d44e500b6bc5}
+      \field{sortinit}{C}
+      \field{sortinithash}{4d103a86280481745c9c897c925753c0}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{13th USENIX Symposium on Operating Systems Design and Implementation (OSDI)}
+      \field{title}{{TVM}: An Automated End-to-End Optimizing Compiler for Deep Learning}
+      \field{year}{2018}
+      \field{pages}{578\bibrangedash 594}
+      \range{pages}{17}
+    \endentry
+    \entry{dagum1998openmp}{article}{}
+      \name{author}{2}{}{%
+        {{hash=5a3afed8356b91cb7461d327b71fd665}{%
+           family={Dagum},
+           familyi={D\bibinitperiod},
+           given={Leonardo},
+           giveni={L\bibinitperiod}}}%
+        {{hash=3311f850582a1d00feec2ef4ff7b183a}{%
+           family={Menon},
+           familyi={M\bibinitperiod},
+           given={Ramesh},
+           giveni={R\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \strng{fullhash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \strng{bibnamehash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \strng{authorbibnamehash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \strng{authornamehash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \strng{authorfullhash}{bf97b7886665f4e63fa65024a4dd2da2}
+      \field{sortinit}{D}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Computational Science \& Engineering}
+      \field{number}{1}
+      \field{title}{OpenMP: An Industry-Standard {API} for Shared-Memory Programming}
+      \field{volume}{5}
+      \field{year}{1998}
+      \field{pages}{46\bibrangedash 55}
+      \range{pages}{10}
+      \verb{doi}
+      \verb 10.1109/99.660313
+      \endverb
+    \endentry
+    \entry{demmel2013reproducible}{inproceedings}{}
+      \name{author}{2}{}{%
+        {{hash=9f386718ad92f64a6b684329bf9bf9b1}{%
+           family={Demmel},
+           familyi={D\bibinitperiod},
+           given={James},
+           giveni={J\bibinitperiod}}}%
+        {{hash=1824b8d7fa66e56132a42ec12f4806b2}{%
+           family={Nguyen},
+           familyi={N\bibinitperiod},
+           given={Hong\bibnamedelima Diep},
+           giveni={H\bibinitperiod\bibinitdelim D\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{d26fa067feb36110d01623c654a95651}
+      \strng{fullhash}{d26fa067feb36110d01623c654a95651}
+      \strng{bibnamehash}{d26fa067feb36110d01623c654a95651}
+      \strng{authorbibnamehash}{d26fa067feb36110d01623c654a95651}
+      \strng{authornamehash}{d26fa067feb36110d01623c654a95651}
+      \strng{authorfullhash}{d26fa067feb36110d01623c654a95651}
+      \field{sortinit}{D}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 21st IEEE Symposium on Computer Arithmetic (ARITH)}
+      \field{title}{Fast Reproducible Floating-Point Summation}
+      \field{year}{2013}
+      \field{pages}{163\bibrangedash 172}
+      \range{pages}{10}
+      \verb{doi}
+      \verb 10.1109/ARITH.2013.9
+      \endverb
+    \endentry
+    \entry{dolstra2004nix}{inproceedings}{}
+      \name{author}{3}{}{%
+        {{hash=a3e96caa8e2128d249c9bae69079bc78}{%
+           family={Dolstra},
+           familyi={D\bibinitperiod},
+           given={Eelco},
+           giveni={E\bibinitperiod}}}%
+        {{hash=1fabdb5b8dfc5bed0531359bd98c4414}{%
+           family={Jonge},
+           familyi={J\bibinitperiod},
+           given={Merijn},
+           giveni={M\bibinitperiod},
+           prefix={de},
+           prefixi={d\bibinitperiod}}}%
+        {{hash=05c571c161af3b68085a0f3a9cb29efa}{%
+           family={Visser},
+           familyi={V\bibinitperiod},
+           given={Eelco},
+           giveni={E\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {USENIX Association}%
+      }
+      \strng{namehash}{7dd1a4625d844794f66bbee9f5abda08}
+      \strng{fullhash}{7dd1a4625d844794f66bbee9f5abda08}
+      \strng{bibnamehash}{7dd1a4625d844794f66bbee9f5abda08}
+      \strng{authorbibnamehash}{7dd1a4625d844794f66bbee9f5abda08}
+      \strng{authornamehash}{7dd1a4625d844794f66bbee9f5abda08}
+      \strng{authorfullhash}{7dd1a4625d844794f66bbee9f5abda08}
+      \field{sortinit}{D}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{18th USENIX Large Installation System Administration Conference (LISA 04)}
+      \field{title}{Nix: A Safe and Policy-Free System for Software Deployment}
+      \field{year}{2004}
+      \field{pages}{79\bibrangedash 92}
+      \range{pages}{14}
+      \verb{urlraw}
+      \verb https://edolstra.github.io/pubs/nspfssd-lisa2004-final.pdf
+      \endverb
+      \verb{url}
+      \verb https://edolstra.github.io/pubs/nspfssd-lisa2004-final.pdf
+      \endverb
+    \endentry
+    \entry{feautrier1992scheduling}{article}{}
+      \name{author}{1}{}{%
+        {{hash=53e6465e14307afcc85e60ce9c0939ff}{%
+           family={Feautrier},
+           familyi={F\bibinitperiod},
+           given={Paul},
+           giveni={P\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Springer}%
+      }
+      \strng{namehash}{53e6465e14307afcc85e60ce9c0939ff}
+      \strng{fullhash}{53e6465e14307afcc85e60ce9c0939ff}
+      \strng{bibnamehash}{53e6465e14307afcc85e60ce9c0939ff}
+      \strng{authorbibnamehash}{53e6465e14307afcc85e60ce9c0939ff}
+      \strng{authornamehash}{53e6465e14307afcc85e60ce9c0939ff}
+      \strng{authorfullhash}{53e6465e14307afcc85e60ce9c0939ff}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{International Journal of Parallel Programming}
+      \field{number}{6}
+      \field{title}{Some Efficient Solutions to the Affine Scheduling Problem. Part {II}. Multidimensional Time}
+      \field{volume}{21}
+      \field{year}{1992}
+      \field{pages}{389\bibrangedash 420}
+      \range{pages}{32}
+      \verb{doi}
+      \verb 10.1007/BF01379404
+      \endverb
+    \endentry
+    \entry{henriksen2017futhark}{inproceedings}{}
+      \name{author}{5}{}{%
+        {{hash=877d0c9dfa523172d9e414d7847d3fea}{%
+           family={Henriksen},
+           familyi={H\bibinitperiod},
+           given={Troels},
+           giveni={T\bibinitperiod}}}%
+        {{hash=27f36b3cb54eec1aa0407b24f77f2aeb}{%
+           family={Serup},
+           familyi={S\bibinitperiod},
+           given={Niels\bibnamedelimb G.\bibnamedelimi W.},
+           giveni={N\bibinitperiod\bibinitdelim G\bibinitperiod\bibinitdelim W\bibinitperiod}}}%
+        {{hash=6f9908e5ad2889b9db1d9fa39c150abe}{%
+           family={Elsman},
+           familyi={E\bibinitperiod},
+           given={Martin},
+           giveni={M\bibinitperiod}}}%
+        {{hash=3ad5d3ed3df574265dadd8a7e9fce664}{%
+           family={Henglein},
+           familyi={H\bibinitperiod},
+           given={Fritz},
+           giveni={F\bibinitperiod}}}%
+        {{hash=dbe3ebb123859537d6336f5a633e572b}{%
+           family={Oancea},
+           familyi={O\bibinitperiod},
+           given={Cosmin\bibnamedelima E.},
+           giveni={C\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{5ff96a56661da51f9bfa3bdd3dc7b55d}
+      \strng{fullhash}{d6e4ffa35f2ae397bd1453b33441c315}
+      \strng{bibnamehash}{5ff96a56661da51f9bfa3bdd3dc7b55d}
+      \strng{authorbibnamehash}{5ff96a56661da51f9bfa3bdd3dc7b55d}
+      \strng{authornamehash}{5ff96a56661da51f9bfa3bdd3dc7b55d}
+      \strng{authorfullhash}{d6e4ffa35f2ae397bd1453b33441c315}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 38th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)}
+      \field{title}{Futhark: Purely Functional {GPU}-Programming with Nested Parallelism and In-Place Array Updates}
+      \field{year}{2017}
+      \field{pages}{556\bibrangedash 571}
+      \range{pages}{16}
+      \verb{doi}
+      \verb 10.1145/3062341.3062354
+      \endverb
+    \endentry
+    \entry{ikarashi2022exo}{inproceedings}{}
+      \name{author}{5}{}{%
+        {{hash=5eec1c52f21c8b51b0e447fe297979cd}{%
+           family={Ikarashi},
+           familyi={I\bibinitperiod},
+           given={Yuka},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=e676562cc4d85572daf52ab073fbebdd}{%
+           family={Bernstein},
+           familyi={B\bibinitperiod},
+           given={Gilbert\bibnamedelima Louis},
+           giveni={G\bibinitperiod\bibinitdelim L\bibinitperiod}}}%
+        {{hash=120c4b18c0b80fb72db7fedc6389e7f7}{%
+           family={Reinking},
+           familyi={R\bibinitperiod},
+           given={Alex},
+           giveni={A\bibinitperiod}}}%
+        {{hash=96d7c835304d4e6de60152763f605c5f}{%
+           family={Genc},
+           familyi={G\bibinitperiod},
+           given={Hasan},
+           giveni={H\bibinitperiod}}}%
+        {{hash=cf453bb48b58aa99f010a78745b2a5a4}{%
+           family={Ragan-Kelley},
+           familyi={R\bibinithyphendelim K\bibinitperiod},
+           given={Jonathan},
+           giveni={J\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{dd4a7284a0c41111d31462d3eb39c06c}
+      \strng{fullhash}{aa0a53f3672638499a9e860ece8e9368}
+      \strng{bibnamehash}{dd4a7284a0c41111d31462d3eb39c06c}
+      \strng{authorbibnamehash}{dd4a7284a0c41111d31462d3eb39c06c}
+      \strng{authornamehash}{dd4a7284a0c41111d31462d3eb39c06c}
+      \strng{authorfullhash}{aa0a53f3672638499a9e860ece8e9368}
+      \field{sortinit}{I}
+      \field{sortinithash}{8d291c51ee89b6cd86bf5379f0b151d8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 43rd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI)}
+      \field{title}{Exocompilation for Productive Programming of Hardware Accelerators}
+      \field{year}{2022}
+      \field{pages}{703\bibrangedash 718}
+      \range{pages}{16}
+      \verb{doi}
+      \verb 10.1145/3519939.3523446
+      \endverb
+    \endentry
+    \entry{kahn1974semantics}{inproceedings}{}
+      \name{author}{1}{}{%
+        {{hash=f5fe6f6f001fe756e1256ef796f7832c}{%
+           family={Kahn},
+           familyi={K\bibinitperiod},
+           given={Gilles},
+           giveni={G\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {North-Holland}%
+      }
+      \strng{namehash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \strng{fullhash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \strng{bibnamehash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \strng{authorbibnamehash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \strng{authornamehash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \strng{authorfullhash}{f5fe6f6f001fe756e1256ef796f7832c}
+      \field{sortinit}{K}
+      \field{sortinithash}{c02bf6bff1c488450c352b40f5d853ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Information Processing 74: Proceedings of the IFIP Congress}
+      \field{title}{The Semantics of a Simple Language for Parallel Programming}
+      \field{year}{1974}
+      \field{pages}{471\bibrangedash 475}
+      \range{pages}{5}
+    \endentry
+    \entry{lee1987sdf}{article}{}
+      \name{author}{2}{}{%
+        {{hash=d1baa52f3f6acfd703019b45d0b77985}{%
+           family={Lee},
+           familyi={L\bibinitperiod},
+           given={Edward\bibnamedelima A.},
+           giveni={E\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+        {{hash=196ca299b6f5f955c6b04b8571af2b73}{%
+           family={Messerschmitt},
+           familyi={M\bibinitperiod},
+           given={David\bibnamedelima G.},
+           giveni={D\bibinitperiod\bibinitdelim G\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{6920fbfbb135aba515d61c0d55598791}
+      \strng{fullhash}{6920fbfbb135aba515d61c0d55598791}
+      \strng{bibnamehash}{6920fbfbb135aba515d61c0d55598791}
+      \strng{authorbibnamehash}{6920fbfbb135aba515d61c0d55598791}
+      \strng{authornamehash}{6920fbfbb135aba515d61c0d55598791}
+      \strng{authorfullhash}{6920fbfbb135aba515d61c0d55598791}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Proceedings of the IEEE}
+      \field{number}{9}
+      \field{title}{Synchronous Data Flow}
+      \field{volume}{75}
+      \field{year}{1987}
+      \field{pages}{1235\bibrangedash 1245}
+      \range{pages}{11}
+      \verb{doi}
+      \verb 10.1109/PROC.1987.13876
+      \endverb
+    \endentry
+    \entry{matsakis2014rust}{inproceedings}{}
+      \name{author}{2}{}{%
+        {{hash=b9ab334450ee042b091f8f30fe01d877}{%
+           family={Matsakis},
+           familyi={M\bibinitperiod},
+           given={Nicholas\bibnamedelima D.},
+           giveni={N\bibinitperiod\bibinitdelim D\bibinitperiod}}}%
+        {{hash=b9a3d4481011c0f83352dbe1e5adb0de}{%
+           family={Klock},
+           familyi={K\bibinitperiod},
+           given={II},
+           giveni={I\bibinitperiod},
+           suffix={Felix\bibnamedelima S.},
+           suffixi={F\bibinitperiod\bibinitdelim S\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \strng{fullhash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \strng{bibnamehash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \strng{authorbibnamehash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \strng{authornamehash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \strng{authorfullhash}{9405a61ca6d068f80b44b60a2d4fdb53}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 2014 ACM SIGAda Annual Conference on High Integrity Language Technology (HILT)}
+      \field{title}{The Rust Language}
+      \field{year}{2014}
+      \field{pages}{103\bibrangedash 104}
+      \range{pages}{2}
+      \verb{doi}
+      \verb 10.1145/2663171.2663188
+      \endverb
+    \endentry
+    \entry{mckeeman1998differential}{article}{}
+      \name{author}{1}{}{%
+        {{hash=10bf6dcbb0cbc6458271f522d9408e2f}{%
+           family={McKeeman},
+           familyi={M\bibinitperiod},
+           given={William\bibnamedelima M.},
+           giveni={W\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+      }
+      \strng{namehash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \strng{fullhash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \strng{bibnamehash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \strng{authorbibnamehash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \strng{authornamehash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \strng{authorfullhash}{10bf6dcbb0cbc6458271f522d9408e2f}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Digital Technical Journal}
+      \field{number}{1}
+      \field{title}{Differential Testing for Software}
+      \field{volume}{10}
+      \field{year}{1998}
+      \field{pages}{100\bibrangedash 107}
+      \range{pages}{8}
+    \endentry
+    \entry{mpiforum2021}{manual}{}
+      \name{author}{1}{}{%
+        {{hash=2f3031a081611328d0bf25e14ffc1dd1}{%
+           family={{Message Passing Interface Forum}},
+           familyi={M\bibinitperiod}}}%
+      }
+      \list{organization}{1}{%
+        {Message Passing Interface Forum}%
+      }
+      \strng{namehash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \strng{fullhash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \strng{bibnamehash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \strng{authorbibnamehash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \strng{authornamehash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \strng{authorfullhash}{2f3031a081611328d0bf25e14ffc1dd1}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{{MPI}: A Message-Passing Interface Standard, Version 4.0}
+      \field{year}{2021}
+      \verb{urlraw}
+      \verb https://www.mpi-forum.org/docs/mpi-4.0/mpi40-report.pdf
+      \endverb
+      \verb{url}
+      \verb https://www.mpi-forum.org/docs/mpi-4.0/mpi40-report.pdf
+      \endverb
+    \endentry
+    \entry{murata1989petri}{article}{}
+      \name{author}{1}{}{%
+        {{hash=a9bfd8f39b6a54b7f78707e7fc7bf915}{%
+           family={Murata},
+           familyi={M\bibinitperiod},
+           given={Tadao},
+           giveni={T\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \strng{fullhash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \strng{bibnamehash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \strng{authorbibnamehash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \strng{authornamehash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \strng{authorfullhash}{a9bfd8f39b6a54b7f78707e7fc7bf915}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Proceedings of the IEEE}
+      \field{number}{4}
+      \field{title}{Petri Nets: Properties, Analysis and Applications}
+      \field{volume}{77}
+      \field{year}{1989}
+      \field{pages}{541\bibrangedash 580}
+      \range{pages}{40}
+      \verb{doi}
+      \verb 10.1109/5.24143
+      \endverb
+    \endentry
+    \entry{mped2013nuc}{thesis}{}
+      \name{author}{1}{}{%
+        {{hash=84459edf071fddd16a8ab226b282c9b2}{%
+           family={Pedersen},
+           familyi={P\bibinitperiod},
+           given={Mark\bibnamedelima Ruvald},
+           giveni={M\bibinitperiod\bibinitdelim R\bibinitperiod}}}%
+      }
+      \list{institution}{1}{%
+        {Technical University of Denmark (DTU)}%
+      }
+      \strng{namehash}{84459edf071fddd16a8ab226b282c9b2}
+      \strng{fullhash}{84459edf071fddd16a8ab226b282c9b2}
+      \strng{bibnamehash}{84459edf071fddd16a8ab226b282c9b2}
+      \strng{authorbibnamehash}{84459edf071fddd16a8ab226b282c9b2}
+      \strng{authornamehash}{84459edf071fddd16a8ab226b282c9b2}
+      \strng{authorfullhash}{84459edf071fddd16a8ab226b282c9b2}
+      \field{sortinit}{P}
+      \field{sortinithash}{ff3bcf24f47321b42cb156c2cc8a8422}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{note}{Earlier prototype of the Nuc language (v1), targeting Hive ISP firmware through a single backend. Bibliographic details to be confirmed against the archived thesis record.}
+      \field{title}{A Domain-Specific Language and Compiler for Image Signal Processor Firmware}
+      \field{type}{mathesis}
+      \field{year}{2013}
+    \endentry
+    \entry{petri1962kommunikation}{thesis}{}
+      \name{author}{1}{}{%
+        {{hash=831c32c98d50eee6b6440612230884db}{%
+           family={Petri},
+           familyi={P\bibinitperiod},
+           given={Carl\bibnamedelima Adam},
+           giveni={C\bibinitperiod\bibinitdelim A\bibinitperiod}}}%
+      }
+      \list{institution}{1}{%
+        {Technische Hochschule Darmstadt}%
+      }
+      \strng{namehash}{831c32c98d50eee6b6440612230884db}
+      \strng{fullhash}{831c32c98d50eee6b6440612230884db}
+      \strng{bibnamehash}{831c32c98d50eee6b6440612230884db}
+      \strng{authorbibnamehash}{831c32c98d50eee6b6440612230884db}
+      \strng{authornamehash}{831c32c98d50eee6b6440612230884db}
+      \strng{authorfullhash}{831c32c98d50eee6b6440612230884db}
+      \field{sortinit}{P}
+      \field{sortinithash}{ff3bcf24f47321b42cb156c2cc8a8422}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{note}{Schriften des Rhei\-nisch-West\-fä\-li\-schen Instituts für Instrumentelle Mathematik an der Universität Bonn, Nr.~2}
+      \field{title}{Kommunikation mit Automaten}
+      \field{type}{phdthesis}
+      \field{year}{1962}
+    \endentry
+    \entry{ragan-kelley2013halide}{inproceedings}{}
+      \name{author}{6}{}{%
+        {{hash=cf453bb48b58aa99f010a78745b2a5a4}{%
+           family={Ragan-Kelley},
+           familyi={R\bibinithyphendelim K\bibinitperiod},
+           given={Jonathan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=4e74e92ac258a7344d22dd0661d08dd2}{%
+           family={Barnes},
+           familyi={B\bibinitperiod},
+           given={Connelly},
+           giveni={C\bibinitperiod}}}%
+        {{hash=d9920ffa161bb88a78dfee84636fb7be}{%
+           family={Adams},
+           familyi={A\bibinitperiod},
+           given={Andrew},
+           giveni={A\bibinitperiod}}}%
+        {{hash=13acbde1d95e381ae8b4272e36d1982b}{%
+           family={Paris},
+           familyi={P\bibinitperiod},
+           given={Sylvain},
+           giveni={S\bibinitperiod}}}%
+        {{hash=524f75af9d9e2501adb63051d530e308}{%
+           family={Durand},
+           familyi={D\bibinitperiod},
+           given={Frédo},
+           giveni={F\bibinitperiod}}}%
+        {{hash=dcb28881d25e46cc6308d0471f0df07c}{%
+           family={Amarasinghe},
+           familyi={A\bibinitperiod},
+           given={Saman},
+           giveni={S\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{15bf0b66e0525145f317459677c18ee5}
+      \strng{fullhash}{e9606706c7f5e242952a3e548fc18987}
+      \strng{bibnamehash}{15bf0b66e0525145f317459677c18ee5}
+      \strng{authorbibnamehash}{15bf0b66e0525145f317459677c18ee5}
+      \strng{authornamehash}{15bf0b66e0525145f317459677c18ee5}
+      \strng{authorfullhash}{e9606706c7f5e242952a3e548fc18987}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 34th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)}
+      \field{title}{Halide: A Language and Compiler for Optimizing Parallelism, Locality, and Recomputation in Image Processing Pipelines}
+      \field{year}{2013}
+      \field{pages}{519\bibrangedash 530}
+      \range{pages}{12}
+      \verb{doi}
+      \verb 10.1145/2491956.2462176
+      \endverb
+    \endentry
+    \entry{saltz1991runtime}{article}{}
+      \name{author}{3}{}{%
+        {{hash=b0c08b017632286f90616ab0dd007014}{%
+           family={Saltz},
+           familyi={S\bibinitperiod},
+           given={Joel\bibnamedelima H.},
+           giveni={J\bibinitperiod\bibinitdelim H\bibinitperiod}}}%
+        {{hash=63c58dcf8edcc5ca944f287728b7a9db}{%
+           family={Mirchandaney},
+           familyi={M\bibinitperiod},
+           given={Ravi},
+           giveni={R\bibinitperiod}}}%
+        {{hash=3821566f6493965b387c5cc484bf5fae}{%
+           family={Crowley},
+           familyi={C\bibinitperiod},
+           given={Kay},
+           giveni={K\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {IEEE}%
+      }
+      \strng{namehash}{7f8491a4b187111b879fdd89e15af5d1}
+      \strng{fullhash}{7f8491a4b187111b879fdd89e15af5d1}
+      \strng{bibnamehash}{7f8491a4b187111b879fdd89e15af5d1}
+      \strng{authorbibnamehash}{7f8491a4b187111b879fdd89e15af5d1}
+      \strng{authornamehash}{7f8491a4b187111b879fdd89e15af5d1}
+      \strng{authorfullhash}{7f8491a4b187111b879fdd89e15af5d1}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Transactions on Computers}
+      \field{number}{5}
+      \field{title}{Run-Time Parallelization and Scheduling of Loops}
+      \field{volume}{40}
+      \field{year}{1991}
+      \field{pages}{603\bibrangedash 612}
+      \range{pages}{10}
+      \verb{doi}
+      \verb 10.1109/12.88484
+      \endverb
+    \endentry
+    \entry{embassy}{misc}{}
+      \name{author}{1}{}{%
+        {{hash=ab8bafed7e2937b0624e08e7c0c48bb0}{%
+           family={{The Embassy Project}},
+           familyi={T\bibinitperiod}}}%
+      }
+      \strng{namehash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \strng{fullhash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \strng{bibnamehash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \strng{authorbibnamehash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \strng{authornamehash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \strng{authorfullhash}{ab8bafed7e2937b0624e08e7c0c48bb0}
+      \field{sortinit}{T}
+      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{howpublished}{\url{https://embassy.dev/}}
+      \field{note}{Async embedded Rust runtime; accessed June 2026}
+      \field{title}{Embassy: The Next-Generation Framework for Embedded Applications}
+      \field{year}{2026}
+    \endentry
+    \entry{thies2002streamit}{inproceedings}{}
+      \name{author}{3}{}{%
+        {{hash=b9e84695b944cfebe699d94b3d3ece01}{%
+           family={Thies},
+           familyi={T\bibinitperiod},
+           given={William},
+           giveni={W\bibinitperiod}}}%
+        {{hash=d8540d14bbc7d699313b8e10403cbb55}{%
+           family={Karczmarek},
+           familyi={K\bibinitperiod},
+           given={Michal},
+           giveni={M\bibinitperiod}}}%
+        {{hash=dcb28881d25e46cc6308d0471f0df07c}{%
+           family={Amarasinghe},
+           familyi={A\bibinitperiod},
+           given={Saman},
+           giveni={S\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Springer}%
+      }
+      \strng{namehash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \strng{fullhash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \strng{bibnamehash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \strng{authorbibnamehash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \strng{authornamehash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \strng{authorfullhash}{a2488bd565b80fe5b56f7f3b1b4dc416}
+      \field{sortinit}{T}
+      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Compiler Construction, 11th International Conference (CC 2002)}
+      \field{series}{Lecture Notes in Computer Science}
+      \field{title}{{StreamIt}: A Language for Streaming Applications}
+      \field{volume}{2304}
+      \field{year}{2002}
+      \field{pages}{179\bibrangedash 196}
+      \range{pages}{18}
+      \verb{doi}
+      \verb 10.1007/3-540-45937-5_14
+      \endverb
+    \endentry
+    \entry{verdoolaege2010isl}{incollection}{}
+      \name{author}{1}{}{%
+        {{hash=abaa4b7ccb89ee3eaa5185b712fe7964}{%
+           family={Verdoolaege},
+           familyi={V\bibinitperiod},
+           given={Sven},
+           giveni={S\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Springer}%
+      }
+      \strng{namehash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \strng{fullhash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \strng{bibnamehash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \strng{authorbibnamehash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \strng{authornamehash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \strng{authorfullhash}{abaa4b7ccb89ee3eaa5185b712fe7964}
+      \field{sortinit}{V}
+      \field{sortinithash}{afb52128e5b4dc4b843768c0113d673b}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Mathematical Software -- ICMS 2010}
+      \field{series}{Lecture Notes in Computer Science}
+      \field{title}{isl: An Integer Set Library for the Polyhedral Model}
+      \field{volume}{6327}
+      \field{year}{2010}
+      \field{pages}{299\bibrangedash 302}
+      \range{pages}{4}
+      \verb{doi}
+      \verb 10.1007/978-3-642-15582-6_49
+      \endverb
+    \endentry
+    \entry{yang2011csmith}{inproceedings}{}
+      \name{author}{4}{}{%
+        {{hash=2d1d4291a00a276c1d4f145a371f3355}{%
+           family={Yang},
+           familyi={Y\bibinitperiod},
+           given={Xuejun},
+           giveni={X\bibinitperiod}}}%
+        {{hash=f532a47a63f16b583c4455dea6a8018e}{%
+           family={Chen},
+           familyi={C\bibinitperiod},
+           given={Yang},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=71c9e7e491adb44490039265dba0f856}{%
+           family={Eide},
+           familyi={E\bibinitperiod},
+           given={Eric},
+           giveni={E\bibinitperiod}}}%
+        {{hash=43d6b8ac43fd2f45f710ff8a73b2c942}{%
+           family={Regehr},
+           familyi={R\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {ACM}%
+      }
+      \strng{namehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{fullhash}{e8756471bf5ecc3109a9d3a87a5e4b18}
+      \strng{bibnamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authorbibnamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authornamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authorfullhash}{e8756471bf5ecc3109a9d3a87a5e4b18}
+      \field{sortinit}{Y}
+      \field{sortinithash}{fd67ad5a9ef0f7456bdd9aab10fe1495}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 32nd ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)}
+      \field{title}{Finding and Understanding Bugs in {C} Compilers}
+      \field{year}{2011}
+      \field{pages}{283\bibrangedash 294}
+      \range{pages}{12}
+      \verb{doi}
+      \verb 10.1145/1993498.1993532
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+
