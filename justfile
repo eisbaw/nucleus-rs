@@ -58,6 +58,14 @@ clippy:
 e2e:
     cd nucleus && cargo run --release --bin nucleus-e2e
 
+# Generative property-based cross-backend differential fuzzer
+# (TASK-0453.01): synthesises k affine single-assignment integer
+# programs from a seed and asserts byte-identity across all 7 tier-1
+# backends + an in-process reference. Args are POSITIONAL: `just
+# diff-fuzz 1 8` (seed=1, k=8); defaults seed=1 k=8.
+diff-fuzz seed="1" k="8":
+    cd nucleus && cargo run --release --bin diff-fuzz -- --seed {{seed}} --k {{k}}
+
 # Per-milestone tier of the e2e matrix (TASK-0167). CUMULATIVE: `just
 # e2e-milestone M3` runs the M1 ∪ M2 ∪ M3 required cells; `M1` runs
 # only the M1 tier. A PR targeting a milestone branch runs that

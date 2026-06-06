@@ -19,6 +19,16 @@ publish.workspace = true
 name = "nucleus-e2e"
 path = "src/main.rs"
 
+# Generative property-based cross-backend differential fuzzer
+# (TASK-0453.01). Self-contained: synthesises affine/single-assignment
+# integer programs, compiles+runs them across all 7 tier-1 backends, and
+# asserts byte-identity against each other and an in-process reference.
+# No extra deps (its own splitmix64 RNG); lives in the e2e crate to sit
+# next to the curated harness.
+[[bin]]
+name = "diff-fuzz"
+path = "src/bin/diff_fuzz.rs"
+
 [dependencies]
 # Serde derives for the matrix manifest (`e2e-matrix.toml`) and the
 # backend `capabilities.toml` files. Pinned to the same versions the
