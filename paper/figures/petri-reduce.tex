@@ -1,0 +1,65 @@
+% fig:petri-reduce --- a distributed reduction as a fan-in net: each worker
+% produces a partial result, and a single combine transition folds them into one
+% accumulator. Faithful to sec:res-bitidentity (the six combine operators) and
+% the float-sum rejection: the gate fixes the firing ORDER, but byte-identity of
+% the VALUE additionally requires the combine to be order-independent
+% (associative + commutative). Integer sum/or/xor/min/max/and are; IEEE-754 float
+% addition is not, so a distributed float-sum combine is rejected at compile time.
+% Circles = places, bars = transitions, filled dots = tokens.
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\scriptsize,
+      place/.style={draw, circle, minimum size=7mm, inner sep=0pt, fill=green!10,
+                    align=center},
+      tr/.style={draw, fill=gray!75, minimum width=1.8mm, minimum height=7mm,
+                 inner sep=0pt},
+      comb/.style={draw, fill=gray!75, minimum width=2.4mm, minimum height=26mm,
+                   inner sep=0pt},
+      a/.style={-{Latex[length=1.5mm]}},
+      lbl/.style={font=\scriptsize, align=center},
+    ]
+    % four worker partials -> four partial places -> one combine -> accumulator
+    \foreach \i/\y in {0/3,1/1,2/-1,3/-3} {
+      \node[tr] (w\i) at (0,\y) {};
+      \node[lbl,left=0.6mm of w\i] {\texttt{w\i}};
+      \node[place] (p\i) at (2.0,\y) {partial\\\texttt{w\i}};
+      \draw[a] (w\i)--(p\i);
+    }
+    \node[comb] (cmb) at (4.0,0) {};
+    \node[lbl,above=0.6mm of cmb] {combine};
+    \foreach \i in {0,1,2,3} { \draw[a] (p\i)--(cmb); }
+    \node[place] (acc) at (5.8,0) {accum.};
+    \draw[a] (cmb)--(acc);
+    \node[tr] (res) at (7.4,0) {};
+    \node[lbl,below=0.6mm of res] {result};
+    \draw[a] (acc)--(res);
+
+    % the admissible combine algebra
+    \node[draw, rounded corners, fill=green!8, align=left, font=\scriptsize,
+          text width=46mm, inner sep=4pt, anchor=north west] at (8.4,3.2)
+      {\textbf{order-independent} combines (admitted): integer
+       \texttt{sum}, \texttt{or}, \texttt{xor}, \texttt{min}, \texttt{max},
+       \texttt{and} --- each associative and commutative, so the folded value is
+       the same whatever order the partials arrive in.};
+    % the rejected case
+    \node[draw, rounded corners, fill=red!8, align=left, font=\scriptsize,
+          text width=46mm, inner sep=4pt, anchor=north west] at (8.4,-0.4)
+      {\textbf{rejected at compile time}: a floating-point \texttt{sum}. IEEE-754
+       addition is not associative, so the folded value would depend on the
+       arrival order and differ across backends --- breaking byte-identity.};
+  \end{tikzpicture}}
+  \caption[A distributed reduction as a fan-in net]{A distributed reduction as a
+    fan-in net: each worker fires a partial result into its own place, and a
+    single \emph{combine} transition folds all the partials into one accumulator.
+    The soundness gate fixes the \emph{firing order}, but byte-identity of the
+    \emph{value} across backends needs more: the combine must be order-independent,
+    since the partials may arrive in any order the schedule permits. The six
+    admitted combine operators are associative and commutative, so the result is
+    invariant under arrival order; a floating-point \texttt{sum} is not (IEEE-754
+    addition does not associate) and is therefore rejected at compile time rather
+    than allowed to produce backend-dependent bytes. This is the determinism
+    boundary of \cref{sec:disc-shortcomings} drawn on the net.}
+  \label{fig:petri-reduce}
+\end{figure}

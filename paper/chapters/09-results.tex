@@ -87,7 +87,12 @@ floating-point \emph{sum} combine is \emph{rejected at compile time}, because
 IEEE-754 addition is not associative and a distributed float-sum could not be made
 byte-identical across arrival orders. Refusing the operation is more honest than
 silently emitting code that happens to agree on the test input and diverges on
-another.
+another. \Cref{fig:petri-reduce} draws this as a fan-in net: the gate fixes the
+firing order, but byte-identity of the folded value additionally needs the combine
+to be order-independent, which the six admitted operators are and a float sum is
+not.
+
+\input{figures/petri-reduce}
 
 \section{Soundness-gate outcomes}\label{sec:res-soundness}
 

@@ -1,0 +1,101 @@
+% fig:petri-gate --- the three unsound cases the soundness gate is built to
+% reject, contrasted with an accepted net. Faithful to sec:arch-gate of
+% chapters/06-architecture.tex and the negative falsifiers of sec:val-negative:
+%   (a) sound: replay completes, no place exceeds capacity;
+%   (b) boundedness violation: a producer overfills a finite channel;
+%   (c) deadlock: a cyclic wait leaves every required transition un-fireable;
+%   (d) free-choice conflict: one token, two competing consumers --- ruled out
+%       BY CONSTRUCTION in emitted nets (the in-gate check is a tripwire).
+% Circles = places, bars = transitions, filled dots = tokens.
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\scriptsize,
+      place/.style={draw, circle, minimum size=7mm, inner sep=0pt, fill=green!10},
+      chan/.style={draw, circle, minimum size=8mm, inner sep=0pt, fill=blue!10,
+                   very thick},
+      tr/.style={draw, fill=gray!75, minimum width=1.8mm, minimum height=7mm,
+                 inner sep=0pt},
+      a/.style={-{Latex[length=1.5mm]}},
+      lbl/.style={font=\scriptsize, align=center},
+      ttl/.style={font=\footnotesize\bfseries, align=center},
+      ok/.style={green!50!black},
+      no/.style={red!70!black},
+    ]
+    \def\dx{8.2}   % column spacing
+    \def\dy{-4.4}  % row spacing
+
+    % ===================== (a) SOUND / accepted =====================
+    \begin{scope}[shift={(0,0)}]
+      \node[tr] (aP) at (0,0) {};        \node[lbl,below=0.6mm of aP] {produce};
+      \node[chan] (aC) at (1.6,0) {cap\,2}; \node[lbl,above=0.6mm of aC] {channel};
+      \node[tr] (aR) at (3.2,0) {};      \node[lbl,below=0.6mm of aR] {consume};
+      \node[place] (aD) at (4.6,0) {}; \node[lbl,below=0.6mm of aD] {done};
+      \draw[a] (aP)--(aC); \draw[a] (aC)--(aR); \draw[a] (aR)--(aD);
+      \filldraw (aC) circle (0.7mm);                 % 1 token, within cap 2
+      \node[ttl,ok] at (2.3,1.5) {(a) sound --- accepted};
+      \node[lbl,ok] at (2.3,-1.5) {marking $1\le$ cap; replay completes};
+    \end{scope}
+
+    % ============== (b) BOUNDEDNESS VIOLATION / rejected ==============
+    \begin{scope}[shift={(\dx,0)}]
+      \node[tr] (bP) at (0,0) {};        \node[lbl,below=0.6mm of bP] {produce$\times2$};
+      \node[chan,draw=red!70!black,very thick] (bC) at (1.8,0) {cap\,1};
+      \node[lbl,above=0.6mm of bC] {channel};
+      \node[tr] (bR) at (3.6,0) {};      \node[lbl,below=0.6mm of bR] {consume};
+      \draw[a] (bP)--(bC); \draw[a] (bC)--(bR);
+      \filldraw (1.62,0.12) circle (0.7mm);          % token 1
+      \filldraw (1.98,-0.12) circle (0.7mm);         % token 2 --- over capacity
+      \node[no,font=\bfseries] at (1.8,0.95) {!};
+      \node[ttl,no] at (1.8,1.5) {(b) boundedness violation};
+      \node[lbl,no] at (1.8,-1.5) {marking $2>$ cap\,1: the producer\\overruns the
+        buffer before it drains};
+    \end{scope}
+
+    % ===================== (c) DEADLOCK / rejected =====================
+    \begin{scope}[shift={(0,\dy)}]
+      \node[tr] (cA) at (0,0.6) {};      \node[lbl,left=0.6mm of cA] {$t_A$};
+      \node[tr] (cB) at (3.6,-0.6) {};   \node[lbl,right=0.6mm of cB] {$t_B$};
+      \node[chan,draw=red!70!black] (cAB) at (1.8,0.6) {};  \node[lbl,above=0.6mm of cAB] {$c_{A\to B}$};
+      \node[chan,draw=red!70!black] (cBA) at (1.8,-0.6) {}; \node[lbl,below=0.6mm of cBA] {$c_{B\to A}$};
+      \draw[a] (cA)--(cAB); \draw[a] (cAB)--(cB);
+      \draw[a] (cB)--(cBA); \draw[a] (cBA)--(cA);
+      \node[no,font=\bfseries] at (1.8,0) {$\emptyset$};
+      \node[ttl,no] at (1.8,1.7) {(c) deadlock};
+      \node[lbl,no] at (1.8,-1.7) {cyclic wait: both channels empty,\\neither
+        transition is enabled};
+    \end{scope}
+
+    % ================ (d) FREE-CHOICE CONFLICT / rejected ================
+    \begin{scope}[shift={(\dx,\dy)}]
+      \node[place,draw=red!70!black,very thick] (dP) at (0,0) {}; \node[lbl,left=0.6mm of dP] {$p$};
+      \node[tr] (d1) at (2.4,0.9) {};    \node[lbl,right=0.6mm of d1] {$t_1$};
+      \node[tr] (d2) at (2.4,-0.9) {};   \node[lbl,right=0.6mm of d2] {$t_2$};
+      \draw[a] (dP)--(d1); \draw[a] (dP)--(d2);
+      \filldraw (dP) circle (0.7mm);                 % one token
+      \node[ttl,no] at (1.4,1.8) {(d) free-choice conflict};
+      \node[lbl,no] at (1.4,-1.9) {one token, two enabled consumers:\\
+        which fires is a choice};
+    \end{scope}
+  \end{tikzpicture}}
+  \caption[The sound case and the three the gate rejects]{One sound net and the
+    three unsound shapes the soundness gate is built to reject. Circles are
+    places, bars are transitions, filled dots are tokens. \textbf{(a)} A sound
+    net: the channel's marking never exceeds its declared capacity, every
+    required transition eventually fires, and the single replayed firing order
+    runs to completion. \textbf{(b)} A \emph{boundedness} violation: the producer
+    fires twice into a capacity-one channel before the consumer drains it, so the
+    place would hold two tokens --- caught by the replay as a capacity overflow.
+    \textbf{(c)} A \emph{deadlock}: two workers each wait on a channel the other
+    must fill first; with both channels empty no transition is enabled and the
+    replay stalls. \textbf{(d)} A \emph{free-choice conflict}: one place offers its
+    single token to two enabled consumers, so which one consumes it is a
+    nondeterministic choice. In the nets this compiler emits, case~(d) cannot
+    arise --- the per-worker control places serialise each worker's transitions by
+    construction (\cref{sec:arch-gate}) --- so the in-gate conflict check is a
+    regression tripwire rather than the source of the guarantee; cases~(b)
+    and~(c) are what the boundedness and deadlock replays catch on a genuinely
+    unsound schedule.}
+  \label{fig:petri-gate}
+\end{figure}

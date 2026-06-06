@@ -1,0 +1,64 @@
+% fig:petri-io --- one producer/consumer data edge under two IO directives,
+% showing how the schedule's IO semantics change the net (not the algorithm).
+% Faithful to sec:arch-petri / the capability matrix:
+%   (a) synchronous, buffer=1, barrier-mediated rendezvous (no head-start);
+%   (b) asynchronous, buffer=k, event-notified, with an initial marking giving
+%       the consumer a double-buffered head-start so the producer can run ahead.
+% Circles = places, blue circles = channels, bars = transitions, orange bar =
+% barrier, filled dots = tokens.
+\begin{figure}[tbp]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+      font=\scriptsize,
+      place/.style={draw, circle, minimum size=7mm, inner sep=0pt, fill=green!10},
+      chan/.style={draw, circle, minimum size=9mm, inner sep=0pt, fill=blue!10,
+                   very thick, align=center},
+      tr/.style={draw, fill=gray!75, minimum width=1.8mm, minimum height=7mm,
+                 inner sep=0pt},
+      bar/.style={draw, fill=orange!70, minimum width=2.2mm, minimum height=16mm,
+                  inner sep=0pt},
+      a/.style={-{Latex[length=1.5mm]}},
+      lbl/.style={font=\scriptsize, align=center},
+      ttl/.style={font=\footnotesize\bfseries, align=center},
+    ]
+    % ============== (a) synchronous, buffer = 1, barrier ==============
+    \begin{scope}[shift={(0,0)}]
+      \node[tr] (aP) at (0,0) {};        \node[lbl,below=0.6mm of aP] {producer\\\texttt{send}};
+      \node[chan] (aC) at (2.0,0) {cap\,1};
+      \node[bar,orange!60!black] (aB) at (1.0,0) {};
+      \node[tr] (aR) at (4.0,0) {};      \node[lbl,below=0.6mm of aR] {consumer\\\texttt{recv}};
+      \draw[a] (aP)--(aC); \draw[a] (aC)--(aR);
+      \draw[a,orange!60!black] (aP) to[out=60,in=120] (aR);  % rendezvous via barrier
+      \node[lbl,orange!60!black] at (2.0,1.35) {barrier (rendezvous)};
+      \node[ttl] at (2.0,2.1) {(a) \texttt{sync}, \texttt{buffer=1}};
+      \node[lbl] at (2.0,-1.5) {capacity 1, no head-start:\\producer and consumer
+        meet in lock-step};
+    \end{scope}
+
+    % ============ (b) asynchronous, buffer = k, event-notified ============
+    \begin{scope}[shift={(8.0,0)}]
+      \node[tr] (bP) at (0,0) {};        \node[lbl,below=0.6mm of bP] {producer\\\texttt{send}};
+      \node[chan] (bC) at (2.2,0) {cap\,$k$};
+      \node[tr] (bR) at (4.4,0) {};      \node[lbl,below=0.6mm of bR] {consumer\\\texttt{recv}};
+      \draw[a] (bP)--(bC); \draw[a] (bC)--(bR);
+      \filldraw (2.05,0.12) circle (0.7mm);          % initial marking: head-start
+      \node[lbl] at (2.2,1.35) {initial marking\\(double-buffer head-start)};
+      \node[ttl] at (2.2,2.1) {(b) \texttt{async}, \texttt{buffer=}$k$, \texttt{event}};
+      \node[lbl] at (2.2,-1.5) {capacity $k>1$: the producer may run\\ahead by up
+        to $k$ before the consumer reads};
+    \end{scope}
+  \end{tikzpicture}}
+  \caption[One data edge under two IO directives]{The same producer/consumer data
+    edge under two schedule-chosen IO directives --- the algorithm is identical in
+    both; only the schedule differs. \textbf{(a)} A \texttt{synchronous},
+    single-buffer transfer lowers to a capacity-one channel with no initial
+    marking, mediated by a barrier (orange): producer and consumer proceed in
+    lock-step rendezvous. \textbf{(b)} An \texttt{asynchronous}, event-notified
+    transfer with \texttt{buffer=}$k$ lowers to a capacity-$k$ channel carrying an
+    initial marking, so the producer may run ahead of the consumer by up to $k$
+    tiles. The buffer depth and initial marking are exactly the schedule
+    directives the algorithm never sees; the boundedness check (\cref{fig:petri-gate})
+    holds the resulting marking to whichever capacity the directive set.}
+  \label{fig:petri-io}
+\end{figure}

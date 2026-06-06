@@ -143,7 +143,12 @@ kernel firing, a transfer, or a synchronisation, and a place is a data slot, a
 communication channel, or a barrier. Each place carries a capacity (the declared
 buffer size) and an initial marking (the head-start a pipelined or double-buffered
 transfer provides). The net exists for analysis and inspection; it is not what the
-backend consumes.
+backend consumes. The same data edge takes a different net shape under different IO
+directives: \cref{fig:petri-io} places a synchronous single-buffer transfer beside
+an asynchronous buffered one, showing how the schedule's choice sets the channel
+capacity and initial marking while the algorithm stays fixed.
+
+\input{figures/petri-io}
 
 What the backend consumes is the \emph{event contract}: a per-worker list of
 events, each the projection of one transition onto the worker that owns it. It is
@@ -211,6 +216,11 @@ replay over one order, not a reachability or coverability search. This is a real
 it is stated as such: the gate is sound for the statically-ordered nets this
 language produces, and is emphatically not a general model checker for arbitrary
 Petri nets. Within its class it is both sound and inexpensive.
+\Cref{fig:petri-gate} contrasts a sound net with the three unsound shapes the gate
+is built to reject --- a boundedness violation, a deadlock, and a free-choice
+conflict.
+
+\input{figures/petri-gate}
 
 \section{Per-worker projection}\label{sec:arch-projection}
 
