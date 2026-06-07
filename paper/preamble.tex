@@ -84,9 +84,12 @@
 % Tier-1 differential-matrix totals, sourced from the live e2e harness
 % (single source of truth so prose and tables cannot disagree). Verified
 % against a clean `nucleus-e2e` run: total / pass / skipped (fail = 0).
-\newcommand{\nmatrixtotal}{483}
-\newcommand{\nmatrixpass}{420}
-\newcommand{\nmatrixskip}{63}
+% Updated TASK-0453.05 (rigour epic P5): +7 for the 28-bin-fsum cells
+% (a prior cycle bumped the harness but not these macros) and +7 for the
+% new 29-jacobi-cap-hit example (1 required pass + 6 skip).
+\newcommand{\nmatrixtotal}{497}
+\newcommand{\nmatrixpass}{428}
+\newcommand{\nmatrixskip}{69}
 
 % Quantitative-characteristics headline figures, measured from the live
 % toolchain (single source of truth; methodology in sec:res-quant). All

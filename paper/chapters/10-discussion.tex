@@ -57,9 +57,9 @@ file, unchanged, is decomposed across shared-memory threads, message-passing
 processes, distributed-memory ranks, and bare-metal microcontrollers by editing
 only the schedule. This is the property that motivated the work, and it is not
 merely claimed --- it is the thing the differential matrix tests on every build.
-Twenty-eight algorithms, each written once, are driven across the ten backends on
+Twenty-nine worked examples, each written once, are driven across the ten backends on
 three tiers; every required cell a runtime can execute agrees byte-for-byte, with
-the documented exceptions --- such as the convergence example off its single-worker
+the documented exceptions --- such as the two convergence examples off their single-worker
 path --- recorded as skips rather than hidden. The arithmetic was written once and
 never rewritten for a target; the expensive, error-prone part --- the decomposition
 and the IO --- became a short, swappable description.
@@ -119,14 +119,16 @@ permanent given that trade.
 the class of programs admitted at all. Loops must be affine and constant-bounded;
 arrays are single-assignment with no aliasing; arithmetic is integer-valued, or
 floating-point only under the reduction-determinism restrictions discussed below
-(order-independent combines, or the opt-in fixed-order \texttt{fsum}); there is no
-data-dependent
-control flow, no recursion, no higher-order kernels, and no dynamic scheduling or
-work-stealing. This excludes convergence-driven iterative solvers, recursive
+(order-independent combines, or the opt-in fixed-order \texttt{fsum}); data-dependent
+control flow is admitted only in a bounded single-worker form (a
+\texttt{for..until} early exit under a compile-time iteration cap, \cref{sec:lang-limits}),
+and there is no recursion, no higher-order kernels, and no dynamic scheduling or
+work-stealing. This excludes multi-worker convergence-driven iterative solvers, recursive
 divide-and-conquer, irregular and pointer-chasing computations, and any workload
 whose balance must be decided at run time. The corpus reflects the boundary
-honestly: an example written to express data-dependent loop termination compiles
-and runs only on the single-worker path, and is recorded as a skip on the
+honestly: the two examples written to express data-dependent loop termination compile
+and run only on the single-worker path --- one converging early, one running the
+full cap so the worst-case bound is itself exercised --- and are recorded as skips on the
 multi-worker and cross-backend paths rather than papered over. The class is large
 enough to contain stencils, dense linear algebra, separable filters, histograms,
 sorting networks, small neural-network inference, and a real multi-core signal
@@ -265,7 +267,7 @@ implementation; the weakness is that the guarantee is exactly as complete as the
 corpus, and a program shape absent from the corpus is outside the guarantee
 entirely. Bit-identity is shown over the exercised cells, not proved for every
 program the grammar admits. The corpus was assembled to be diverse, and the known
-gaps are recorded rather than hidden, but ``no counterexample in twenty-eight
+gaps are recorded rather than hidden, but ``no counterexample in twenty-nine
 examples'' is empirical evidence, not a proof, and should be read as such. The
 natural way to push the claim from curated witnesses toward the boundary is
 generative: a property-based harness that synthesises affine, single-assignment
@@ -282,7 +284,7 @@ floating-point programs --- so the boundary of the empirical claim has moved out
 not vanished, and every shape the generator cannot yet reach remains covered only by
 the curated corpus. Second, the result is still empirical and still intent-bounded:
 ``no counterexample over the sampled programs'' is stronger than ``no counterexample
-in twenty-eight examples'' but is not a proof, and the generator's in-process
+in twenty-nine examples'' but is not a proof, and the generator's in-process
 reference shares the arithmetic intent of the kernels it emits --- indeed it is a
 second transcription of the same operator definition, so \emph{less} independent than
 the separately-authored curated oracle, not more. At the level of author intent the

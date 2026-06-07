@@ -94,25 +94,33 @@ sound envelope.
 
 \paragraph{Data-dependent control flow.} Convergence-driven termination --- a loop
 that runs ``until converged'' --- is the single most-requested capability the model
-lacks, and the corpus already contains an example written against a bounded
-early-exit surface --- the optional \texttt{until} clause whose production is given
-in \cref{app:grammar} --- to mark exactly where the boundary lies. Lifting this fully is
-the deepest change, because a data-dependent trip count means the firing order is no
-longer statically determined, which is the property everything else rests on. A
-plausible middle path is bounded data-dependent iteration: a loop with a
-compile-time maximum trip count and a runtime early exit, so that the worst-case
-firing order remains statically analysable for soundness even though the actual run
-may stop early. This preserves the soundness gate, whose worst-case replay is
-bounded by the cap. It does not, by itself, preserve the \emph{other} pillar, the
-differential test: byte-identity across backends additionally requires that the
-early-exit decision be a deterministic, backend-agnostic function of the data, so
-that every backend stops at the same iteration. That holds for an exact integer
-convergence predicate but is itself at risk under a floating-point convergence
-test, which ties this direction back to the float-determinism limit above. With
-that caveat, it would admit a useful subset of iterative solvers --- those with a
-known iteration cap and an exact termination test --- without surrendering static
-analysability, and is a more realistic target than unbounded data-dependent control
-flow.
+still lacks in general, and lifting it \emph{fully} is the deepest change, because an
+unbounded data-dependent trip count means the firing order is no longer statically
+determined, which is the property everything else rests on. The bounded middle path,
+however, is no longer hypothetical. Bounded data-dependent iteration --- a loop with a
+compile-time maximum trip count and a runtime early exit, so the worst-case firing
+order remains statically analysable even though the actual run may stop early --- is
+\emph{realized on the single-worker path}. Two corpus examples
+(\texttt{21-jacobi-converge} and \texttt{29-jacobi-cap-hit}, the optional
+\texttt{until} clause of \cref{app:grammar}) compile and run a Jacobi convergence
+loop value-correctly: one exits early, and one runs the full cap so the worst-case
+bound the soundness gate analyses is itself an exercised, byte-identical execution
+path rather than an assertion. This holds because the gate replays the full capped
+unroll and any early exit is a sub-trace of it (soundness preserved by the cap), and
+because the exact-integer halt predicate is a deterministic, backend-agnostic
+function of the data, so every backend stops at the same generation (the differential
+test preserved). Two residuals remain. First, the break is single-worker only: on the
+multi-worker path the convergence scalar is a cross-worker reduction, so the early
+exit must become a collective all-reduce-and-broadcast at a barrier --- every worker
+branching on the identical global value and exiting at the same generation by
+construction --- which keeps the firing order static but is a genuinely new collective
+pattern not yet built; multi-worker convergence cells are recorded as skips meanwhile.
+Second, byte-identity is at risk under a \emph{floating-point} convergence predicate,
+whose comparison value depends on accumulation order, tying this direction back to the
+float-determinism limit above. Even so, the realized form already admits a useful
+subset of single-worker iterative solvers --- those with a known iteration cap and an
+exact termination test --- and the residual is a bounded, well-scoped lift rather than
+the open-ended problem unbounded data-dependent control flow poses.
 
 \paragraph{Sparse iterative solvers.} A full sparse solver needs both of the
 above --- data-dependent indexing and convergence-driven termination --- which is

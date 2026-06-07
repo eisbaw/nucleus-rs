@@ -1,7 +1,7 @@
 \chapter{Example Catalogue}\label{app:examples}
 
 The corpus of worked examples is the system's specification (\cref{sec:val-suite}).
-This appendix catalogues the twenty-eight examples and, for each, names what it
+This appendix catalogues the twenty-nine examples and, for each, names what it
 computes and the scheduling or compiler property it is there to stress. Most examples carry more than one schedule --- typically a single-worker
 reference schedule and one or more distributed or transformed schedules that must
 reproduce the reference output byte-for-byte --- so the number of differential cells
@@ -183,8 +183,14 @@ primary one.
       as a multi-pass rectangular accumulator, since the surface forbids a carried
       scan directly. \\
     \texttt{21-jacobi-converge} & A Jacobi sweep with convergence-driven termination &
-      The deliberate boundary marker: a data-dependent loop exit that compiles and
-      runs only on the single-worker path and is recorded as a skip elsewhere. \\
+      The deliberate boundary marker: a bounded \texttt{for..until} early exit that
+      converges before the cap, compiles and runs value-correctly only on the
+      single-worker path, and is recorded as a skip elsewhere. \\
+    \texttt{29-jacobi-cap-hit} & The same Jacobi sweep with the cap set below the
+      convergence generation & The companion boundary case: the \texttt{until} predicate
+      never fires inside the cap, so the loop runs the full worst case and extracts the
+      last computed generation --- the cap-bounded replay the soundness gate analyses,
+      exercised end-to-end (single-worker; a skip elsewhere). \\
     \bottomrule
   \end{tabular}
   \caption{Embedded examples and the boundary cases that mark the edges of the
@@ -192,9 +198,11 @@ primary one.
   \label{tab:examples-boundary}
 \end{table}
 
-The last two rows of \cref{tab:examples-boundary} are the most informative for a
+The last three rows of \cref{tab:examples-boundary} are the most informative for a
 reader probing the limits: \texttt{04-prefix-sum} shows how a pattern outside the
 surface grammar (a carried scan) is expressed within it as a kernel-level idiom, and
-\texttt{21-jacobi-converge} shows where the static-firing-order boundary is drawn and
-how the corpus records, rather than hides, a shape it does not yet support across all
-paths.
+the two Jacobi convergence examples show where the static-firing-order boundary is
+drawn --- \texttt{21-jacobi-converge} exiting before the cap and
+\texttt{29-jacobi-cap-hit} running the full cap so the worst-case bound is itself
+exercised --- and how the corpus records, rather than hides, a shape it supports on
+the single-worker path but not yet across all paths.

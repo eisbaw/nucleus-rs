@@ -18,7 +18,10 @@ net node counts) is drawn from the live toolchain; the wall-times of
 
 \section{Coverage: examples, schedules, and backends}\label{sec:res-coverage}
 
-The example corpus comprises twenty-eight worked algorithms, ranging from
+The example corpus comprises twenty-nine worked examples spanning twenty-eight
+distinct algorithms --- the convergence Jacobi appears as two boundary variants, a
+converged early-exit and a cap-hit run that exercises the worst-case bound ---
+ranging from
 elementwise addition and reduction through stencils, separable filters, matrix
 multiplication, histogram, producer--consumer pipelines, a wavefront, the game of
 life, bitonic sort, a small convolutional-network inference, a three-stage
@@ -37,13 +40,15 @@ not silent gaps: the matrix records a reason for every one, and they fall into a
 well-defined categories. The largest group, thirty-five cells, are embedded-tier fixtures
 that are validated by the simulator gate of \cref{sec:res-tiers} rather than by the
 tier-1 runtime rig, since the embedded backend emits \texttt{no\_std} code that the
-hosted run-and-diff harness cannot execute. The remaining twenty-eight divide cleanly: twenty are genuine capability
+hosted run-and-diff harness cannot execute. The remaining thirty-four divide cleanly: twenty are genuine capability
 mismatches --- an asynchronous, buffered schedule asked of a synchronous,
 single-buffer backend, which is rejected at compile time as the capability matrix
 prescribes (\cref{sec:be-matrix}), with the schedule's differential requirement met
-instead by a backend that does offer asynchrony --- and eight are language shapes
-honestly unsupported on the multi-worker path (a \texttt{for..until} break loop, and
-an in-loop worker-to-worker push), documented as such
+instead by a backend that does offer asynchrony --- and fourteen are language shapes
+honestly unsupported on the multi-worker path: twelve from two \texttt{for..until}
+break-loop examples (a converged and a cap-hit variant, each skipped on the six
+non-\texttt{pthreads-sync} tier-1 backends) and two from an in-loop
+worker-to-worker push, documented as such
 (\cref{sec:res-limits}). \Cref{fig:coverage-heatmap} renders the matrix as an
 example-by-backend heatmap.
 
@@ -159,7 +164,7 @@ It is worth stating precisely what these results do and do not establish, becaus
 the value of a falsification rig lies as much in the boundary of its claim as in the
 claim itself.
 
-What the rig establishes is this. For the exercised matrix --- twenty-eight
+What the rig establishes is this. For the exercised matrix --- twenty-nine
 examples, their schedules, and the backends each requires --- the separation of
 algorithm, schedule, and target holds to the strongest available standard:
 byte-identical output across seven structurally diverse CPU runtimes, extended to a
