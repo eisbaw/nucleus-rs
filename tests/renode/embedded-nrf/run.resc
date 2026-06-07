@@ -1,0 +1,44 @@
+:name: nucleus-embedded-nrf
+:description: Inject input.bin, load a GENERATED embedded-pattern nRF52840 firmware, run bounded, capture UARTE0.
+
+# The Renode runtime script for the embedded-pattern backend's SECOND-MCU-
+# family (nRF52840) bin (P10, TASK-0453.10). The sibling of
+# tests/renode/embedded/run.resc (STM32H7): same example-agnostic shape, but
+# a Nordic nRF52840 (Cortex-M4F) co-simulated machine whose UARTE0 EasyDMA
+# transmit Renode captures to a file backend. The ELF this loads is GENERATED
+# by `nucleus build --backend embedded-pattern --shim nrf52840` from a PRD
+# §11 single-worker example (01-elementwise-add naive); this script injects
+# whatever $input fixture it is handed into the RAM window @ 0x2002_0000,
+# loads whatever $bin ELF it is handed, and captures UARTE0 verbatim — the
+# firmware loads its REAL input from the injected region, computes the
+# example's kernels, and EasyDMA-streams the RAW output bytes over UARTE0;
+# the `renode-embedded-nrf` just recipe `cmp`s the captured bytes BYTE-EXACT
+# against the example's reference.bin (PRD §10.3 point 3).
+#
+# Caller injects three path variables before `include`-ing this script:
+#   $bin      = @<path to the cross-compiled GENERATED firmware ELF>
+#   $uartFile = @<path the UARTE0 file backend writes to>
+#   $input    = @<path to the chosen example's input.bin fixture>
+
+mach create "nrf"
+machine LoadPlatformDescription @platforms/cpus/nrf52840.repl
+
+# Deterministic file capture of UARTE0 (the NRF52840_UART model at
+# 0x40002000, easyDMA: true). Second arg = overwrite-existing.
+uart0 CreateFileBackend $uartFile true
+
+# Real input path: inject the input fixture into the RAM window @ 0x2002_0000
+# BEFORE loading the firmware (and well before RunFor). That window is the
+# UPPER 128K of the platform's 256K RAM block, OUTSIDE the firmware's
+# memory.x map (RAM = 0x2000_0000 LENGTH 128K), so the stack/.bss never
+# collide with the injected bytes. The firmware's NrfUarteShim::alloc_in_region
+# reads from this fixed address.
+sysbus LoadBinary $input 0x20020000
+
+sysbus LoadELF $bin
+
+# Bounded virtual-time run — the firmware loads its input, computes, and
+# EasyDMA-streams its output bytes in microseconds, then spins. No wall-clock
+# dependence, fully determinate.
+emulation RunFor "0.05"
+quit

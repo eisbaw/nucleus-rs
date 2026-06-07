@@ -1416,7 +1416,25 @@ check-embedded:
     done; \
     echo "OK: embedded-pattern cross-compiles the REAL example-14 multi-MCU"; \
     echo "    hearing-aid (fe/dsp/rf, array-typed mix2/denoise pure kernels,"; \
-    echo "    no_std-clean fixed-array args) — TASK-0049.06, thumbv7em-none-eabihf."
+    echo "    no_std-clean fixed-array args) — TASK-0049.06, thumbv7em-none-eabihf."; \
+    echo ""; \
+    echo "=== SECOND MCU FAMILY: nRF52840 single-worker BIN (P10, TASK-0453.10) ==="; \
+    for ex in 01-elementwise-add 05-stencil 09-producer-consumer; do \
+        nout="target/embedded-nrf/$ex"; \
+        rm -rf "$nout"; \
+        echo "=== generating embedded-pattern nRF52840 bin for $ex/naive (--shim nrf52840) ==="; \
+        ./target/release/nucleus build \
+            --algo "../nuc-nucleus/examples/$ex/prog.algo.nuc" \
+            --sched "../nuc-nucleus/examples/$ex/schedules/naive.sched.nuc" \
+            --backend embedded-pattern --shim nrf52840 \
+            --out "$nout"; \
+        echo "=== cargo check --target thumbv7em-none-eabihf (nrf52840 $ex) ==="; \
+        (cd "$nout" && cargo check --target thumbv7em-none-eabihf); \
+    done; \
+    echo "OK: embedded-pattern cross-compiles the SECOND MCU family (nRF52840"; \
+    echo "    Cortex-M4F, UARTE EasyDMA shim) for examples 1/5/9 — the same"; \
+    echo "    NucleusShim trait + generic run<S>, swapping only the concrete"; \
+    echo "    shim/memory-map/linker (P10, TASK-0453.10, thumbv7em-none-eabihf)."
 
 # Tier-2 (M7) rsmpi build+run smoke (TASK-0063 AC#3). Builds the
 # hand-written tests/mpi/rsmpi-smoke crate under the `.#mpi` shell
@@ -1985,6 +2003,65 @@ renode-embedded EX="01-elementwise-add":
         echo "--- renode log (for diagnosis) ---"; cat "$log"; \
         exit 1; \
     fi
+
+# Tier-3 SECOND-MCU-FAMILY (nRF52840) GENERATED embedded-pattern firmware ->
+# Renode -> reference.bin byte-exact diff (P10, TASK-0453.10). The sibling
+# of `renode-embedded` (STM32H7): same example-agnostic generate ->
+# cross-compile -> co-simulate -> byte-exact-diff flow, but `--shim nrf52840`
+# emits a Nordic Cortex-M4F firmware whose UARTE0 EasyDMA transmit Renode
+# captures. PROVES the NucleusShim hardware-abstraction trait is a real
+# portability seam: the SAME generic backend + `run<S>` lower against a
+# SECOND family by swapping only the concrete shim + memory map + linker
+# config. Single-worker examples only (1/5/9 naive); nRF multi-MCU is future
+# work. Self-contained (enters .#embedded then .#renode); DELIBERATELY NOT in
+# `just ci` — same tier-3-outside-default-ci rule as renode-embedded.
+renode-embedded-nrf EX="01-elementwise-add":
+    @echo "tier-3 SECOND-FAMILY nRF52840 GENERATED embedded-pattern {{EX}} -> Renode -> reference.bin diff (P10, TASK-0453.10)"
+    @set -eu; \
+    resc="$(pwd)/tests/renode/embedded-nrf/run.resc"; \
+    exdir="$(pwd)/nuc-nucleus/examples/{{EX}}"; \
+    input="$exdir/input.bin"; \
+    reference="$exdir/reference.bin"; \
+    gen="$(mktemp -d)"; out="$(mktemp)"; log="$(mktemp)"; \
+    trap 'rm -rf "$gen"; rm -f "$out" "$log"' EXIT; \
+    echo "=== generating {{EX}} bin (embedded-pattern --shim nrf52840) ==="; \
+    cd nucleus && cargo build --release --bin nucleus --quiet; \
+    ./target/release/nucleus build \
+        --algo "$exdir/prog.algo.nuc" \
+        --sched "$exdir/schedules/naive.sched.nuc" \
+        --backend embedded-pattern --shim nrf52840 \
+        --out "$gen"; \
+    cd ..; \
+    elf="$gen/target/thumbv7em-none-eabihf/release/nuc-embedded-generated"; \
+    echo "=== cross-compiling generated firmware (.#embedded) ==="; \
+    nix develop .#embedded --command bash -c "cd '$gen' && cargo build --release --quiet"; \
+    echo "=== running in Renode (.#renode): inject input.bin, capture UARTE0 ==="; \
+    nix develop .#renode --command renode --disable-xwt --console --plain \
+        -e "\$bin=@$elf" -e "\$uartFile=@$out" -e "\$input=@$input" -e "include @$resc" >"$log" 2>&1; \
+    captured="$(wc -c < "$out")"; expected="$(wc -c < "$reference")"; \
+    echo "=== captured $captured bytes over UARTE0 (reference.bin is $expected bytes) ==="; \
+    if [ "$captured" -ne "$expected" ]; then \
+        echo "FAIL: captured $captured bytes, expected exactly $expected (reference.bin). The firmware did not stream the full output region."; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi; \
+    if cmp -s "$out" "$reference"; then \
+        echo "OK: captured UARTE0 bytes are BYTE-EXACT identical to reference.bin ($expected bytes) — nRF52840 SECOND-FAMILY {{EX}} value-correctness verified (PRD §10.3 point 3)."; \
+    else \
+        echo "FAIL: captured UARTE0 output differs from reference.bin (first differing byte):"; \
+        cmp "$out" "$reference" || true; \
+        echo "--- renode log (for diagnosis) ---"; cat "$log"; \
+        exit 1; \
+    fi
+
+# Reproducibility composite (P10, TASK-0453.10): run the nRF52840 byte-exact
+# co-simulation over ALL THREE single-worker examples (1/5/9) the thesis
+# claims, in one command, so "byte-exact on the same three examples" is a
+# single reproducible invocation rather than three manual runs (architect
+# P2-1). Fail-loud via `just` prerequisites. Same tier-3-outside-default-ci
+# rule as renode-embedded-nrf.
+renode-embedded-nrf-all: (renode-embedded-nrf "01-elementwise-add") (renode-embedded-nrf "05-stencil") (renode-embedded-nrf "09-producer-consumer")
+    @echo "OK: nRF52840 SECOND-FAMILY byte-exact across all three single-worker examples (01/05/09) — P10, TASK-0453.10."
 
 # Tier-3 M10 GENERATED check-loop firmware -> Renode -> assert the
 # on_violation=log UART line (TASK-0048.04). Generates example 1's

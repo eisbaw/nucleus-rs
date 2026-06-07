@@ -21,8 +21,8 @@ pub(crate) fn print_help() {
              --emit-pn FILE   Write the global Petri net to FILE as Graphviz DOT.\n    \
                               Makes --out optional (inspection-only build).\n    \
              --shim NAME      Tier-3 target shim (embedded-pattern only). `stm32h7`\n    \
-                              emits a Renode-runnable no_std BIN; omit for the M9\n    \
-                              compile-only no_std LIB.\n\
+                              or `nrf52840` emits a Renode-runnable no_std BIN; omit\n    \
+                              for the M9 compile-only no_std LIB.\n\
          \n\
          BACKENDS:\n    \
              pthreads-sync   shared-memory threads (tier 1)\n    \
@@ -35,6 +35,7 @@ pub(crate) fn print_help() {
              embedded-pattern  no_std lib + NucleusShim trait (tier 3, compile-only; check via `just check-embedded`).\n    \
                                LIB path: single-worker (M9) OR multi-worker (M11 slice A, TASK-0049.04 — one lib per worker, Push/Wait/Sync -> stub-shim hooks).\n    \
                                With `--shim stm32h7`: Renode-runnable no_std bin (M10, single-worker only; `just renode-embedded <example>`; examples 1/5/9)\n    \
+                               With `--shim nrf52840`: SECOND MCU family (P10, TASK-0453.10) — nRF52840 Cortex-M4F UARTE-EasyDMA bin, single-worker; `just renode-embedded-nrf <example>`; examples 1/5/9 byte-exact\n    \
              mpi-blocking    SPMD MPI (tier 2, M7); one rank-dispatched binary + rsmpi. Builds/runs under `nix develop .#mpi` via `just check-mpi`.\n    \
                                Single-worker SPMD arm landed; multi-worker (rank Send/Recv + MPI_Barrier) is TASK-0045.01.\n    \
              mpi-nonblocking SPMD MPI (tier 2, M8); non-blocking BUFFERED MPI_Ibsend + MPI_Imrecv/Irecv + MPI_Wait. Builds/runs under `nix develop .#mpi` via `just check-mpi-nonblocking`.\n    \

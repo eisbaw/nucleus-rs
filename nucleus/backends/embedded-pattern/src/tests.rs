@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use crate::emit;
 
 mod bin_shape;
+mod bin_shape_nrf;
 mod boot_order;
 mod input_offsets;
 mod output_capture;

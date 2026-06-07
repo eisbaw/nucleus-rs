@@ -151,6 +151,11 @@ mod multimcu;
 mod render;
 mod skeleton;
 
+/// The tier-3 target-shim selector for the Renode-runnable BIN path
+/// (`--shim <name>`). Re-exported so the driver can map the `--shim` flag
+/// to a target and pass it to [`emit_bin`].
+pub use skeleton::ShimTarget;
+
 use render::render_run_body;
 
 #[cfg(test)]
@@ -427,6 +432,7 @@ pub fn emit_bin(
     sidecar: &NameSidecar,
     kernels_rs_path: &Path,
     out_dir: &Path,
+    target: skeleton::ShimTarget,
 ) -> Result<MultiBinEmitResult, EmitError> {
     // The BIN path is now MULTI-worker (TASK-0049.05 lifted the M10
     // single-worker guard). A single-worker schedule emits ONE bin at
@@ -450,6 +456,23 @@ pub fn emit_bin(
         })?;
 
     let multi_worker = used_workers.len() > 1;
+    // The multi-MCU (multi-worker) BIN path — the concrete `MultiMcuShim`
+    // + the generated multi-machine `.resc` (M11, TASK-0049.05) — is wired
+    // ONLY for the STM32H7 family. The second family (nRF52840, P10
+    // TASK-0453.10) is the SINGLE-worker BIN path only; a multi-MCU nRF
+    // shim (its own cross-MCU UART-hub transport + Renode multi-machine
+    // model) is genuine future work, not silently mis-emitted. Reject it
+    // loudly rather than emit an STM32-flavoured multi-MCU bin under an nRF
+    // request.
+    if multi_worker && target != skeleton::ShimTarget::Stm32h7 {
+        return Err(EmitError::UnsupportedFeature(format!(
+            "the multi-worker (multi-MCU) embedded BIN path is implemented for \
+             the `stm32h7` shim only; `--shim {}` supports the single-worker BIN \
+             path (one MCU). A multi-MCU shim for this family is future work \
+             (the per-family cross-MCU transport + Renode multi-machine model).",
+            target.flag()
+        )));
+    }
     // Fail loud (TASK-0049.05.01) if a control-only `Event::Sync` would be
     // silently miscompiled by the no-op `irq_barrier` — i.e. it orders two
     // workers' external IO with no subsuming data edge. Inert for every
@@ -474,7 +497,7 @@ pub fn emit_bin(
         // Degenerate (no firing): emit one empty-body single-worker bin at
         // the root, preserving the historical single-worker behaviour.
         results.push(emit_one_worker_bin(
-            &[], names, sidecar, &kernels_src, out_dir, None, None,
+            &[], names, sidecar, &kernels_src, out_dir, None, None, target,
         )?);
         return Ok(MultiBinEmitResult {
             workers: results,
@@ -509,6 +532,7 @@ pub fn emit_bin(
             &project_dir,
             worker_name,
             wplan,
+            target,
         )?);
     }
 
@@ -571,13 +595,16 @@ fn emit_one_worker_bin(
     project_dir: &Path,
     worker_name: Option<String>,
     wplan: Option<&multimcu::WorkerPlan>,
+    target: skeleton::ShimTarget,
 ) -> Result<BinEmitResult, EmitError> {
     let count_loops = collect_count_check_loops(events);
     let main_src = match wplan {
         Some(plan) => {
+            // The multi-MCU path is STM32-only (rejected upstream in
+            // emit_bin for any other family).
             render_multimcu_main_rs(events, names, sidecar, kernels_src, &count_loops, plan)?
         }
-        None => render_main_rs(events, names, sidecar, kernels_src, &count_loops)?,
+        None => render_main_rs(target, events, names, sidecar, kernels_src, &count_loops)?,
     };
 
     let src_dir = project_dir.join("src");
@@ -597,11 +624,11 @@ fn emit_one_worker_bin(
     let build_rs = project_dir.join("build.rs");
     let cargo_config = cargo_dir.join("config.toml");
 
-    write_file(&cargo_toml, &skeleton::render_bin_cargo_toml())?;
+    write_file(&cargo_toml, &skeleton::render_bin_cargo_toml(target))?;
     write_file(&main_rs, &main_src)?;
-    write_file(&memory_x, &skeleton::render_memory_x())?;
+    write_file(&memory_x, &skeleton::render_memory_x(target))?;
     write_file(&build_rs, &skeleton::render_build_rs())?;
-    write_file(&cargo_config, &skeleton::render_cargo_config())?;
+    write_file(&cargo_config, &skeleton::render_cargo_config(target))?;
 
     Ok(BinEmitResult {
         worker_name,
@@ -639,6 +666,7 @@ fn render_lib_rs(
 /// schedule the lib path rejects (multi-worker / block / check-frame)
 /// is rejected IDENTICALLY on the bin path.
 fn render_main_rs(
+    target: skeleton::ShimTarget,
     events: &[Event],
     names: &NameTables,
     sidecar: &NameSidecar,
@@ -655,6 +683,7 @@ fn render_main_rs(
         })
         .collect();
     Ok(skeleton::render_bin_main(
+        target,
         &kernel_defs,
         &run_body,
         &summaries,

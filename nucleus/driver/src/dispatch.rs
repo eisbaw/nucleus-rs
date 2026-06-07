@@ -279,22 +279,38 @@ pub(crate) fn dispatch_backend(
                     }
                     Ok(())
                 }
-                Some("stm32h7") => {
-                    // TASK-0049.05: emit_bin now returns ONE bin per used
-                    // worker (single-worker -> one at out_dir root, M10
-                    // shape; multi-worker -> one under out_dir/<worker>/
-                    // each, M11 multi-MCU) plus a generated multi-machine
-                    // .resc for the multi-worker case. Print every bin so a
-                    // caller (e.g. `just renode-multimcu`) can locate and
-                    // cross-compile + co-simulate each one.
+                Some(name) => {
+                    // Map the `--shim` flag to a target. TASK-0048.01 wired
+                    // `stm32h7`; P10 (TASK-0453.10) adds the SECOND family
+                    // `nrf52840` (single-worker BIN). An unknown name is a
+                    // typed (non-panicking) user error.
+                    let target = embedded_pattern::ShimTarget::from_flag(name).ok_or_else(|| {
+                        format!(
+                            "unknown --shim `{name}` for backend embedded-pattern; \
+                             registered shims: `stm32h7` (STM32H7 Cortex-M7, M10 \
+                             TASK-0048.01) and `nrf52840` (nRF52840 Cortex-M4F \
+                             single-worker, P10 TASK-0453.10). Omit --shim for the \
+                             M9 compile-only lib."
+                        )
+                    })?;
+                    // TASK-0049.05: emit_bin returns ONE bin per used worker
+                    // (single-worker -> one at out_dir root; multi-worker ->
+                    // one under out_dir/<worker>/ each, STM32-only M11
+                    // multi-MCU) plus a generated multi-machine .resc for the
+                    // multi-worker case. Print every bin so a caller (e.g.
+                    // `just renode-multimcu` / `just renode-embedded-nrf`) can
+                    // locate and cross-compile + co-simulate each one.
                     let result = embedded_pattern::emit_bin(
                         per_worker,
                         names,
                         sidecar,
                         kernels_path,
                         out_dir,
+                        target,
                     )
-                    .map_err(|e| format!("embedded-pattern (stm32h7 bin) codegen error: {e}"))?;
+                    .map_err(|e| {
+                        format!("embedded-pattern ({} bin) codegen error: {e}", target.flag())
+                    })?;
                     println!("nucleus: ok");
                     println!("worker_bins = {}", result.workers.len());
                     for w in &result.workers {
@@ -314,11 +330,6 @@ pub(crate) fn dispatch_backend(
                     }
                     Ok(())
                 }
-                Some(other) => Err(format!(
-                    "unknown --shim `{other}` for backend embedded-pattern; \
-                     registered shims: `stm32h7` (Renode-runnable no_std bin, \
-                     M10 TASK-0048.01). Omit --shim for the M9 compile-only lib."
-                )),
             }
         }
         // FIRST tier-2 backend (TASK-0045, M7): SPMD MPI. ONE

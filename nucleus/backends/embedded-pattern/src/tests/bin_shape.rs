@@ -46,7 +46,7 @@ fn emit_bin_example_naive(example: &str, scratch_leaf: &str) -> String {
     );
 
     let res =
-        emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded bin emit");
+        emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out, crate::ShimTarget::Stm32h7).expect("embedded bin emit");
     // A single-worker example emits exactly ONE bin at the root (no worker
     // sub-dir) and NO multi-machine .resc (unchanged M10 shape).
     assert_eq!(res.workers.len(), 1, "single-worker example must emit one bin");
@@ -349,7 +349,7 @@ fn emit_bin_example_multi(
         &root.join("nucleus/target/embedded-pattern-test-scratch"),
         scratch_leaf,
     );
-    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).expect("embedded multi-MCU bin emit")
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out, crate::ShimTarget::Stm32h7).expect("embedded multi-MCU bin emit")
 }
 
 #[test]
@@ -520,7 +520,7 @@ fn try_emit_bin_example_multi_with_files(
         &root.join("nucleus/target/embedded-pattern-test-scratch"),
         scratch_leaf,
     );
-    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out)
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out, crate::ShimTarget::Stm32h7)
 }
 
 #[test]
@@ -684,7 +684,7 @@ fn try_emit_bin_ex1_with_check(
         scratch_leaf,
     );
 
-    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out).map(|res| {
+    emit_bin(&r.per_worker, &r.names, &r.sidecar, &kernels, &out, crate::ShimTarget::Stm32h7).map(|res| {
         // ex1 is single-worker: exactly one bin at the root.
         std::fs::read_to_string(&res.workers[0].main_rs).expect("read emitted main.rs")
     })

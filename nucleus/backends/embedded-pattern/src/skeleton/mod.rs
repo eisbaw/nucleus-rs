@@ -25,6 +25,8 @@
 mod bin;
 pub use bin::*;
 
+mod shim_nrf52840;
+
 mod multimcu;
 pub use multimcu::*;
 
@@ -431,7 +433,7 @@ mod tests {
         // The bin shape is the OPPOSITE of the lib: it HAS a [[bin]], a
         // cortex-m-rt dep, and panic=abort profiles, and is its own
         // empty [workspace].
-        let s = render_bin_cargo_toml();
+        let s = render_bin_cargo_toml(ShimTarget::Stm32h7);
         assert!(s.contains("[[bin]]"), "bin Cargo.toml must declare [[bin]]");
         assert!(
             s.contains("cortex-m-rt = \"0.7\""),
@@ -458,6 +460,7 @@ mod tests {
     #[test]
     fn render_bin_main_is_a_runnable_firmware() {
         let s = render_bin_main(
+            ShimTarget::Stm32h7,
             "pub fn add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }\n",
             "    let mut c: [i32; 256] = [0; 256];\n",
             &[],
@@ -545,6 +548,7 @@ mod tests {
         // AFTER run returns and BEFORE the loop {} spin (the bare-metal
         // program-exit sink).
         let s = render_bin_main(
+            ShimTarget::Stm32h7,
             "pub fn add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }\n",
             "    let mut c: [i32; 256] = [0; 256];\n",
             &[CountSummary {
@@ -595,7 +599,7 @@ mod tests {
 
     #[test]
     fn memory_x_pins_128k_flash_and_ram() {
-        let s = render_memory_x();
+        let s = render_memory_x(ShimTarget::Stm32h7);
         assert!(
             s.contains("ORIGIN = 0x08000000, LENGTH = 128K"),
             "FLASH region"
@@ -624,7 +628,7 @@ mod tests {
             b.contains("rustc-link-search"),
             "build.rs must add link search"
         );
-        let c = render_cargo_config();
+        let c = render_cargo_config(ShimTarget::Stm32h7);
         assert!(
             c.contains("[target.thumbv7em-none-eabihf]"),
             "config must target thumbv7em-none-eabihf"
