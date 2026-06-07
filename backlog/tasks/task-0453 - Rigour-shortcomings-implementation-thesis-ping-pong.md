@@ -4,6 +4,7 @@ title: 'Rigour + shortcomings: implementation/thesis ping-pong'
 status: To Do
 assignee: []
 created_date: '2026-06-06 22:51'
+updated_date: '2026-06-07 04:55'
 labels:
   - rigour
   - thesis
@@ -24,3 +25,9 @@ EPIC. Drive more rigour by turning the thesis's honestly-documented shortcomings
 - [ ] #2 FUNDAMENTAL limitations registered as honest-not-planned
 - [ ] #3 Ping-pong cycles land both sides (code + thesis) per cycle with gates green
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+CYCLE-5 (P5 .05/.15) landed GO. STEP-0 finding: bounded static-firing-order-preserving data-dependent iteration was ALREADY shipped single-worker by the 0341.02.01.x epic (example 21-jacobi-converge); P5 was not unimplemented, only its multi-worker arm (= open S7 0341.02.01.08). Realizable rigour this cycle (invariant-safe, single-worker): new example 29-jacobi-cap-hit exercises the previously-untested cap-hit/did-NOT-converge WORST-CASE replay path end-to-end byte-identical (closes S5 P3-2 e2e gap), substantiating the thesis "worst-case replay bounded by the cap" claim. Thesis (.15 DONE): ch05/ch10/ch11/appendix reframed bounded iteration as REALIZED single-worker (not future); multi-worker + float-predicate + unbounded kept as honest residuals. e2e 490/427/0/63/0 -> 497/428/0/69/0; just ci GREEN; PDF 123pp; review GO x2 each side. .05 stays In Progress (AC#1 multi-worker = S7). Honest-stop on multi-worker per the deepest-invariant guardrail (feasible but a large deferred slice, NOT an invariant breach).
+<!-- SECTION:NOTES:END -->
