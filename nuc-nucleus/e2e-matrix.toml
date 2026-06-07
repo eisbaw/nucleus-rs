@@ -94,7 +94,7 @@
 # was the lowering pass, now lifted for array-subscript position.
 # (08-histogram's data-dependent WRITE / scatter is still open,
 # TASK-0044.04.)
-runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity", "26-bin-min", "27-bin-fmin"]
+runnable_examples = ["01-elementwise-add", "02-split-add", "03-reduction", "04-prefix-sum", "05-stencil", "06-separable-filter", "07-matmul", "08-histogram", "09-producer-consumer", "10-wavefront", "11-game-of-life", "12-bitonic-sort", "13-cnn-inference", "14-hearing-aid", "15-transpose", "16-jacobi", "17-spmv", "18-multigather", "19-histogram-unconstrained", "20-index-cast-permute", "21-jacobi-converge", "23-dot-product", "24-outer-product", "25-bin-parity", "26-bin-min", "27-bin-fmin", "28-bin-fsum"]
 
 # Backends to evaluate. The harness will read each backend's
 # `capabilities.toml` to learn what it supports; this list is just the
@@ -1732,6 +1732,64 @@ milestone = "M6"
 
 [[required]]
 example  = "27-bin-fmin"
+schedule = "distributed"
+backend  = "mp-uds-event"
+milestone = "M6"
+
+# 28-bin-fsum: TASK-0453.03 (rigour epic P3) — the FLOAT (f32) SUM-COMBINE
+# sibling of 27-bin-fmin, and the first DISTRIBUTED FLOAT SUM that carries
+# PRD §10.1 bit-identity. `bin_fsum` declares `combine=fsum`, the opt-in
+# reproducible float sum: plain `combine=sum` on an f32 accumulator stays
+# REJECTED (non-associative; covered by the wait_assign float-sum negative
+# unit test). The host fan-in emits a `+` fold of the per-worker partials
+# in worker-id-sorted order (`result[_k] = result[_k] + _tmp[_k]` for
+# w0..w3, each worker pre-init 0.0), identical across all 7 tier-1
+# backends; the hand-written oracle reproduces the SAME partitioned fold
+# (reference/src/main.rs), so output.bin == reference.bin to the byte.
+# DISTRIBUTED-ONLY: unlike 27-bin-fmin (min is order-independent, so naive
+# and distributed share one reference.bin), the fsum fold is
+# schedule-specific, so there is no naive cell — reference.bin is the
+# worker-id-sorted fold for the distributed schedule. The fixture's
+# fractional vals genuinely round (the oracle asserts the fixed fold
+# differs from a naive single-pass), so the fold order is load-bearing.
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "pthreads-sync"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "mp-tcp-bufsync"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "pthreads-async"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "mp-tcp-event"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "openmp-rs"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
+schedule = "distributed"
+backend  = "mp-tcp-poll"
+milestone = "M6"
+
+[[required]]
+example  = "28-bin-fsum"
 schedule = "distributed"
 backend  = "mp-uds-event"
 milestone = "M6"

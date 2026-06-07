@@ -154,6 +154,20 @@ pub enum CombineOp {
     /// Bitwise AND `&` (identity = all-ones, spelled `!0T`).
     /// TASK-0343.01.02.
     And,
+    /// `+` — FLOAT-ONLY reproducible (fixed-order) sum (identity 0.0).
+    /// TASK-0453.03 (rigour epic P3). The opt-in float-sum combine.
+    ///
+    /// Plain `Sum` is REJECTED on float scalars because IEEE-754 addition
+    /// is non-associative, so an order-varying host fan-in would diverge
+    /// across backends (PRD §10.1). `Fsum` is the user's explicit opt-in
+    /// to the *fixed-order* fold the compiler already emits: the host
+    /// combines per-worker partials in worker-id-sorted event-list order
+    /// (TASK-0389), identical across all backends, so the reduced bits
+    /// are cross-backend reproducible FOR A GIVEN SCHEDULE. It is NOT the
+    /// naive single-pass IEEE sum, and NOT schedule-invariant (a
+    /// different worker count folds differently) — that is the documented
+    /// residual. Float-only: rejected on integer (`use sum`) and bool.
+    Fsum,
 }
 
 /// `const NAME : SCALAR = EXPR ;`

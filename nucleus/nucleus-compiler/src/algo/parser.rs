@@ -604,11 +604,13 @@ fn kernel_decl_parser() -> impl Parser<char, KernelDecl, Error = Simple<char>> +
         "min" => Ok(CombineOp::Min),
         "max" => Ok(CombineOp::Max),
         "and" => Ok(CombineOp::And),
+        // TASK-0453.03: opt-in float-only reproducible (fixed-order) sum.
+        "fsum" => Ok(CombineOp::Fsum),
         other => Err(Simple::custom(
             span,
             format!(
                 "unknown kernel combine identity `{other}`; expected one of \
-                 `sum`, `or`, `xor`, `min`, `max`, `and`"
+                 `sum`, `or`, `xor`, `min`, `max`, `and`, `fsum`"
             ),
         )),
     });

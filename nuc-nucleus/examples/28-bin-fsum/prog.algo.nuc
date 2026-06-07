@@ -1,0 +1,89 @@
+// Per-bin FLOAT SUM reduction — the order-independent-fold (reproducible
+// float sum) sibling of 27-bin-fmin. TASK-0453.03 (rigour epic P3).
+//
+// For each input element i with integer key `key[i]` in [0, BINS) and
+// float value `val[i]`, add `val[i]` into bucket `result[key[i]]`. The
+// output is the per-bin sum of the values whose key selects that bin.
+//
+// What this example proves
+// ------------------------
+// That a DISTRIBUTED FLOAT SUM can carry the PRD §10.1 bit-identity
+// guarantee — the gap 27-bin-fmin could not close, because IEEE-754
+// addition is non-associative and plain `combine=sum` on a float
+// accumulator is REJECTED (see `combine_form_for_scalar` in
+// backend-common). `bin_fsum` instead declares `combine=fsum`, the
+// OPT-IN reproducible float sum (TASK-0453.03): the host fan-in combines
+// the per-worker partials with a plain `+` fold in a FIXED order —
+// worker-id-sorted, the deterministic host event-list order every
+// backend shares (TASK-0389). Because the fold order is the same on
+// every backend, and each worker's partial is itself a fixed-order fold
+// of its slice, every tier-1 backend produces BIT-IDENTICAL output, and
+// the hand-written reference oracle reproduces the same fold (it moves in
+// LOCKSTEP — see reference/src/main.rs).
+//
+// What `fsum` is, and is NOT (the honest residual)
+// ------------------------------------------------
+//   - It IS cross-backend bit-identical FOR THIS SCHEDULE: all seven
+//     tier-1 backends agree, and match reference.bin, to the byte.
+//   - It is NOT the naive single-pass left-to-right IEEE sum. The
+//     partitioned fold `((p0 + p1) + p2) + p3` (each `pw` a per-worker
+//     slice fold) associates differently, so it can round differently
+//     from summing the whole array in input order. That is inherent to
+//     finite float addition; `fsum` makes the chosen order REPRODUCIBLE,
+//     not the arithmetic exact.
+//   - It is NOT schedule-invariant: a different worker count folds the
+//     partials differently and may yield different bits. The guarantee
+//     is "same bits across backends for a given schedule", exactly the
+//     PRD §10.1 claim — not "same bits across schedules".
+//   - It covers float SUM only (f32 here). min/max were already
+//     order-independent (27-bin-fmin); other float ops are out of scope.
+//
+// Numeric choice: f32 with fractional values (see reference README) that
+// genuinely round, so the fixed fold order is LOAD-BEARING — a different
+// order would give different bits. This keeps the example an honest test
+// of order-determinism, not a trivially-exact integer sum in disguise.
+//
+// Distributed-only: this example ships a single `distributed` schedule.
+// Unlike 27-bin-fmin (whose `min` combine is order-independent, so naive
+// and distributed share one reference.bin), the `fsum` fold is
+// schedule-specific, so a naive single-worker schedule would NOT match
+// the distributed reference.bin. reference.bin is therefore the
+// worker-id-sorted fold for the distributed schedule.
+
+const N    : usize = 256;     // total input length (per stream)
+const BINS : usize = 16;      // bucket count
+
+
+// Integer keys select a bucket; float values are summed per bucket.
+data key    : i32[N];
+data val    : f32[N];
+data result : f32[BINS];
+
+
+// I/O kernels — effectful, ordering preserved, never duplicated.
+kernel load_key    : ()          -> i32[N]   effectful;
+kernel load_val    : ()          -> f32[N]   effectful;
+kernel save_output : (f32[BINS]) -> ()       effectful;
+
+// Per-(element, bin) fold step. `bin_fsum(acc, k, v, bin)` adds `v` into
+// `acc` iff `k == bin`, else returns `acc` unchanged. `combine=fsum`
+// (TASK-0453.03) is the FLOAT-ONLY opt-in reproducible sum: under
+// partition=workers each worker folds its slice into a private `result`
+// (pre-init 0.0, the additive identity), and the host element-wise sums
+// the per-worker partials with a `+` fold in worker-id-sorted order.
+// Plain `combine=sum` on this f32 accumulator would be REJECTED.
+kernel bin_fsum    : (f32, i32, f32, i32) -> f32   pure combine=fsum;
+
+
+key <-- load_key();
+val <-- load_val();
+
+// `result` is pre-initialised to 0.0 (the fsum identity) by the codegen;
+// each (i, b) iteration folds one value into its bucket.
+for i : 0 .. N {
+    for b : 0 .. BINS {
+        result[b] <-- bin_fsum(result[b], key[i], val[i], b);
+    }
+}
+
+save_output(result);

@@ -597,6 +597,14 @@ fn combine_attribute_min_max_and_parse() {
         Some(CombineOp::And),
         "`combine=and` must parse to CombineOp::And"
     );
+    // TASK-0453.03: the opt-in reproducible float-sum spelling parses.
+    // (Float-only admissibility is enforced later in the render layer,
+    // not the parser — same separation as min/max/and.)
+    assert_eq!(
+        parse_one_kernel_combine("kernel k : (f32, f32) -> f32 pure combine=fsum;"),
+        Some(CombineOp::Fsum),
+        "`combine=fsum` must parse to CombineOp::Fsum"
+    );
 }
 
 #[test]

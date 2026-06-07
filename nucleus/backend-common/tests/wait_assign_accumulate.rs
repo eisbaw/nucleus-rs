@@ -412,6 +412,86 @@ fn accumulate_emit_array_op_strings_per_combine_op() {
     );
 }
 
+/// Render one whole-array accumulate Wait for a given `(op, scalar)`,
+/// returning the emit OR the typed error. TASK-0453.03 fsum coverage.
+fn try_render_array_accumulate_typed(
+    op: CombineOp,
+    scalar: ScalarType,
+) -> Result<String, EmitError> {
+    let data = DataId(0);
+    let (_, sidecar) = make_histogram_tables_combine(data, vec![16], scalar, op);
+    let seq = SeqTag(0);
+    let mut tiles: PairTiles = BTreeMap::new();
+    tiles.insert((data, seq), IterTile::empty());
+    render_wait_assign(
+        &sidecar,
+        &tiles,
+        "histogram",
+        data,
+        seq,
+        "slot_0.wait()",
+        true,
+        WalkerCtx::empty_let_at_wait_set(),
+    )
+}
+
+#[test]
+fn accumulate_emit_float_fsum_admits_plus_fold() {
+    // TASK-0453.03: `combine=fsum` on a float accumulator is ADMITTED and
+    // emits the plain `+` OPERATOR fold. Cross-backend bit-identity comes
+    // from the FIXED worker-id-sorted fan-in order (the host event list),
+    // NOT from this string — but the string pins that fsum lowers to `+`.
+    let out = try_render_array_accumulate_typed(CombineOp::Fsum, ScalarType::F32)
+        .expect("float (f32) fsum MUST be admitted");
+    assert_eq!(
+        out,
+        "{ let _tmp = slot_0.wait(); for _k in 0..16usize { \
+         histogram[_k] = histogram[_k] + _tmp[_k]; } }",
+        "fsum must emit the `+` OPERATOR fold"
+    );
+    let out64 = try_render_array_accumulate_typed(CombineOp::Fsum, ScalarType::F64)
+        .expect("float (f64) fsum MUST be admitted");
+    assert!(
+        out64.contains("histogram[_k] = histogram[_k] + _tmp[_k]"),
+        "f64 fsum must also emit the `+` fold; got: {out64}"
+    );
+}
+
+#[test]
+fn accumulate_emit_fsum_on_integer_rejected() {
+    // TASK-0453.03 AC#3: `fsum` is FLOAT-ONLY. On an integer accumulator
+    // it is a category error (integer `sum` is already exact and
+    // order-independent), so it must reject and point at combine=sum.
+    let err = try_render_array_accumulate_typed(CombineOp::Fsum, ScalarType::I32)
+        .expect_err("integer fsum MUST be rejected");
+    match err {
+        EmitError::ContractGap(msg) => assert!(
+            msg.contains("fsum")
+                && msg.to_lowercase().contains("integer")
+                && msg.contains("combine=sum"),
+            "integer-fsum reject must name fsum, integer, AND point to combine=sum; got: {msg}"
+        ),
+        other => panic!("expected ContractGap; got: {other:?}"),
+    }
+}
+
+#[test]
+fn accumulate_emit_float_sum_reject_points_to_fsum_optin() {
+    // TASK-0453.03 AC#3: plain `combine=sum` on a float accumulator STAYS
+    // rejected (the non-opt-in path), and the message now points the user
+    // at the `combine=fsum` opt-in.
+    let err = try_render_array_accumulate_typed(CombineOp::Sum, ScalarType::F32)
+        .expect_err("float (plain sum) MUST stay rejected");
+    match err {
+        EmitError::ContractGap(msg) => assert!(
+            msg.contains("fsum") && msg.contains("associative") && msg.contains("PRD §10.1"),
+            "float-sum reject must still cite non-associativity + PRD §10.1 AND point to \
+             the combine=fsum opt-in; got: {msg}"
+        ),
+        other => panic!("expected ContractGap; got: {other:?}"),
+    }
+}
+
 #[test]
 fn accumulate_emit_scalar_op_strings_per_combine_op() {
     // AC#3 scalar arm: the zero-dim accumulator emit for each op.

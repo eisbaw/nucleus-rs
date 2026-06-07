@@ -112,9 +112,15 @@ pub fn combine_identity_literal(t: &ScalarType, combine: Option<CombineOp>) -> S
     let is_float = matches!(t, ScalarType::F32 | ScalarType::F64);
     let is_bool = matches!(t, ScalarType::Bool);
     match combine {
-        None | Some(CombineOp::Sum) | Some(CombineOp::Or) | Some(CombineOp::Xor) => {
-            rust_scalar_zero(t).to_string()
-        }
+        // `Fsum` (TASK-0453.03) shares the additive identity 0 (`0f32` /
+        // `0f64`), same as `Sum`/`Or`/`Xor`. The per-worker accumulator
+        // and the host fan-in both pre-init to this before the
+        // fixed-order `+` fold.
+        None
+        | Some(CombineOp::Sum)
+        | Some(CombineOp::Or)
+        | Some(CombineOp::Xor)
+        | Some(CombineOp::Fsum) => rust_scalar_zero(t).to_string(),
         // Min identity is the GREATEST element of the type. Integers:
         // `T::MAX`. Floats: `+INFINITY` (NOT `f32::MAX`, which is the
         // largest finite — it would clamp a genuine `+INFINITY` value).

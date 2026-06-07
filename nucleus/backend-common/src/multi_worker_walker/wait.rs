@@ -690,37 +690,58 @@ fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm,
     use ScalarType::*;
     match t {
         // Integer — every op order-independent, admitted unchanged.
-        Usize | Isize | U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 => Ok(match op {
-            Sum => CombineForm::Method("wrapping_add"),
-            Or => CombineForm::Operator("|"),
-            Xor => CombineForm::Operator("^"),
+        Usize | Isize | U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 => match op {
+            Sum => Ok(CombineForm::Method("wrapping_add")),
+            Or => Ok(CombineForm::Operator("|")),
+            Xor => Ok(CombineForm::Operator("^")),
             // TASK-0343.01.02 non-zero-identity ops. `min`/`max` use
             // the inherent `Ord` methods; `and` is the bitwise
             // operator. The accumulator's pre-init must already hold
             // the matching identity (MAX / MIN / all-ones) — see
             // `combine_identity_literal`.
-            Min => CombineForm::Method("min"),
-            Max => CombineForm::Method("max"),
-            And => CombineForm::Operator("&"),
-        }),
-        // Float — only the order-independent lattice ops (min/max) are
-        // admissible; sum is non-associative, bitwise undefined.
+            Min => Ok(CombineForm::Method("min")),
+            Max => Ok(CombineForm::Method("max")),
+            And => Ok(CombineForm::Operator("&")),
+            // `fsum` (TASK-0453.03) is FLOAT-ONLY: it is the opt-in for
+            // float's non-associativity. Integer `sum` is already exact
+            // and order-independent, so `fsum` on an integer accumulator
+            // is a category error, not a silent alias.
+            Fsum => Err(EmitError::ContractGap(format!(
+                "render_wait_assign: accumulate fan-in (combine=fsum) on an INTEGER-scalar \
+                 data symbol ({t:?}) is REJECTED: `fsum` is the float-only opt-in for the \
+                 fixed-order reproducible float sum. Integer `sum` is already exact and \
+                 order-independent — use combine=sum."
+            ))),
+        },
+        // Float — the order-independent lattice ops (min/max) and the
+        // opt-in fixed-order reproducible sum (fsum) are admissible;
+        // plain sum is non-associative, bitwise undefined.
         F32 | F64 => match op {
             Min => Ok(CombineForm::Method("min")),
             Max => Ok(CombineForm::Method("max")),
+            // TASK-0453.03: opt-in reproducible float sum. The fan-in
+            // emits a plain `+` fold; cross-backend bit-identity comes
+            // from the FIXED fold order — the host combines per-worker
+            // partials in worker-id-sorted event-list order (TASK-0389),
+            // identical across all backends. It is NOT the naive
+            // single-pass IEEE sum and NOT schedule-invariant (different
+            // worker counts fold differently); that residual is the
+            // user's explicit acceptance when they spell `fsum`.
+            Fsum => Ok(CombineForm::Operator("+")),
             Sum => Err(EmitError::ContractGap(format!(
                 "render_wait_assign: accumulate fan-in (combine=sum) on a float-scalar \
                  data symbol ({t:?}) is REJECTED: IEEE-754 float addition is NOT \
-                 associative, so the per-worker partials reduced in different orders by \
-                 different backends yield different bits — violating the PRD §10.1 \
-                 bit-identity invariant. Use combine=min/max (order-independent on \
-                 distinct finite values), or supply a deterministic summation kernel \
-                 (Kahan / fixed worker-id-sorted fold; deferred, TASK-0343.06)."
+                 associative, so an order-varying host fan-in would yield different bits \
+                 across backends — violating the PRD §10.1 bit-identity invariant. Use \
+                 combine=min/max (order-independent on distinct finite values), or opt in \
+                 to the fixed-order reproducible sum with combine=fsum (cross-backend \
+                 bit-identical for a given schedule; NOT the naive IEEE sum — see \
+                 TASK-0453.03)."
             ))),
             Or | Xor | And => Err(EmitError::ContractGap(format!(
                 "render_wait_assign: accumulate fan-in (combine={op:?}) on a float-scalar \
                  data symbol ({t:?}) is REJECTED: bitwise combine ops (or/xor/and) are \
-                 undefined on float. Use combine=min/max for a float accumulator."
+                 undefined on float. Use combine=min/max/fsum for a float accumulator."
             ))),
         },
         // Bool — the lattice/parity ops are order-independent; sum has
@@ -742,6 +763,12 @@ fn combine_form_for_scalar(op: CombineOp, t: &ScalarType) -> Result<CombineForm,
                  bool lattice ops instead — combine=and is the meet (min), combine=or \
                  is the join (max)."
             ))),
+            Fsum => Err(EmitError::ContractGap(
+                "render_wait_assign: accumulate fan-in (combine=fsum) on a bool-scalar \
+                 data symbol is REJECTED: `fsum` is the float-only reproducible-sum opt-in. \
+                 Use combine=and/or/xor for a bool accumulator."
+                    .to_string(),
+            )),
         },
     }
 }

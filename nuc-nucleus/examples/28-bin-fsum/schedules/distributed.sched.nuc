@@ -1,0 +1,31 @@
+// Distributed schedule for 28-bin-fsum — the load-bearing cell.
+//
+// Mirrors 27-bin-fmin/distributed exactly except the combine is the
+// opt-in reproducible float sum (`combine=fsum`, declared on the
+// `bin_fsum` kernel) rather than `min`. Partition the outer `i` loop
+// across four compute workers; each worker folds its i-slice into a
+// private `result` (pre-init 0.0), then the host element-wise sums the
+// four per-worker partials with a `+` fold in worker-id-sorted order.
+//
+// This is the ONLY schedule for this example. Unlike 27-bin-fmin (whose
+// `min` combine is order-independent, so naive and distributed share one
+// reference.bin), the `fsum` fold associates partials in a
+// schedule-specific order, so a naive single-worker schedule would NOT
+// match the distributed reference.bin. reference.bin is the
+// worker-id-sorted fold for THIS schedule (the oracle moves in lockstep).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_key    on host;
+    place load_val    on host;
+    place save_output on host;
+
+    place bin_fsum on { w0, w1, w2, w3 };
+
+    loop i : partition=workers;
+
+    transfer key    : sync;
+    transfer val    : sync;
+    transfer result : sync;
+}
