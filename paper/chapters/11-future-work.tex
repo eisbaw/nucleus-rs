@@ -195,6 +195,27 @@ controlled hardware, warm-up and variance discipline --- that is a project in it
 and because no runtime number bears on the correctness claims already established: a
 slow but byte-identical program still falsifies nothing.
 
+A scoping observation sharpens why this is more than a matter of securing time on a
+cluster, and it couples the runtime study to the gate-scaling direction below. At the
+corpus's problem sizes the emitted programs' wall-clock is dominated by fixed
+per-invocation overhead rather than by computation --- a single-worker matrix
+multiply at the corpus dimension finishes in about a millisecond, of which the few
+thousand integer multiply--adds account for only microseconds; the remainder is
+process spawn, input loading, and thread setup, not arithmetic --- so a meaningful
+scaling signal emerges only at substantially larger problem sizes. But the soundness gate's cost for a \emph{communicating}
+schedule grows with the firing count (\cref{sec:res-quant-net}), and the gate is not
+separable from the build: there is no option to emit a decomposed program without
+analysing it. Around the sizes at which runtime first rises above the startup floor,
+the expanded net for the multi-worker schedules already demands memory on the order of
+tens of gigabytes, which makes compiling exactly the decompositions one would want to
+time prohibitively expensive on commodity hardware. The single-worker schedules do not
+hit this wall --- the symbolic fast path keeps their compile flat in problem size
+(\cref{sec:res-quant-net}) --- but a single worker has no decomposition to scale. A
+credible runtime study therefore waits not only on a representative cluster and a
+disciplined methodology, but on the communicating-case gate-lifting the next direction
+describes: the two open problems are coupled, and the runtime one cannot be cleanly
+attempted until the compiler one is solved.
+
 The second follows directly from the gate-scaling limitation that
 \cref{sec:res-quant-net} measured, and it has been \emph{partially} closed. Because the
 soundness gate replayed a net expanded over the iteration space --- roughly one place and
