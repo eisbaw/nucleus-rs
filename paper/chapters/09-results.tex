@@ -337,25 +337,52 @@ barriers are introduced.
     \bottomrule
   \end{tabular}
   \caption{The two cost regimes. Generated-code size is flat in problem size
-  (loop-structured), while the Petri net the soundness gate analyses is expanded
+  (loop-structured), while the expanded Petri net is spread
   over the iteration space --- roughly one place and one transition per kernel firing,
   so node count is about twice the firing count. Net node counts are exact
-  (deterministic emission); ``firings'' is the dominant loop volume. The
+  (deterministic emission); ``firings'' is the dominant loop volume. Every row here is a
+  single-worker (naive) schedule, hence buffer-free, so the gate now proves it sound
+  symbolically from the rolled ACFG and never builds the expanded net (\cref{sec:res-quant-net});
+  the counts are the expansion the symbolic path avoids. The
   \texttt{13-cnn-inference} firing count is marked \emph{layered} because it is
   spread across several heterogeneous convolution and pooling kernel invocations
   rather than a single dominant loop volume.}
   \label{tab:quant-net}
 \end{table}
 
-This is an honest limitation worth stating plainly. Because the gate's net is
-expanded per firing, its cost is linear in the number of kernel firings, not in the
-size of the program text. For the example corpus, whose firing counts run to a few
-thousand, this is cheap --- but a production-scale problem with billions of firings
-would produce a net the single-replay gate could not analyse in the same way. The
-gate as built is sound and inexpensive for the firing volumes this work targets;
-making it scale to far larger iteration spaces --- by analysing the looped structure
-symbolically rather than the expanded net --- is left as future work
-(\cref{sec:fw-quant}).
+This expanded net is what the gate \emph{would} build for every program; it is also
+where the cost lived, since both its construction and the single-order replay are
+linear in the number of firings. That was once an unqualified limitation. It has now
+been lifted for the common case, and the gate decides soundness in one of two regimes.
+
+For a \emph{buffer-free} program --- one with no cross-worker transfer, which includes
+every single-worker schedule and so the entire \cref{tab:quant-net} corpus, the matrix
+multiply included --- soundness is proved \emph{symbolically} from the rolled ACFG,
+without building the expanded net at all. Such a net consists only of per-worker control
+chains, and these are bounded, deadlock-free and conflict-free by construction: every
+control place has capacity one, a single producer transition that fires once, and a
+single consumer, so none of the three failure modes the gate checks (capacity overflow,
+stall, free-choice conflict) can arise --- each of those requires a shared buffer place,
+which only a cross-worker transfer creates. The gate discharges such a net in one
+structural walk of the rolled ACFG, whose size is a function of the program text, not the
+iteration count. Compiling the matrix multiply at progressively larger dimensions ---
+raising $N$ from $16$ to $256$ in the source, from about four thousand to about sixteen
+million kernel firings --- leaves the driver compile time essentially unchanged, since
+the gate no longer expands the net; the expansion the fast path skips would itself reach
+about $2N^3 \approx 33$ million nodes at the upper end.
+
+The second regime is the honest residual. A program that distributes work and
+communicates --- the loop-carried \texttt{Push}/\texttt{Wait} shape of the distributed
+schedules --- still falls back to the expanded single-order replay, because the
+boundedness and liveness of a shared buffer place depend on the firing-order
+interleaving, which the symbolic analysis does not yet reason about. For those nets the
+cost remains linear in the number of firings, and a production-scale distributed problem
+with billions of firings would still produce a net the single-replay gate could not
+analyse in the same way. Lifting the bound there too --- a steady-state occupancy
+argument over the looped buffer structure rather than its expansion --- is left as future
+work (\cref{sec:fw-quant}); approximating it imprecisely could accept a net the expanded
+replay would reject, trading soundness for scaling, so the buffer-free case was taken
+first and the communicating case deferred rather than guessed at.
 
 \subsection{Compile cost}\label{sec:res-quant-time}
 
@@ -363,11 +390,14 @@ End to end, a single cell compiles in roughly \qtmin{}--\qtmax{} milliseconds on
 development machine: parse, link, elaborate, lower, run the gate, project, and emit.
 For the smaller examples this wall-time is dominated by process startup rather than
 by the pipeline, so the figures should be read as an order of magnitude, not a
-measurement. The one example whose pipeline rises above startup noise is the matrix
-multiply, whose \qnetmatmul{}-node net lifts the median to about \qtmax{}
-milliseconds; this is consistent with the gate's linear replay cost --- the matmul net
-is by far the largest --- though at these sizes the effect is small, and this work did not
-instrument per-stage timing to attribute it precisely. The practical reading is that
+measurement. With the symbolic fast path (\cref{sec:res-quant-net}) the single-worker
+examples --- the matrix multiply included --- compile in time that does not grow with
+their firing count, because the gate no longer expands their nets. The compiles that now
+stand out are the \emph{distributed} matmul decompositions, which still expand their nets
+(they communicate) and so carry the gate's linear replay cost; they are the heaviest in
+the corpus and grow with the worker count. At these sizes the effect is
+small, and this work did not instrument per-stage timing to attribute it precisely. The
+practical reading is that
 for this class of program the entire compile, soundness gate included, is comfortably
 sub-second, and qualitatively a small fraction of the downstream Rust build of the
 emitted project (which is seconds, not milliseconds); the genericity is not bought at

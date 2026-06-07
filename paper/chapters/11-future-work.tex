@@ -179,14 +179,22 @@ and because no runtime number bears on the correctness claims already establishe
 slow but byte-identical program still falsifies nothing.
 
 The second follows directly from the gate-scaling limitation that
-\cref{sec:res-quant-net} measured. Because the soundness gate replays a net expanded
-over the iteration space --- roughly one place and one transition per kernel firing
---- its cost is linear in the number of firings, which is cheap for the corpus but
-would not scale to a problem with billions of firings. A symbolic analysis that reasoned about the
-\emph{looped} net structure directly, rather than its expansion, would lift that
-bound and let the gate match the loop-structured, problem-size-independent footprint
-of the generated code. That is the most concrete piece of compiler work the
-quantitative characteristics point to.
+\cref{sec:res-quant-net} measured, and it has been \emph{partially} closed. Because the
+soundness gate replayed a net expanded over the iteration space --- roughly one place and
+one transition per kernel firing --- its cost was linear in the number of firings, cheap
+for the corpus but unable to scale to a problem with billions of firings. For the
+\emph{buffer-free} subclass (a single worker, or any schedule with no cross-worker
+transfer) the gate now reasons about the \emph{looped} structure directly: it proves
+soundness from the rolled ACFG in time independent of the iteration count, never building
+the expansion, and so matches the loop-structured footprint of the generated code there
+(\cref{sec:res-quant-net}). What remains open is the communicating case. A distributed
+schedule's shared buffer places make boundedness and liveness depend on the firing-order
+interleaving, and proving that symbolically --- a steady-state occupancy argument over the
+looped \texttt{Push}/\texttt{Wait} structure rather than its expansion --- is the concrete
+compiler work still outstanding. It is deliberately not approximated: an imprecise buffer
+analysis could accept a net the expanded replay would reject, trading soundness for
+scaling, which the gate's whole purpose forbids --- so the sound expanded replay is kept
+as the fallback until the symbolic argument is proved equivalent on that class too.
 
 Taken together, these directions share a common discipline: each is judged not only
 by what it would add but by what it would risk to the determinism the system is
