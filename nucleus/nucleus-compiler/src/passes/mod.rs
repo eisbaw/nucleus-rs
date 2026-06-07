@@ -34,6 +34,17 @@ pub mod deadlock;
 // statically-ordered restricted nets, NOT a general reachability
 // engine. See module doc.
 pub mod net_soundness;
+// TASK-0453.04 (rigour epic P4): symbolic, no-expansion soundness
+// analysis. Decides soundness directly from the ROLLED ACFG (cost
+// independent of iteration counts) for the buffer-free subclass —
+// single-worker / no-cross-worker-transfer programs, including the
+// cited matmul triple loop — where the expanded `net_soundness` gate is
+// linear in the number of firings. A fast path only: the driver uses
+// `ProvenSound` to skip the expanded gate and falls back to it on
+// `NeedsExpansion`, so the change is sound-equivalent-or-stronger (it
+// never skips a rejection — every unsound net carries a buffer place
+// and is routed to the expanded gate). See module doc for the theorem.
+pub mod net_soundness_symbolic;
 // TASK-0260 Stage 1: halo region inference from kernel access patterns.
 // Runs AFTER `apply_partition_blocks2d` (driver pass order), AFTER
 // `build_acfg` (needs name_iter_vars / name_kernels). Pure +

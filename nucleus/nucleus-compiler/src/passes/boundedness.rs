@@ -44,7 +44,8 @@
 //! `pipeline=D` loop (TASK-0134), the producer Push at the head of
 //! the source order is not firable (it would overflow), so the
 //! algorithm naturally pulls the matching consumer Wait forward.
-//! For nets without nonzero initial markings the source-order
+//! For nets without nonzero *buffer* initial markings (the seeded `=1`
+//! head token on each worker's first control place aside) the source-order
 //! tiebreak makes the result identical to plain insertion order, so
 //! existing non-pipelined fixtures see no change (TASK-0213).
 //!
@@ -265,10 +266,13 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// `acfg_to_net` walks the ACFG depth-first in source order, so
 /// transition ids are assigned in source order and per-worker control
 /// chains discharge most ordering constraints structurally. For nets
-/// without nonzero initial markings, source order *is* a legal
+/// without nonzero *buffer* initial markings, source order *is* a legal
 /// firing sequence, and the algorithm above degenerates to "fire
 /// transitions in id order" — so all pre-TASK-0213 fixtures see no
-/// change.
+/// change. (The seeded `=1` head token on each worker's first control
+/// place does NOT count: it is exactly what makes the chain firable in
+/// id order. The only initial markings that perturb the order are the
+/// `pipeline=D` buffer pre-marks below.)
 ///
 /// What pure insertion order does NOT cope with is a buffer place
 /// pre-marked at capacity, where source-order's first transition is

@@ -86,6 +86,12 @@ pub use passes::halo_inference::{
     HaloInferenceError,
 };
 pub use passes::net_soundness::{check_net_sound, PetriAnalysisError};
+// TASK-0453.04 (rigour epic P4): symbolic, no-expansion soundness
+// fast path. `analyze_net_soundness_symbolic` decides soundness from the
+// rolled ACFG for the buffer-free subclass without building the expanded
+// net; the driver skips the expanded gate on `ProvenSound` and falls
+// back to `check_net_sound` on `NeedsExpansion`.
+pub use passes::net_soundness_symbolic::{analyze_net_soundness_symbolic, SymbolicSoundness};
 // TASK-0329.01.02 slice 2: host-mediated data-relay injection for mp-tcp-event.
 pub use passes::host_data_relay_inject::apply_host_data_relay_inject;
 pub use passes::host_mediation_inject::apply_host_mediation_inject;

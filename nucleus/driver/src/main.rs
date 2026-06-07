@@ -86,10 +86,10 @@ use std::process::ExitCode;
 
 use backend_common::elect_host_from_name_workers;
 use nucleus_compiler::{
-    acfg_to_events, acfg_to_net, apply_host_data_relay_inject, apply_host_mediation_inject,
-    apply_safe_push_reorder, build_sidecar, check_kernels_contract, check_net_sound,
-    check_schedule_compat, inject_check_frames, link, load_capabilities, run_pre_mediation_passes,
-    PreMediationError,
+    acfg_to_events, acfg_to_net, analyze_net_soundness_symbolic, apply_host_data_relay_inject,
+    apply_host_mediation_inject, apply_safe_push_reorder, build_sidecar, check_kernels_contract,
+    check_net_sound, check_schedule_compat, inject_check_frames, link, load_capabilities,
+    run_pre_mediation_passes, PreMediationError, SymbolicSoundness,
 };
 
 // Driver sub-modules (TASK-0388: carved out of this file to hold it
@@ -558,8 +558,36 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // the function level so a future inject-pass regression that DID
     // emit an unsound net would surface as a compile error here rather
     // than as a runtime hang or buffer overrun.
-    let gate_net = acfg_to_net(&acfg);
-    check_net_sound(&gate_net).map_err(|e| format!("petri-net soundness check failed: {e}"))?;
+    // Symbolic fast path (TASK-0453.04, rigour epic P4). For the
+    // buffer-free subclass (single-worker / no-cross-worker-transfer
+    // programs — including the matmul triple loop whose expanded net is
+    // ~2 nodes per kernel firing) the net is provably bounded,
+    // deadlock-free and conflict-free directly from the ROLLED ACFG, in
+    // time independent of the iteration counts. Proving it that way
+    // avoids building (and replaying) the linear-in-firings expanded net
+    // entirely. This is a fast path, never a weakening: every net the
+    // expanded gate could reject (capacity overflow / stall / free-choice
+    // conflict) requires a buffer place, hence an Xfer, hence is
+    // classified `NeedsExpansion` and routed to the unchanged expanded
+    // gate below. See `passes::net_soundness_symbolic` for the theorem +
+    // soundness-equivalence argument.
+    match analyze_net_soundness_symbolic(&acfg) {
+        SymbolicSoundness::ProvenSound => {
+            nucleus_compiler::nuc_trace!(
+                "soundness gate: net is buffer-free; proved bounded/deadlock-free/conflict-free \
+                 symbolically from the rolled ACFG without expanding it over the iteration space \
+                 (TASK-0453.04)"
+            );
+        }
+        SymbolicSoundness::NeedsExpansion(reason) => {
+            nucleus_compiler::nuc_trace!(
+                "soundness gate: {reason}; running the expanded single-order replay gate"
+            );
+            let gate_net = acfg_to_net(&acfg);
+            check_net_sound(&gate_net)
+                .map_err(|e| format!("petri-net soundness check failed: {e}"))?;
+        }
+    }
 
     // ---- Dispatch on backend (skipped for inspection-only builds) ----
     let Some(out_dir) = out_dir else {
