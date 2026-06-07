@@ -156,8 +156,11 @@ file system). It emits target-agnostic event-list lowering and delegates all
 hardware specifics --- DMA descriptors, interrupt-vector binding, memory-region
 addresses --- to a per-microcontroller \emph{shim} that implements a small
 hardware-abstraction trait. The generic backend is written once; each
-microcontroller family is a separate shim crate, of which the system ships one
-reference shim as proof of concept.
+microcontroller family is a separate shim crate, of which the system ships two: an
+STM32H7 (Cortex-M7) reference shim using a USART transmit-data register plus a DMA
+controller, and a second nRF52840 (Cortex-M4F) shim using a UARTE EasyDMA engine
+whose deliberately different transmit-register interface is what shows the trait is
+a real portability seam rather than a single-target abstraction dressed up as one.
 
 The backend emits in two modes. A library mode produces a self-contained
 \texttt{no\_std} crate per worker that compiles against a do-nothing stub shim ---
@@ -207,12 +210,19 @@ shared single-worker emitter --- days to weeks of work.
 
 A tier-2 backend is more expensive --- weeks to months --- because it brings in
 MPI library bindings, SPMD code generation, and cluster continuous integration. A
-tier-3 shim is the most expensive --- months per microcontroller family --- because
-it must supply concrete DMA controllers, interrupt-vector tables, memory layout,
-linker scripts, and real-time validation under \texttt{no\_std} constraints. This
-shim sprawl is real and, in principle, unbounded: every new microcontroller family
-is another shim. The system caps its own commitment at one reference shim and
-treats further shims as out-of-tree contributions, which is why the capability
+tier-3 shim is the most expensive: the \emph{first} family is months of work,
+because it must supply concrete DMA controllers, interrupt-vector tables, memory
+layout, linker scripts, and real-time validation under \texttt{no\_std} constraints
+--- much of it the generic machinery the first shim builds alongside itself. A
+\emph{second} family that shares the target instruction set and has a simulator
+model is far cheaper: the nRF52840 shim reused the generic backend, the lowered run
+loop, and the input-injection and capture harness unchanged, swapping only the
+concrete register sequence, the memory map, and one linker flag. This shim sprawl is
+nonetheless real and, in principle, unbounded: every new family is another shim, and
+one needing a target the toolchain does not yet build, a simulator model that does
+not yet exist, or a transport the trait does not express would cost more again. The
+system caps its own committed surface at two reference shims and treats further
+shims as out-of-tree contributions, which is why the capability
 matrix and the hardware-abstraction trait are committed, reviewable text: they are
 the contract a contributor's shim must satisfy. \Cref{ch:discussion} returns to
 this maintenance burden as one of the honest costs of the approach.

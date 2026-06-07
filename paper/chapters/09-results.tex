@@ -158,6 +158,23 @@ lowers all the way to a real multi-microcontroller system whose per-frame values
 correct end-to-end, including the staged boot-order handling that a bare-metal UART channel
 requires and that the hosted tiers never need.
 
+A second, separate gate exercises hardware-family portability rather than the
+multi-microcontroller wiring. It generates three \emph{single-worker} examples --- the
+element-wise add, the stencil, and the producer--consumer --- for a second
+microcontroller family, the nRF52840 (a Cortex-M4F), and confirms each byte-exact
+against the same frozen reference the hosted tiers use. The nRF52840's UARTE EasyDMA
+transmit --- a pointer-and-length DMA engine --- is a genuinely different register
+interface from the STM32's USART, so reaching the second family through the
+\emph{unchanged} hardware-abstraction trait is what shows the trait is a portability
+seam rather than a single-target abstraction: the two families share the generic
+backend, the lowered run loop, and the kernel extraction, and differ only in the
+concrete shim, the memory map, and one linker flag. This second family is single-worker
+only; it does not participate in the multi-microcontroller co-simulation above (a
+multi-MCU nRF52840 wiring is out-of-tree work), and its byte-exact evidence covers the
+value-transport path; the trait's timing and diagnostic hooks are structurally mirrored
+from the first family but, the examples carrying no timing assertion, are not separately
+exercised on the second (\cref{sec:disc-shortcomings}).
+
 \section{What the falsification rig establishes, and its limits}\label{sec:res-limits}
 
 It is worth stating precisely what these results do and do not establish, because
@@ -187,8 +204,11 @@ worker-to-worker transfer nested inside a loop body --- and these are reported a
 skips with a stated reason, not papered over. The cluster result is
 value-correctness on a local launcher, not a cluster-scale measurement, and the MPI
 backends emit point-to-point rather than collective communication. The embedded
-result covers one reference microcontroller shim; further hardware families are
-out-of-tree work. And, as the gate's design requires (\cref{sec:val-gate}), its
+result covers two reference microcontroller shims (an STM32H7 and an nRF52840, across
+two distinct transmit architectures), but only the STM32H7 family is exercised in the
+multi-microcontroller wiring; the nRF52840 is the single-worker portability check
+described above, and further hardware families are out-of-tree work. And, as the gate's design requires
+(\cref{sec:val-gate}), its
 soundness guarantee is confined to the statically-ordered net class the
 language produces.
 
@@ -258,8 +278,8 @@ boilerplate.
   unit-test code that remains in a few crates is likewise counted uniformly. The
   shared base (\texttt{backend-common} plus the middle-end) is large;
   individual tier-1 backends are small, the thinnest under two hundred lines. The
-  \texttt{embedded-pattern} figure is an outlier not because of a large per-chip
-  shim --- the reference shim is a small stub --- but because the generic tier-3
+  \texttt{embedded-pattern} figure is an outlier not because of large per-chip
+  shims --- the two committed shims are small --- but because the generic tier-3
   backend carries multi-microcontroller machinery the hosted tiers do not need
   (boot-order computation, the UART-hub plan, cross-MCU control-sync) together with
   its inline tests.}

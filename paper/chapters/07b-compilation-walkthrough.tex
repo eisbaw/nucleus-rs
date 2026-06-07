@@ -423,7 +423,8 @@ backend mapped to a message tag), and a \emph{wait} becomes a matching
 \texttt{link\_recv}; a \emph{barrier} becomes an interrupt-driven synchronisation
 hook. The generic backend emits against the trait once; each microcontroller family
 supplies a shim that binds these hooks to real DMA descriptors, interrupt vectors,
-and memory addresses.
+and memory addresses --- the system commits two such shims, an STM32H7 and an
+nRF52840, against the same trait.
 
 The \emph{compute kernel}, though, is the same: the pure \texttt{blur3} body is
 copied verbatim into the embedded crate, character for character. The loop that

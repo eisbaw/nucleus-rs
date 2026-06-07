@@ -233,13 +233,30 @@ mis-compiled. The boundary is drawn for safety, not for communication efficiency
 \paragraph{Shim sprawl is real and, in principle, unbounded.} The embedded tier's
 generic backend is written once, but every microcontroller family needs its own
 shim supplying concrete DMA controllers, interrupt-vector tables, memory layout,
-linker scripts, and real-time validation under \texttt{no\_std} constraints --- the
-most expensive class of backend work, months per family. The system caps its own
-commitment at a single reference shim and treats further families as out-of-tree
-contributions, with the capability matrix and the hardware-abstraction trait as the
-contract such a contribution must meet. This is an honest containment of the cost,
-not an elimination of it: hardware portability beyond the one demonstrated family is
-future work that someone must do, family by family.
+linker scripts, and real-time validation under \texttt{no\_std} constraints. The
+\emph{first} family is the most expensive class of backend work --- months, because
+the first shim builds much of the generic embedded machinery alongside itself. The
+system now ships \emph{two}: the original STM32H7 reference shim and a second
+nRF52840 shim, byte-exact on the same examples (\cref{ch:results}). The second is
+the load-bearing one for this claim, because its UARTE EasyDMA transmit --- a
+pointer-and-length DMA engine --- is a genuinely different register interface from
+the STM32 USART, so reaching it through the unchanged hardware-abstraction trait
+shows the trait is a real portability seam, not a single-target abstraction. The
+byte-exact evidence exercises the trait's value-transport methods --- allocation,
+transmit, and the run loop --- on both families; the trait's timing and diagnostic
+hooks are structurally mirrored from the first family but not separately exercised on
+the second, because the examples used carry no timing assertion, so that narrower
+sub-surface is verified on one family only. The second family also
+calibrates the cost honestly: the second family was days, not months, because it
+reused the generic backend, the lowered run loop, and the input-injection and
+capture harness unchanged, swapping only the concrete register sequence, the memory
+map, and one linker flag --- but only because it happened to share the Cortex-M
+target the toolchain already builds and to have a ready simulator model. A family
+lacking either would cost more. So this is an honest containment of the cost, not an
+elimination of it: the trait is now demonstrated across two families rather than
+asserted from one, but shim sprawl remains in principle unbounded, and hardware
+portability beyond the two demonstrated families is still future work that someone
+must do, family by family.
 
 \paragraph{The cheap tier carries the formal claim.} The full bit-identical matrix
 runs only on the seven tier-1 CPU backends, because they are the only ones cheap
@@ -259,8 +276,9 @@ against the committed reference, on one oversubscribed host rather than across m
 nodes. The blocking arm in particular now spans a 2D-tiled matrix multiply, a sparse
 matrix--vector product, a data-dependent scatter, a transpose, and an iterative
 stencil, not just the original element-wise, split, and reduction shapes. The
-embedded tier is narrower still --- byte-exact co-simulation of three examples on a
-single microcontroller family rather than a broad embedded matrix. So the claim is
+embedded tier is narrower still --- byte-exact co-simulation of three examples,
+now on two microcontroller families (an STM32H7 and an nRF52840) rather than a broad
+embedded matrix. So the claim is
 strongest where the targets are least exotic, which is the reverse of where extra
 assurance would be most valuable; loopback MPI is not a cluster and a co-simulated
 microcontroller is not silicon, and both remain genuine residuals.

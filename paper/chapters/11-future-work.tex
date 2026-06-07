@@ -180,13 +180,21 @@ shim, and that claiming the architecture ``extends to GPUs'' without having done
 would be exactly the kind of overclaim this document has tried to avoid. It is
 listed as an open direction, not a promised one.
 
-The cheaper and more certain tier work is breadth within the existing embedded
-tier: the system ships a single reference microcontroller shim, and additional
-families --- each a separate shim against the committed hardware-abstraction trait
---- would broaden the hardware-portability evidence from one family to several. This
-is bounded, well-specified engineering rather than research, but it is real work,
-months per family, and it is the most direct way to strengthen the part of the
-claim that \cref{sec:disc-shortcomings} identified as currently the narrowest.
+The cheaper and more certain tier work is further breadth within the existing
+embedded tier. A second microcontroller family has already been added --- an
+nRF52840 (Cortex-M4F) shim whose UARTE EasyDMA transmit is a genuinely different
+register interface from the STM32 USART --- byte-exact on the same examples
+(\cref{ch:results}), which both demonstrates the hardware-abstraction trait is a
+real portability seam and calibrates the cost: that second family reused the generic
+backend and the test harness unchanged, swapping only the concrete shim, the memory
+map, and one linker flag, because it shared the Cortex-M target the toolchain
+already builds and had a ready simulator model. Additional families --- each a
+separate shim against the committed trait --- would broaden the evidence further.
+This is bounded, well-specified engineering rather than research; cheap when a family
+shares the target and has a simulator model, more expensive when it needs a new
+target triple or a model that does not yet exist. It remains the most direct way to
+widen the part of the claim that \cref{sec:disc-shortcomings} identifies as the
+narrowest.
 
 \section{A quantitative performance and scaling study}\label{sec:fw-quant}
 
