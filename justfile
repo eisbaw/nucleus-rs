@@ -9,6 +9,14 @@
 # Anti-bloat rule (PRD §12.3): no example/schedule/backend-specific
 # recipes. Such queries are flags on the `e2e` binary, not new recipes.
 
+# Shared by check-reference-independence (positive) and its -negative arm:
+# the rg pattern for an `include!`/`include_str!`/`include_bytes!` whose
+# path reaches OUTSIDE the reference crate (a `..` segment) — the
+# generated-source common-mode vector the Cargo.toml scanner cannot see.
+# Defined ONCE so the two arms cannot silently drift (a narrowing edit to
+# one would otherwise escape the other; memory: feedback-silent-sibling-defect).
+ref_include_pat := 'include(_str|_bytes)?!\s*\(\s*"[^"]*\.\.'
+
 # Default: list available recipes.
 default:
     @just --list
@@ -277,6 +285,8 @@ ci:
     just test-release
     just check-textual-replace-on-codegen
     just check-include-str-coverage
+    just check-reference-independence
+    just check-reference-independence-negative
     just check-narrative-doc-lie
     just check-doc-citation-staleness
     just check-doc-citation-staleness-bare
@@ -431,6 +441,89 @@ check-include-str-coverage:
         exit 1; \
     fi; \
     echo "OK: every include_str! has compile coverage."
+
+# Enforce reference-oracle CODE-independence (docs/reference-impl-policy.md
+# §2) mechanically. The differential argument's credibility hinges on the
+# hand-written reference being independent of the compiler middle-end: if a
+# reference shared compiler/backend code (or a Nuc-generated file), a
+# common-mode bug could corrupt the generated code AND the reference the
+# same way, and the byte-identity differential could NOT see it (PRD §10.1
+# "all backends wrong the same way"; thesis ch10 sec:disc-shortcomings
+# "Agreement could be common-mode"). §2 is a HARD RULE, but until now it
+# was enforced only by a reviewer checklist (policy §6/§7 explicitly: "Not
+# a CI-enforced check at M0"). This fence makes it mechanical (TASK-0453.08
+# P8 / defence W3). Two guards:
+#   1. check-reference-independence.awk on every reference Cargo.toml —
+#      forbids a `workspace =` parent-link, any `path =`/`git =` dependency
+#      (the only vector to an UNPUBLISHED Nucleus workspace crate; a
+#      crates.io reference dep like byteorder never needs one), and any
+#      Nucleus crate by name. An empty `[workspace]` table (the isolation
+#      mechanism) and a `[[bin]] path = "src/main.rs"` target are allowed.
+#   2. an rg guard on reference/src for `include!`/`include_str!`/
+#      `include_bytes!` reaching OUTSIDE the crate (a `..` path) — the
+#      generated-source-include vector the Cargo.toml fence cannot see.
+# Coverage self-check: asserts ≥25 manifests scanned so a glob breakage
+# cannot make the fence vacuously pass (memory:
+# feedback-coverage-audit-undercount-recurring). Negative arm proves it
+# bites: check-reference-independence-negative.
+check-reference-independence:
+    @echo "checking reference-oracle code-independence (policy §2)..."
+    @set -e; \
+    manifests=$(ls nuc-nucleus/examples/*/reference/Cargo.toml 2>/dev/null); \
+    n=$(echo "$manifests" | grep -c .); \
+    if [ "$n" -lt 25 ]; then \
+        echo "FAIL: only $n reference Cargo.toml found (expected >=25); glob broke — fence would be vacuous"; \
+        exit 1; \
+    fi; \
+    if ! awk -f check-reference-independence.awk $manifests; then \
+        echo ""; \
+        echo "A reference impl declares a dependency that reaches into the Nucleus workspace."; \
+        echo "References MUST be standalone (docs/reference-impl-policy.md §2) so the"; \
+        echo "differential cannot be defeated by a shared-code common-mode bug."; \
+        exit 1; \
+    fi; \
+    inc=$(rg -n '{{ref_include_pat}}' nuc-nucleus/examples/*/reference/src/ 2>/dev/null || true); \
+    if [ -n "$inc" ]; then \
+        echo "FAIL: a reference src includes a file OUTSIDE its crate (generated-source vector, policy §2):"; \
+        echo "$inc"; \
+        exit 1; \
+    fi; \
+    echo "OK: all $n reference oracles are code-independent of the compiler (policy §2)."
+
+# Prove the reference-independence fence actually BITES (TASK-0453.08
+# AC, mirrors the *-check-negative convention: no committed broken
+# manifest — poisons a temp copy). Builds four deliberately-dependent
+# manifests (a path-dep on nucleus-compiler, a `workspace =` parent-link,
+# a backend crate by name, and a `[patch.crates-io]` source override
+# redirecting an innocuous crates.io name to a Nucleus path) plus a src
+# file that include!s outside the crate, and asserts the SAME scanner used
+# by the positive arm rejects each. SUCCEEDS iff the fence FAILS on every
+# violation — a green check-reference-independence is only meaningful
+# because this one is too.
+check-reference-independence-negative:
+    @set -e; \
+    td=$(mktemp -d); trap 'rm -rf "$td"' EXIT; \
+    fail=0; \
+    printf '[package]\nname="evil"\n[dependencies]\nnucleus-compiler = { path = "../../../nucleus/nucleus-compiler" }\n' > "$td/path.toml"; \
+    printf '[package]\nname="evil"\nworkspace = "../../../nucleus"\n' > "$td/ws.toml"; \
+    printf '[package]\nname="evil"\n[dependencies]\nmp-tcp-event = "0.1"\n' > "$td/name.toml"; \
+    printf '[package]\nname="evil"\n[dependencies]\nbyteorder = "1"\n[patch.crates-io]\nbyteorder = { path = "../../../nucleus/backend-common" }\n' > "$td/patch.toml"; \
+    for c in path ws name patch; do \
+        if awk -f check-reference-independence.awk "$td/$c.toml" >/dev/null 2>&1; then \
+            echo "FAIL(negative): scanner did NOT bite on $c.toml violation"; fail=1; \
+        else \
+            echo "OK(negative): scanner bit on $c.toml"; \
+        fi; \
+    done; \
+    mkdir -p "$td/src"; \
+    printf 'fn main() { include!("../../../nucleus/generated.rs"); }\n' > "$td/src/main.rs"; \
+    if rg -q '{{ref_include_pat}}' "$td/src/"; then \
+        echo "OK(negative): src include-outside guard bit"; \
+    else \
+        echo "FAIL(negative): src include-outside guard did NOT bite"; fail=1; \
+    fi; \
+    if [ "$fail" -ne 0 ]; then exit 1; fi; \
+    echo "OK: reference-independence fence bites on every injected violation."
 
 # Catch the silent doc-link / HTML-tag breakage class (memory:
 # feedback-visibility-tighten-doclink-trap). `just check` / `just clippy`
