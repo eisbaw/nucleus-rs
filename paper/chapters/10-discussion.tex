@@ -250,10 +250,20 @@ only where a local message-passing launcher is present and the embedded tier onl
 under a simulator gate that the default development shell does not carry. The
 practical consequence is that the strongest, most-exercised evidence comes from the
 commodity-CPU tier, while the distributed and embedded tiers are confirmed more
-narrowly --- value-correctness on a local launcher rather than a production cluster,
-and byte-exact co-simulation of three examples rather than a broad embedded matrix.
-The claim is therefore strongest exactly where the targets are least exotic, which
-is the reverse of where extra assurance would be most valuable.
+narrowly. The distributed tier is exercised as a byte-exact differential against the
+same frozen reference the cheap tier uses, but on a local launcher rather than a
+production cluster: twelve MPI cells spanning eleven examples --- eight schedules
+under the blocking backend (\texttt{mpi-blocking}) and four asynchronous schedules
+under the non-blocking one --- each launched under \texttt{mpiexec} and byte-diffed
+against the committed reference, on one oversubscribed host rather than across many
+nodes. The blocking arm in particular now spans a 2D-tiled matrix multiply, a sparse
+matrix--vector product, a data-dependent scatter, a transpose, and an iterative
+stencil, not just the original element-wise, split, and reduction shapes. The
+embedded tier is narrower still --- byte-exact co-simulation of three examples on a
+single microcontroller family rather than a broad embedded matrix. So the claim is
+strongest where the targets are least exotic, which is the reverse of where extra
+assurance would be most valuable; loopback MPI is not a cluster and a co-simulated
+microcontroller is not silicon, and both remain genuine residuals.
 
 \section{Threats to validity}\label{sec:disc-threats}
 
