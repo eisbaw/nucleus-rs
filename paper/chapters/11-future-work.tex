@@ -88,9 +88,25 @@ exchange phase or a two-pass inspector/executor scheme --- a first pass that
 inspects the index array to plan the communication and a second that executes that
 plan --- of the kind sparse libraries use~\cite{saltz1991runtime}. This is well-trodden ground in distributed sparse computing, but importing it
 here means admitting a runtime-determined communication pattern, which sits in
-tension with the static firing order; the open problem is to do so without losing
-the soundness gate, perhaps by bounding the runtime exchange within a statically
-sound envelope.
+tension with the static firing order. The difficulty is sharper than the
+bounded-iteration case treated below in this section. Bounded data-dependent
+\emph{iteration} (the capped \texttt{until} loop exercised by
+\texttt{21-jacobi-converge} and \texttt{29-jacobi-cap-hit}) works because its only
+runtime unknown is a scalar trip count: a compile-time cap fixes the worst-case
+firing order and any shorter run replays as a sub-trace of it. A precise
+gather/scatter's runtime unknown is not a scalar but an entire address map --- which
+element moves to which worker --- whereas the soundness gate replays a communication
+structure fixed at compile time. The only compile-time-fixed structure that covers
+every possible index pattern is the conservative whole-array broadcast the backends
+already emit; that broadcast is, in effect, the trivial statically sound envelope,
+merely an untightened one. Tightening it is therefore not blocked by bounding the
+exchange's \emph{size} --- that bound is the part the iteration work already
+demonstrates --- but by deciding \emph{which} elements move while the gate still sees
+a fixed structure. Closing the gap needs either a gate that admits a bounded family
+of runtime communication patterns or a static envelope provably sound for any pattern
+yet tighter than whole-array; both are verification advances the present soundness
+argument does not reach, which is why the conservative broadcast remains the only
+sound option today.
 
 \paragraph{Data-dependent control flow.} Convergence-driven termination --- a loop
 that runs ``until converged'' --- is the single most-requested capability the model
