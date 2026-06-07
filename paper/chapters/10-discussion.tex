@@ -185,20 +185,35 @@ cannot, because it has no model of what any schedule would cost on any target. A
 reader expecting the assertion to \emph{drive} scheduling will be disappointed; it
 only observes.
 
-\paragraph{Conservative transfer inference can over-communicate.} When a
-partitioned index is affine and contiguous, each worker receives a precise slice;
-when it is not --- a sparse, multi-variable, or data-dependent index --- the
-compiler conservatively broadcasts the whole array. This is always correct, because
-the whole array is a superset of what any worker could read, but it can move far
-more data than necessary. The two data-dependent forms take this whole-array path
-differently: a gather broadcasts the whole indexed input and needs no combine,
-whereas a scatter replicates the whole target accumulator across workers and
-recombines the partials under the declared combine operator --- which is why the
-scatter path is tied to the reduction algebra and the gather path is not. A scatter
-whose target would have to be split along an affine partition axis is rejected
-outright rather than mis-compiled. The boundary is therefore drawn for safety, not
-for communication efficiency, and an irregular kernel can pay for that safety in
-bandwidth.
+\paragraph{Conservative transfer inference, over a whole-array transmission floor.}
+The compiler infers, for each worker, the region of a partitioned array that worker
+will actually read: when a partitioned index is affine and contiguous, that region
+is a precise tiled slice; when it is not --- a sparse, multi-variable, or
+data-dependent index --- the inference conservatively widens to the whole array,
+always a correct superset. It is tempting to read this as ``the affine case moves
+less data, the conservative case moves the whole array,'' but that is not what the
+current backends do. Every cross-worker edge transmits the whole array --- the
+producer sends a full copy and the receiver copies its inferred slice into place on
+arrival --- and every worker allocates the array full-shaped regardless of its slice.
+The inferred region's \emph{only} effect today is to make that receiver-side gather
+correct: a worker writes just its own band, so the sequential fan-in of many workers'
+contributions into a shared array does not clobber. It shrinks neither the message
+nor the per-worker buffer, and it does so identically whether the region is a precise
+slice or the whole array. The over-communication is therefore uniform, not confined
+to the conservative case: whole arrays on the wire, full-shaped buffers per worker, in
+the affine and non-affine cases alike. The inference is nonetheless the groundwork for
+the saving --- the per-worker region is already computed --- so a backend that
+transmitted and allocated only that region, paired with an inference precise enough to
+make the region tight for irregular kernels, would cut both volume and footprint
+without touching the firing order, the soundness gate (which counts messages, not
+bytes), or the byte-level results (\cref{sec:fw-affine}). That optimisation is
+admitted by the architecture but not taken. The two data-dependent forms differ in
+the inference: a gather widens the whole indexed input and needs no combine, whereas a
+scatter replicates the whole target accumulator across workers and recombines the
+partials under the declared combine operator --- which is why the scatter path is
+tied to the reduction algebra and the gather path is not. A scatter whose target
+would have to be split along an affine partition axis is rejected outright rather than
+mis-compiled. The boundary is drawn for safety, not for communication efficiency.
 
 \paragraph{Shim sprawl is real and, in principle, unbounded.} The embedded tier's
 generic backend is written once, but every microcontroller family needs its own

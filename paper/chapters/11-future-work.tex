@@ -112,15 +112,23 @@ near-term target but as the natural destination if the two preceding directions
 both succeed, and as an honest marker of how far the current class is from
 general numerical computing.
 
-\paragraph{Polyhedral analysis for non-affine indexing.} The transfer-inference
-pass degrades to whole-array broadcast whenever an index is not an affine,
-contiguous function of the partition variables. A polyhedral analysis, using an
-established integer-set library, could compute precise transferred regions for a
+\paragraph{Precise inference, and transmitting only the inferred region.} The
+transfer-inference pass degrades to whole-array broadcast whenever an index is not an
+affine, contiguous function of the partition variables. A polyhedral analysis, using
+an established integer-set library, could compute precise transferred regions for a
 broader class of affine and piecewise-affine index expressions than the current
-prefix-based inference handles, reducing over-communication without changing the
-language. This is an internal precision improvement rather than a class extension:
-it makes existing programs communicate less, and risks nothing in the guarantees,
-which makes it a comparatively safe direction with a concrete payoff.
+prefix-based inference handles, without changing the language. On its own, though,
+this sharpens only the inferred per-worker region --- which today serves only the
+correctness of the receiver-side gather --- and does \emph{not} by itself reduce
+communication or per-worker memory, because the current backends transmit the whole
+array on every cross-worker edge, allocate it full-shaped, and slice on receipt
+(\cref{sec:disc-shortcomings}). The concrete payoff therefore has two halves that must
+both be built: the precise inference, \emph{and} a backend change that transmits and
+allocates only the inferred region rather than the whole array. Both are internal
+precision improvements that risk nothing in the guarantees --- the firing order, the
+soundness gate, and the byte-level results are unchanged, only the volume moved ---
+which keeps this a comparatively safe direction, but a two-part one rather than the
+drop-in the inference half alone would suggest.
 
 \section{New target tiers}\label{sec:fw-tiers}
 
