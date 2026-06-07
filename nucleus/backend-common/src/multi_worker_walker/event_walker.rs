@@ -158,8 +158,10 @@ fn render_worker_events_inner(
                 // than silently dropping the predicate (which mis-lowers a
                 // convergence loop to a non-terminating full-cap loop —
                 // feedback-option-none-skip-arm-silent-drop), reject loud,
-                // mirroring `embedded-pattern/src/render.rs`. Inert today
-                // (no `for..until` example), fail-loud before S7.
+                // mirroring `embedded-pattern/src/render.rs`. Unreached
+                // today (the `for..until` examples 21-jacobi-converge /
+                // 29-jacobi-cap-hit are single-worker `naive` only, so no
+                // `break_cond` flows here); fail-loud before S7.
                 if break_cond.is_some() {
                     return Err(EmitError::UnsupportedFeature(
                         "multi-worker backends do not yet lower `for..until` \

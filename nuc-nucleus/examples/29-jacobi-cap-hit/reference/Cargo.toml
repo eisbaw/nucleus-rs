@@ -1,0 +1,39 @@
+# Standalone reference implementation for example 29-jacobi-cap-hit.
+#
+# Independent of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or
+# on any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace = ".."]` link).
+#
+# Regenerate `input.bin` (the committed seed — IDENTICAL pattern to
+# 21-jacobi-converge) with `--gen-input`:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/29-jacobi-cap-hit/reference/Cargo.toml -- \
+#     --gen-input \
+#     --out   nuc-nucleus/examples/29-jacobi-cap-hit/input.bin
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path nuc-nucleus/examples/29-jacobi-cap-hit/reference/Cargo.toml -- \
+#     --in    nuc-nucleus/examples/29-jacobi-cap-hit/input.bin \
+#     --out   nuc-nucleus/examples/29-jacobi-cap-hit/reference.bin
+
+[package]
+name        = "jacobi-cap-hit-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference for nuc example 29-jacobi-cap-hit."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "jacobi-cap-hit-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"

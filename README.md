@@ -25,9 +25,9 @@ deliberately out of scope for v2.
 
 - **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
   Start here. Everything else is implementation.
-- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 28 worked
-  examples (fourteen driving examples per PRD §9 plus fourteen later
-  extensions, 15–28) from element-wise add (one kernel, one for-loop)
+- **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 29 worked
+  examples (fourteen driving examples per PRD §9 plus fifteen later
+  extensions, 15–29) from element-wise add (one kernel, one for-loop)
   to CNN inference (multi-layer i32 deterministic), a multi-MCU
   hearing aid, a DMA-async + PIO-sync transport demo, a map-reduce
   dot product (inner product), a rank-1 outer product (the
@@ -43,7 +43,7 @@ deliberately out of scope for v2.
   §10.1). Each example is `prog.algo.nuc` + one or more
   `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
   impl + an `input.bin` + an expected `reference.bin`.
-  <!-- check-readme-counts: examples=28 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
+  <!-- check-readme-counts: examples=29 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
 - **[`docs/`](docs/)** — grammar documents and the reference-impl
   policy.
 - **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`
