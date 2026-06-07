@@ -1,7 +1,7 @@
 \chapter{Example Catalogue}\label{app:examples}
 
 The corpus of worked examples is the system's specification (\cref{sec:val-suite}).
-This appendix catalogues the twenty-seven examples and, for each, names what it
+This appendix catalogues the twenty-eight examples and, for each, names what it
 computes and the scheduling or compiler property it is there to stress. Most examples carry more than one schedule --- typically a single-worker
 reference schedule and one or more distributed or transformed schedules that must
 reproduce the reference output byte-for-byte --- so the number of differential cells
@@ -88,9 +88,14 @@ primary one.
       whose identity is the type maximum, not zero; identity-aware accumulator
       initialisation, with an empty bin forcing the identity to show. \\
     \texttt{27-bin-fmin} & Per-bin floating-point minimum & An order-independent
-      \emph{float} combine that is admitted (with its $+\infty$ identity), in
-      deliberate contrast to a float \emph{sum}, which is rejected for
+      \emph{float} combine that is admitted directly (with its $+\infty$ identity),
+      in contrast to a plain float \emph{sum}, which is rejected for
       non-associativity. \\
+    \texttt{28-bin-fsum} & Per-bin reproducible floating-point sum & The opt-in
+      \texttt{combine=fsum}: a distributed float \emph{sum} made cross-backend
+      bit-identical by a fixed worker-id-sorted fold (the reference oracle moving in
+      lockstep), as distinct from plain \texttt{sum} (still rejected) and from a
+      schedule-invariant order-independent reduction (future work). \\
     \bottomrule
   \end{tabular}
   \caption{Reduction examples spanning the supported combine operators.}

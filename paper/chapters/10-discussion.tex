@@ -57,7 +57,7 @@ file, unchanged, is decomposed across shared-memory threads, message-passing
 processes, distributed-memory ranks, and bare-metal microcontrollers by editing
 only the schedule. This is the property that motivated the work, and it is not
 merely claimed --- it is the thing the differential matrix tests on every build.
-Twenty-seven algorithms, each written once, are driven across the ten backends on
+Twenty-eight algorithms, each written once, are driven across the ten backends on
 three tiers; every required cell a runtime can execute agrees byte-for-byte, with
 the documented exceptions --- such as the convergence example off its single-worker
 path --- recorded as skips rather than hidden. The arithmetic was written once and
@@ -118,7 +118,9 @@ permanent given that trade.
 \paragraph{The restricted algorithm class is narrow.} The headline limitation is
 the class of programs admitted at all. Loops must be affine and constant-bounded;
 arrays are single-assignment with no aliasing; arithmetic is integer-valued, or
-floating-point only where reductions do not reorder; there is no data-dependent
+floating-point only under the reduction-determinism restrictions discussed below
+(order-independent combines, or the opt-in fixed-order \texttt{fsum}); there is no
+data-dependent
 control flow, no recursion, no higher-order kernels, and no dynamic scheduling or
 work-stealing. This excludes convergence-driven iterative solvers, recursive
 divide-and-conquer, irregular and pointer-chasing computations, and any workload
@@ -158,23 +160,34 @@ stated wherever the gate is discussed because conflating ``the coordination is
 sound'' with ``the program is correct,'' or ``sound for these nets'' with ``sound
 for all nets,'' would overstate the result.
 
-\paragraph{Bit-identity is integer-only, with float-sum as the determinism
-boundary.} The byte-for-byte guarantee rests on the arithmetic being deterministic,
-and IEEE-754 addition is not associative: a distributed floating-point sum would
-produce different bytes depending on the order in which workers' partial results
-arrive, which legitimately varies across backends. The system's response is to
-refuse the operation --- a floating-point \emph{sum} combine is rejected at compile
-time --- rather than emit code that happens to agree on the test input and diverges
-on another. This is the honest choice, but it is also a real limit: a large part of
-scientific computing is floating-point reduction, and this model cannot offer it
-byte-identity. Order-independent floating-point combines --- a float
-minimum, which the system does support --- are the exception, and even these carry a
-caveat: float \texttt{min}/\texttt{max} is order-independent only for distinct,
-finite, non-NaN values, because IEEE-754 treats $-0.0$ and $+0.0$ as equal and
-ignores NaN, so a bin mixing signed zeros or containing only NaNs is not guaranteed
-bit-stable under reordering (the committed fixture is chosen NaN-free with distinct
-finite values). The general case is excluded, and the determinism boundary runs
-straight through floating-point summation.
+\paragraph{Bit-identity for floating point is conditional, and float \emph{sum} is
+where the line is drawn.} The byte-for-byte guarantee rests on the arithmetic being
+deterministic, and IEEE-754 addition is not associative: a distributed floating-point
+sum reduced in an order that varies across backends would produce different bytes. The
+system's default response is to refuse the operation --- a plain floating-point
+\texttt{sum} combine is rejected at compile time --- rather than emit code that happens
+to agree on the test input and diverges on another. Two routes cross the line without
+abandoning determinism. Order-independent combines --- a float \texttt{min} or
+\texttt{max} --- are admitted directly, because their result does not depend on the
+reduction order at all (subject to the caveat below). And float \emph{sum} is admitted
+through an explicit opt-in, \texttt{combine=fsum}: the host folds the per-worker
+partials with a \emph{fixed}, worker-id-sorted order that is identical on every backend
+(the same deterministic event-list order the rest of the schedule already uses), and
+the immutable reference oracle reproduces that exact fold, so all seven CPU backends
+agree to the byte and agree with the oracle (demonstrated by the \texttt{28-bin-fsum}
+example). The honesty is in the residual, which is larger here than for
+\texttt{min}/\texttt{max}: \texttt{fsum} is reproducible \emph{across backends for a
+given schedule}, not order-independent. It is not the naive single-pass IEEE sum, and a
+different worker count folds the partials differently and can yield different bits --- so
+it carries the PRD §10.1 ``same bytes across backends'' guarantee, not a ``same bytes
+across schedules'' one. The plain \texttt{sum} combine stays rejected, and a fully
+order-independent (schedule-invariant) reduction --- the wide-superaccumulator or
+pre-rounding route --- remains future work (\cref{sec:fw-float}). The
+\texttt{min}/\texttt{max} caveat still applies: they are order-independent only for
+distinct, finite, non-NaN values, because IEEE-754 treats $-0.0$ and $+0.0$ as equal
+and ignores NaN, so a bin mixing signed zeros or containing only NaNs is not guaranteed
+bit-stable under reordering (the committed fixtures are chosen NaN-free with distinct
+finite values).
 
 \paragraph{Check assertions are descriptive, not prescriptive.} The schedule can
 attach a timing assertion --- a latency bound on a loop, say --- and the compiler
@@ -252,7 +265,7 @@ implementation; the weakness is that the guarantee is exactly as complete as the
 corpus, and a program shape absent from the corpus is outside the guarantee
 entirely. Bit-identity is shown over the exercised cells, not proved for every
 program the grammar admits. The corpus was assembled to be diverse, and the known
-gaps are recorded rather than hidden, but ``no counterexample in twenty-seven
+gaps are recorded rather than hidden, but ``no counterexample in twenty-eight
 examples'' is empirical evidence, not a proof, and should be read as such. The
 natural way to push the claim from curated witnesses toward the boundary is
 generative: a property-based harness that synthesises affine, single-assignment
@@ -269,7 +282,7 @@ floating-point programs --- so the boundary of the empirical claim has moved out
 not vanished, and every shape the generator cannot yet reach remains covered only by
 the curated corpus. Second, the result is still empirical and still intent-bounded:
 ``no counterexample over the sampled programs'' is stronger than ``no counterexample
-in twenty-seven examples'' but is not a proof, and the generator's in-process
+in twenty-eight examples'' but is not a proof, and the generator's in-process
 reference shares the arithmetic intent of the kernels it emits --- indeed it is a
 second transcription of the same operator definition, so \emph{less} independent than
 the separately-authored curated oracle, not more. At the level of author intent the

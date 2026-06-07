@@ -35,33 +35,42 @@ schedules knowing that every accepted one is sound by construction.
 
 \section{Floating-point determinism}\label{sec:fw-float}
 
-The bit-identity guarantee stops at floating-point summation, because IEEE-754
-addition is not associative and a distributed float-sum cannot be made order-
-independent without changing its result (\cref{sec:disc-shortcomings}). The system
-handles this honestly today by rejecting a floating-point sum combine at compile
-time, which is correct but restrictive.
+The bit-identity guarantee once stopped at floating-point summation, because IEEE-754
+addition is not associative and a distributed float-sum reduced in a varying order
+produces varying bytes (\cref{sec:disc-shortcomings}). That boundary has now been
+crossed for the cross-backend case, but only partway, and the remaining distance is
+worth stating precisely.
 
-There is a known route past this that does not abandon determinism:
-reproducible reductions that compute a fixed result regardless of summation order,
-for instance by accumulating into a wide fixed-point superaccumulator --- an integer
-accumulator wide enough to represent any partial sum exactly --- that absorbs
-each addend without rounding, or by pre-rounding addends to a common granularity, so that the
-partial-sum tree becomes order-invariant~\cite{demmel2013reproducible}. Adopting
-one of these would let a distributed floating-point sum carry the same kind of
-byte-identity guarantee the integer combines already enjoy, extending the
-differential rig's reach into a large and important part of scientific computing.
-There is a subtlety that makes this less self-contained than it first appears: a
-reproducible reduction is order-independent, but it does not in general equal the
-naive left-to-right IEEE-754 sum that a single-worker reference would compute. The
-immutable reference --- the trust anchor of the whole rig --- would therefore have
-to adopt the same reproducible scheme, so that cross-backend agreement is also
-agreement with the oracle. The change is thus not purely additive: the reduction
-lowering, the kernel contract, and the reference implementation must move in
-lockstep. The risk is nonetheless contained, because it touches the reduction path
-and the oracle rather than the language surface or the soundness gate, and the new
-combine can be made opt-in. It remains among the higher-value directions, because
-it lifts a limit that excludes a whole numerical domain --- but it is not the
-trivial drop-in that the opt-in framing alone would suggest.
+What is implemented is the \emph{fixed-order} route: an opt-in \texttt{combine=fsum}
+under which the host folds the per-worker partials in a fixed worker-id-sorted order
+that is identical on every backend, and the reference oracle reproduces that exact
+fold. The reduction lowering, the kernel contract, and the reference implementation
+therefore move in lockstep --- the subtlety anticipated below, made concrete --- and a
+distributed float sum now carries the same cross-backend byte-identity the integer
+combines enjoy, demonstrated across all seven CPU backends by the \texttt{28-bin-fsum}
+example. The plain \texttt{sum} combine stays rejected, so the guarantee is opt-in and
+the default stays strict.
+
+What remains open is the stronger, \emph{order-independent} route: a reproducible
+reduction that computes a fixed result regardless of summation order, for instance by
+accumulating into a wide fixed-point superaccumulator --- an integer accumulator wide
+enough to represent any partial sum exactly --- that absorbs each addend without
+rounding, or by pre-rounding addends to a common
+granularity~\cite{demmel2013reproducible}. The fixed-order fold delivered here is
+reproducible across backends for a \emph{given} schedule, but it is not the naive
+left-to-right IEEE-754 sum, and a different worker count folds the partials
+differently --- so it does not yet give ``same bytes across schedules.'' An
+order-independent scheme would close that gap, making every decomposition agree
+bit-for-bit on a single reproducible result independent of worker count (the result
+being the scheme's own --- the exact sum for a superaccumulator, the pre-rounded sum
+for pre-rounding --- not necessarily the naive single-pass IEEE sum). The subtlety that
+made even the fixed-order step less self-contained than it first appears --- that the
+immutable oracle, the rig's trust anchor, must adopt the same scheme so cross-backend
+agreement is also agreement with the oracle --- applies with full force to the
+order-independent route, and is the reason it is the higher-value but heavier
+remaining direction: it lifts the schedule-invariance limit that still excludes part
+of a whole numerical domain, but it is not the trivial drop-in the opt-in framing
+alone would suggest.
 
 \section{Beyond the affine, static class}\label{sec:fw-affine}
 
