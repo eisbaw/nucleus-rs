@@ -310,8 +310,23 @@ middle-end. The soundness gate offers only partial protection here, being itself
 middle-end code that such a fault could equally corrupt; the genuinely orthogonal
 defence is the independent, frozen reference of the previous paragraph, produced by
 a separate implementation that shares none of the compiler's middle-end. That
-defence is real but bounded: it catches a middle-end fault only where the fault
-changes the output bytes, not where it leaves them unchanged.
+code-level independence is now a mechanically enforced invariant rather than a
+reviewer convention: a continuous-integration fence rejects any reference that
+declares a dependency on the compiler or a backend crate, that links into the
+compiler's build, or that includes a generated source file, so a reference cannot
+silently come to share the very middle-end it exists to check. That defence is real
+but bounded along two distinct axes. It catches a middle-end fault only where the
+fault changes the output bytes, not where it leaves them unchanged; and it removes
+only \emph{code}-level common mode --- a shared implementation --- not
+\emph{author-intent} common mode, since the reference still re-encodes the same
+arithmetic specification (the same operator definitions, the same input and output
+byte layout), so a misreading of that specification would corrupt the reference and
+the algorithm alike. The fence makes the first axis mechanical; the second is
+irreducible, reduced only where a reference encodes the algorithm a structurally
+different way --- the sparse matrix--vector reference indexes the input vector
+directly where the compiled program reaches the same values through a masked
+accumulator, so the two cannot be wrong in the same way by construction --- and
+otherwise left as a documented residual.
 
 \paragraph{The negative falsifiers could themselves rot.} A negative test that
 silently becomes a no-op is permanently and invisibly green, and would leave a check
