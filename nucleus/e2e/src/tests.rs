@@ -462,10 +462,21 @@ fn manifest_actual_file_parses() {
         !m.backends.iter().any(|b| b == "mpi-blocking"),
         "mpi-blocking must NOT be in the default tier-1 `backends` (it needs .#mpi)"
     );
+    // The eight M7 mpi-blocking cells: the original three plus the five
+    // distinct distributed shapes TASK-0453.09 added (2D-tiled matmul,
+    // data-dependent scatter, transpose, iterative stencil, sparse
+    // matrix-vector gather) — each observed byte-exact under `mpiexec -n 5`
+    // on loopback. Pinned so a future edit dropping any cell fails loud
+    // here rather than silently stopping being covered by `just e2e-mpi`.
     for (ex, sc) in [
         ("01-elementwise-add", "naive"),
         ("02-split-add", "split"),
         ("03-reduction", "distributed"),
+        ("07-matmul", "distributed"),
+        ("08-histogram", "distributed"),
+        ("15-transpose", "distributed-rows"),
+        ("16-jacobi", "distributed"),
+        ("17-spmv", "distributed"),
     ] {
         assert!(
             m.required.iter().any(|r| r.example == ex

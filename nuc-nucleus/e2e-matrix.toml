@@ -198,27 +198,39 @@ schedule = "naive"
 backend  = "pthreads-sync"
 milestone = "M1"
 
-# --- Tier-2 (M7) mpi-blocking differential cells (TASK-0444) ----------
+# --- Tier-2 (M7) mpi-blocking differential cells (TASK-0444, broadened
+#     by TASK-0453.09) ----------------------------------------------------
 #
-# The mpi-blocking arm of the cross-backend matrix for examples 1-3.
-# These run ONLY under `just e2e-mpi` (= harness `--with-mpi`, the
-# `mpi_backends` tier; see the `mpi_backends` key above) — bare
-# `just e2e` / `just ci` never touch them (the default shell has no
-# MPI). Each generates the SPMD MPI project, cross-builds it under
-# `.#mpi`, launches it via `mpiexec -n N` (N = the schedule's
-# used-worker count, baked into the emitted run.sh — ALL ranks live,
-# the worst case, NOT -n 1 which hides Send/Recv ordering bugs), and
+# The mpi-blocking arm of the cross-backend matrix. These run ONLY under
+# `just e2e-mpi` (= harness `--with-mpi`, the `mpi_backends` tier; see the
+# `mpi_backends` key above) — bare `just e2e` / `just ci` never touch them
+# (the default shell has no MPI). Each generates the SPMD MPI project,
+# cross-builds it under `.#mpi`, launches it via `mpiexec -n N` (N = the
+# schedule's used-worker count, baked into the emitted run.sh — ALL ranks
+# live, the worst case, NOT -n 1 which hides Send/Recv ordering bugs), and
 # byte-diffs output.bin against the example's `reference.bin` oracle.
-# Exactly the three triples `just check-mpi` already proves byte-exact,
-# now COUNTED in the matrix:
-#   - 01-elementwise-add/naive   (single worker, -n 1)
-#   - 02-split-add/split         (multi-worker SPMD, -n 2)
-#   - 03-reduction/distributed   (multi-worker SPMD tree-reduce, -n 5)
-# milestone = "M7" — the PRD §11 milestone whose acceptance gate owns
-# the first tier-2 backend (mpi-blocking), per the manifest-header
-# milestone scheme. The cumulative milestone gate is ORTHOGONAL to the
-# tier gate: `--with-mpi` already restricts to mpi_backends, so these
-# never appear in a tier-1 `--milestone M<k>` run.
+#
+# EIGHT cells, all observed byte-exact by the harness under mpiexec:
+#   - 01-elementwise-add/naive      (single worker, -n 1)
+#   - 02-split-add/split            (multi-worker SPMD, -n 2)
+#   - 03-reduction/distributed      (multi-worker SPMD tree-reduce, -n 5)
+#   - 07-matmul/distributed         (multi-worker 2D row-band, -n 5)
+#   - 08-histogram/distributed      (multi-worker scatter + partial-sum, -n 5)
+#   - 15-transpose/distributed-rows (multi-worker row-band permute, -n 5)
+#   - 16-jacobi/distributed         (multi-worker stencil iteration, -n 5)
+#   - 17-spmv/distributed           (multi-worker sparse mat-vec gather, -n 5)
+# The first three are also independently proven out-of-band by
+# `just check-mpi`; TASK-0453.09 added the latter five (distinct shapes:
+# 2D tiling, data-dependent scatter, permute, iterative stencil, gather)
+# as COUNTED harness differential cells, broadening the blocking arm from
+# 3 to 8. All sync schedules (mpi-blocking is sync-only); each verified
+# byte-exact vs reference.bin under `mpiexec --oversubscribe -n 5` on
+# LOOPBACK (one host, oversubscribed ranks — NOT a production cluster; the
+# cluster caveat stays in the thesis). milestone = "M7" — the PRD §11
+# milestone whose acceptance gate owns the first tier-2 backend
+# (mpi-blocking). The cumulative milestone gate is ORTHOGONAL to the tier
+# gate: `--with-mpi` already restricts to mpi_backends, so these never
+# appear in a tier-1 `--milestone M<k>` run.
 [[required]]
 example  = "01-elementwise-add"
 schedule = "naive"
@@ -233,6 +245,36 @@ milestone = "M7"
 
 [[required]]
 example  = "03-reduction"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "07-matmul"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "08-histogram"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "15-transpose"
+schedule = "distributed-rows"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "16-jacobi"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "17-spmv"
 schedule = "distributed"
 backend  = "mpi-blocking"
 milestone = "M7"
