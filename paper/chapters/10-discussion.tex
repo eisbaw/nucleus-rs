@@ -181,8 +181,8 @@ example). The honesty is in the residual, which is larger here than for
 \texttt{min}/\texttt{max}: \texttt{fsum} is reproducible \emph{across backends for a
 given schedule}, not order-independent. It is not the naive single-pass IEEE sum, and a
 different worker count folds the partials differently and can yield different bits --- so
-it carries the PRD §10.1 ``same bytes across backends'' guarantee, not a ``same bytes
-across schedules'' one. The plain \texttt{sum} combine stays rejected, and a fully
+it carries the ``same bytes across backends'' guarantee of the differential rig
+(\cref{sec:res-bitidentity}), not a ``same bytes across schedules'' one. The plain \texttt{sum} combine stays rejected, and a fully
 order-independent (schedule-invariant) reduction --- the wide-superaccumulator or
 pre-rounding route --- remains future work (\cref{sec:fw-float}). The
 \texttt{min}/\texttt{max} caveat still applies: they are order-independent only for
