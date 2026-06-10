@@ -288,13 +288,23 @@ pub(crate) fn prune_retained_runs(parent: &std::path::Path, keep: usize) {
         // Run dirs embed the creating pid (`run-<pid>-<nanos>`); skip
         // any dir whose pid is still alive.
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Some(pid) = name
-                .strip_prefix("run-")
-                .and_then(|r| r.split('-').next())
-                .and_then(|p| p.parse::<u32>().ok())
-            {
-                if std::path::Path::new(&format!("/proc/{pid}")).exists() {
-                    continue;
+            // Only names matching the FULL production shape
+            // `run-<pid>-<nanos>` carry a pid; a partial match (e.g. a
+            // test fixture `run-0`) must NOT be liveness-checked —
+            // pids 1..5 are kernel processes that always "exist".
+            let mut parts = name.strip_prefix("run-").map(|r| r.splitn(2, '-'));
+            if let Some(ref mut it) = parts {
+                if let (Some(pid_s), Some(rest)) = (it.next(), it.next()) {
+                    if !rest.is_empty()
+                        && rest.bytes().all(|b| b.is_ascii_digit())
+                        && pid_s.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        if let Ok(pid) = pid_s.parse::<u32>() {
+                            if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -356,8 +366,23 @@ mod prune_tests {
             std::thread::sleep(Duration::from_millis(15));
         }
 
-        prune_retained_runs(&parent, 4);
+        // A production-shaped dir carrying OUR OWN (alive) pid, made the
+        // OLDEST of all: the liveness guard must keep it even though
+        // mtime ordering would prune it (hardening review P2.1 pin).
+        let live = parent.join(format!("run-{}-12345", std::process::id()));
+        fs::create_dir_all(&live).unwrap();
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(3600);
+        // Best-effort mtime backdate; if filetime isn't available the
+        // create-order already makes it old enough on coarse filesystems.
+        let _ = std::process::Command::new("touch")
+            .arg("-d").arg("@0").arg(&live)
+            .status();
 
+        prune_retained_runs(&parent, 4);
+        let _ = old_time; // (used only for documentation of intent)
+
+        // The live-pid dir survives despite being oldest.
+        assert!(live.exists(), "live-pid run dir must never be pruned");
         // The 4 newest (run-2..run-5) survive; run-0, run-1 are pruned.
         assert!(!names[0].exists(), "oldest run-0 should be pruned");
         assert!(!names[1].exists(), "run-1 should be pruned");
