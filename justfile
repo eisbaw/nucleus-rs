@@ -66,11 +66,29 @@ clippy:
 e2e:
     cd nucleus && cargo run --release --bin nucleus-e2e
 
-# Generative property-based cross-backend differential fuzzer
-# (TASK-0453.01): synthesises k affine single-assignment integer
-# programs from a seed and asserts byte-identity across all 7 tier-1
-# backends + an in-process reference. Args are POSITIONAL: `just
-# diff-fuzz 1 8` (seed=1, k=8); defaults seed=1 k=8.
+# Walk the getting-started tutorial (docs/tutorial.md) end-to-end:
+# builds the same docs/tutorial algorithm on pthreads-sync (naive
+# schedule) and mp-tcp-bufsync (split schedule), runs both, and asserts
+# their outputs are byte-identical. Keeps the tutorial from rotting —
+# fails if the tutorial program stops compiling or the backends diverge.
+# Separate from `just e2e` because the tutorial lives under docs/, NOT
+# under nuc-nucleus/examples/, so the e2e matrix never enumerates it.
+tutorial:
+    bash scripts/tutorial-run.sh
+
+# Generative cross-backend differential fuzzer over five synthesised
+# families (TASK-0453.01 / .05 / .01.01).
+#
+# Synthesises k structured single-assignment integer programs from a
+# seed across five families (1-D pipeline / 2-D stencil-with-halo /
+# partitioned 6-op reduction / multi-worker partition / for..until)
+# and asserts byte-identity across each program's tier-1 backend set
+# + an in-process reference. Every build/run has a per-command
+# wall-clock timeout (a hang -> reported FAIL); override with the env
+# var DIFF_FUZZ_TIMEOUT_SECS=<secs>. Args are POSITIONAL: `just
+# diff-fuzz 1 8` (seed=1, k=8); defaults seed=1 k=8. k is SMALL by
+# default because each program is several backend builds; bump it for
+# a sweep (`just diff-fuzz 12345 120`).
 diff-fuzz seed="1" k="8":
     cd nucleus && cargo run --release --bin diff-fuzz -- --seed {{seed}} --k {{k}}
 

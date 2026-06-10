@@ -50,9 +50,77 @@ actually BITES. Two negative gates are wired:
 
 Both are required by `just ci`.
 
+## Generative differential arm (`diff-fuzz`)
+
+The curated matrix above is complemented by a generative,
+property-based cross-backend differential fuzzer
+(`src/bin/diff_fuzz/`, the `diff-fuzz` binary). From a seed it
+SYNTHESISES structured single-assignment integer programs and
+subjects each to the same test the curated rig applies: compile
+across the program's tier-1 backend set, run against generated
+input, and require mutual byte-identity — additionally cross-checked
+against an in-process Rust reference computed directly from the
+synthesised program.
+
+It relies on NO hand-written example. Generation is deterministic in
+the seed, so any divergence reproduces exactly (`--prog-seed`
+regenerates a single failing program). It is run on demand, not on
+every build, because each synthesised program costs several
+independent backend builds.
+
+```bash
+# Default: 8 programs, seed 1.
+just diff-fuzz
+
+# Larger seeded sweep:
+just diff-fuzz 12345 120          # seed=12345, k=120
+
+# Reproduce one failing program from a failure report:
+nix develop --command cargo run --release --bin diff-fuzz -- --prog-seed <N>
+
+# Per-command timeout knob (a hang -> reported FAIL, never a stall):
+DIFF_FUZZ_TIMEOUT_SECS=120 just diff-fuzz 1 8
+```
+
+### Families (the synthesised subclass)
+
+Five structured families, each modelled on a proven curated example:
+
+- **pipeline1d** — 1-D elementwise integer pipeline, host+w0 split
+  (`02-split-add`). 7-backend.
+- **stencil2d** — 2-D vertical 3-point stencil whose `y±1` reads are
+  in the partition axis, forcing halo inference; `partition=rows`
+  with plain `sync` transfers (`05-stencil`, sync variant).
+  7-backend.
+- **reduction** — partitioned binned reduction over ALL SIX combine
+  operators (sum / or / xor / and / min / max) with identity-element
+  edge cases — empty bins, and the non-zero identities min=`i32::MAX`
+  / max=`i32::MIN` / and=all-ones (`26-bin-min`). 7-backend.
+- **partition_workers** — multi-COMPUTE-worker `partition=workers`
+  elementwise map (`03-reduction` distributed shape). 7-backend.
+- **for_until** — bounded `for..until` single-worker convergence
+  shape, cap + exact integer halt predicate (`21-jacobi-converge`).
+  **pthreads-sync ONLY** — the curated matrix itself skips
+  `21-jacobi-converge` on the other six backends (the break emit is
+  single-worker pthreads-sync today; the cross-backend break
+  differential is epic S7). For this family the harness checks
+  self-consistency + reference agreement on that single backend.
+
+### Honest scope of the in-process reference
+
+The reference guards against COMPILER common-mode (all backends
+mistranslating the SAME kernel identically). It does NOT guard
+against SPECIFICATION common-mode: each operator's reference (`apply`)
+and emitted kernel body are two transcriptions of the SAME operator
+definition, so a conceptual error in an op's definition would appear
+identically in both and escape — the same author-intent common-mode
+bound the thesis already states for the hand-written corpus oracles.
+
 ## Tests
 
 `cargo test -p e2e` covers the harness internals (arg parser, JSON
 emitter + parser, perf-regression comparator, threshold gating,
-manifest schema, cell planning, etc.). The matrix itself is run
-via `just e2e`.
+manifest schema, cell planning, etc.) AND the `diff-fuzz` internals
+(per-family generators, reference oracles, the seeded RNG, and the
+per-command timeout / process-group kill). The matrix itself is run
+via `just e2e`; the generative arm via `just diff-fuzz`.

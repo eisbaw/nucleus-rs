@@ -20,14 +20,18 @@ name = "nucleus-e2e"
 path = "src/main.rs"
 
 # Generative property-based cross-backend differential fuzzer
-# (TASK-0453.01). Self-contained: synthesises affine/single-assignment
-# integer programs, compiles+runs them across all 7 tier-1 backends, and
-# asserts byte-identity against each other and an in-process reference.
-# No extra deps (its own splitmix64 RNG); lives in the e2e crate to sit
-# next to the curated harness.
+# (TASK-0453.01, widened by TASK-0455.05 + TASK-0453.01.01). Self-
+# contained: synthesises structured single-assignment integer programs
+# across five families (1-D pipeline / 2-D stencil / partitioned
+# reduction / multi-worker partition / for..until), compiles+runs them
+# across each program's tier-1 backend set, and asserts byte-identity
+# against each other and an in-process reference. No extra deps (its own
+# splitmix64 RNG); lives in the e2e crate to sit next to the curated
+# harness. Split into per-concern modules under src/bin/diff_fuzz/ to
+# stay under the 1000-LoC mega-file fence (TASK-0455.05).
 [[bin]]
 name = "diff-fuzz"
-path = "src/bin/diff_fuzz.rs"
+path = "src/bin/diff_fuzz/main.rs"
 
 [dependencies]
 # Serde derives for the matrix manifest (`e2e-matrix.toml`) and the
