@@ -100,23 +100,32 @@ of required-cell failures fails the build.
 \paragraph{A generative arm over a synthesised subclass.} The curated matrix is
 complemented by a generative differential harness that relies on no hand-written
 example at all. From a seed it synthesises random programs in a structured subclass
-of the affine, single-assignment, integer class --- one-dimensional element-wise
-integer pipelines of one to four pure scalar stages, over randomly-sized arrays,
-decomposed across a real host/worker boundary --- and subjects each to the same test
-the curated rig applies: compile across all seven tier-1 backends, run against
-generated input, and require mutual byte-identity, here additionally cross-checked
-against an in-process reference computed directly from the synthesised program.
-Generation is deterministic in the seed, so any divergence reproduces exactly and the
-harness prints the offending program and the divergent backend. One failure mode it
-does not catch is a hang: with no per-command timeout, a synthesised program that
-deadlocked would stall this arm rather than be reported, so the generative arm tests
-value-correctness, not liveness --- liveness remains the soundness gate's
-responsibility (\cref{sec:val-gate}). It is run on demand rather than on every build,
-because each synthesised program costs seven independent backend builds. The subclass it samples is narrower than the full grammar --- it
-generates no multi-dimensional, reduction, data-dependent, multi-worker-partitioned,
-or floating-point shapes --- so it sharpens the corpus-coverage limitation of
-\cref{sec:val-suite} rather than removing it; the honest accounting of what it does
-and does not buy is deferred to \cref{sec:disc-threats}.
+of the affine, single-assignment, integer class, now across five program families:
+one-dimensional element-wise integer pipelines of one to four pure scalar stages; a
+two-dimensional stencil whose neighbour reads in the partition axis force halo
+inference; a partitioned binned reduction exercised over all six combine operators
+(sum, bitwise or, xor, and, minimum, maximum) with identity-aware initialisation; a
+multi-compute-worker partition; and a bounded \texttt{for..until} early-exit loop.
+Each program is over randomly-sized arrays, decomposed across a real worker boundary,
+and is subjected to the same test the curated rig applies: compile across the tier-1
+backends required for its family, run against generated input, and require mutual
+byte-identity, here additionally cross-checked against an in-process reference computed
+directly from the synthesised program. Generation is deterministic in the seed, so any
+divergence reproduces exactly and the harness prints the offending program and the
+divergent backend. One failure mode it does not catch is a hang: with no per-command
+timeout, a synthesised program that deadlocked would stall this arm rather than be
+reported, so the generative arm tests value-correctness, not liveness --- liveness
+remains the soundness gate's responsibility (\cref{sec:val-gate}). It is run on demand
+rather than on every build, because each synthesised program costs several independent
+backend builds; a representative seeded run synthesises over a hundred programs across
+all five families with no counterexample. The subclass it samples is still narrower
+than the full grammar --- it generates no floating-point, recursive, or unbounded
+data-dependent shapes --- and one family carries a documented honesty: the
+\texttt{for..until} loop is checked on the single \texttt{pthreads-sync} backend only,
+mirroring the curated matrix's own multi-worker skip for that construct, not seven-way.
+The arm therefore sharpens the corpus-coverage limitation of \cref{sec:val-suite}
+rather than removing it; the honest accounting of what it does and does not buy is
+deferred to \cref{sec:disc-threats}.
 
 \section{The soundness gate as a compile-time guarantee}\label{sec:val-gate}
 

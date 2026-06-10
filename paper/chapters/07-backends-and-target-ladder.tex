@@ -34,7 +34,8 @@ all ten backends.
 
 \begin{table}[t]
   \centering
-  \small
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
   \begin{tabular}{@{}llllcc@{}}
     \toprule
     Backend & Tier & Transport & Notify & Async & Buffer \\
@@ -48,7 +49,7 @@ all ten backends.
     \texttt{mp-uds-event}    & 1 & Unix socket   & event                    & yes & 64 \\
     \texttt{mpi-blocking}    & 2 & MPI           & barrier, blocking        & no  & 1 \\
     \texttt{mpi-nonblocking} & 2 & MPI           & barrier, blocking, event & yes & 64 \\
-    \texttt{embedded-pattern}& 3 & DMA/UART      & barrier, blocking        & no  & 1 \\
+    \texttt{embedded-pattern}& 3 & DMA/UART      & event, poll, barrier, blocking & yes & 2 \\
     \bottomrule
   \end{tabular}
   \caption{The capability matrix of the ten backends, reproduced from each
@@ -60,7 +61,11 @@ all ten backends.
   is the MPI analogue of a reactor --- non-blocking point-to-point
   (\texttt{MPI\_Ibsend}/\texttt{MPI\_Imrecv}) with completion tracked by
   \texttt{MPI\_Wait} on request handles --- not an operating-system event loop of the
-  kind the tier-1 reactor backends use.}
+  kind the tier-1 reactor backends use. \texttt{embedded-pattern}'s \emph{event}
+  notify is a third flavour again --- an interrupt-driven DMA-completion wait on a
+  depth-2 descriptor ring (\cref{sec:be-tier3}) --- and its asynchrony and buffering
+  apply only on the DMA transport path; a programmed-IO transfer ignores them and
+  renders a blocking byte loop.}
   \label{tab:capabilities}
 \end{table}
 
@@ -135,11 +140,11 @@ substrate and differ only in the rendezvous prelude and the send/receive calls
 they emit; the rank assignment, barrier handling, and event-walk are identical.
 Following the tier's compile-mandatory, run-best-effort discipline, tier-2
 backends must compile for every required schedule, and are run and compared where
-an MPI runtime is available (a local \texttt{mpiexec} suffices). Twelve MPI cells
-spanning eleven examples are run and byte-diffed against the committed reference
-this way: eight under \texttt{mpi-blocking} --- spanning a 2D-tiled matrix
+an MPI runtime is available (a local \texttt{mpiexec} suffices). Fourteen MPI cells
+spanning twelve examples are run and byte-diffed against the committed reference
+this way: ten under \texttt{mpi-blocking} --- spanning a row-partitioned matrix
 multiply, a sparse matrix--vector product, a data-dependent scatter, a
-transpose, and an iterative stencil, alongside the original element-wise, split, and
+transpose, a separable filter, and an iterative stencil, alongside the original element-wise, split, and
 reduction shapes --- and four asynchronous schedules under \texttt{mpi-nonblocking}.
 This is a loopback launcher on a single oversubscribed host: it stands in for, but
 is not, a production cluster, which remains future work. Collective
@@ -173,6 +178,22 @@ backend emits one binary per worker plus a generated Renode machine description
 that wires the binaries together over a UART hub, with one bounded FIFO per
 transfer channel.
 
+The embedded tier is no longer synchronous-only. On the DMA transport path a
+schedule may now ask for an asynchronous, double-buffered, event-notified transfer,
+and the backend lowers it to a producer-side depth-2 descriptor ring: the producer
+arms one transfer and runs ahead, deferring completion until the ring is full, so two
+descriptors are enqueued at the steady-state peak, and an \emph{event} notify completes
+each through an interrupt-driven wait rather than a busy-spin. This is the embedded
+realisation of the IO-as-schedule-directive claim --- the same algorithm driven
+blocking on one edge and double-buffered-DMA on another by changing only the schedule.
+The honesty is in the depth and the model: the maximum buffer is two, so a deeper ring
+is rejected at compile time rather than silently truncated, and under the Renode model
+the DMA completes synchronously inside the arm, so the two in-flight slots are an
+occupancy property the generated code provably reaches, not a temporal overlap on this
+non-cycle-accurate emulator --- genuine concurrent DMA on real silicon is future work.
+A programmed-IO transfer ignores the buffer and notify directives and renders the
+unchanged blocking byte loop.
+
 \input{figures/embedded-multimcu}
 
 Two subtleties are handled here that have no analogue on the
@@ -185,11 +206,15 @@ matching receive-enable. Second, a control-only synchronisation that would order
 external IO with no data edge between them is rejected at compile time, because no
 data transfer is present to carry the ordering on this substrate.
 
-Three examples exercise this path end-to-end and reproduce their reference output
+Four examples exercise this path end-to-end and reproduce their reference output
 byte-exactly under co-simulation: a two-worker split-and-add; a three-core
 hearing-aid pipeline with heterogeneous front-end, DSP, and RF-controller workers
-and bidirectional dataflow between them; and a two-microcontroller demonstration
-that contrasts DMA-driven and programmed-IO transports for the same transfer. The
+and bidirectional dataflow between them; a two-microcontroller demonstration
+that contrasts DMA-driven and programmed-IO transports for the same transfer; and a
+three-core producer--consumer pipeline whose cross-worker stream edge is the
+asynchronous, double-buffered, event-notified DMA-ring schedule described above,
+co-simulated byte-exact over a 64-byte output with the ring reaching its depth-2
+occupancy. The
 hearing-aid example is the load-bearing demonstration that the typed,
 heterogeneous worker form lowers to a real multi-microcontroller system. Following the tier's discipline, tier-3 backends
 must compile for every required schedule, and are run in Renode where a shim and

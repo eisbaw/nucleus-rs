@@ -200,35 +200,47 @@ cannot, because it has no model of what any schedule would cost on any target. A
 reader expecting the assertion to \emph{drive} scheduling will be disappointed; it
 only observes.
 
-\paragraph{Conservative transfer inference, over a whole-array transmission floor.}
+\paragraph{Conservative transfer inference: the wire is narrowed, the footprint is not.}
 The compiler infers, for each worker, the region of a partitioned array that worker
 will actually read: when a partitioned index is affine and contiguous, that region
 is a precise tiled slice; when it is not --- a sparse, multi-variable, or
 data-dependent index --- the inference conservatively widens to the whole array,
-always a correct superset. It is tempting to read this as ``the affine case moves
-less data, the conservative case moves the whole array,'' but that is not what the
-current backends do. Every cross-worker edge transmits the whole array --- the
-producer sends a full copy and the receiver copies its inferred slice into place on
-arrival --- and every worker allocates the array full-shaped regardless of its slice.
-The inferred region's \emph{only} effect today is to make that receiver-side gather
-correct: a worker writes just its own band, so the sequential fan-in of many workers'
-contributions into a shared array does not clobber. It shrinks neither the message
-nor the per-worker buffer, and it does so identically whether the region is a precise
-slice or the whole array. The over-communication is therefore uniform, not confined
-to the conservative case: whole arrays on the wire, full-shaped buffers per worker, in
-the affine and non-affine cases alike. The inference is nonetheless the groundwork for
-the saving --- the per-worker region is already computed --- so a backend that
-transmitted and allocated only that region, paired with an inference precise enough to
-make the region tight for irregular kernels, would cut both volume and footprint
-without touching the firing order, the soundness gate (which counts messages, not
-bytes), or the byte-level results (\cref{sec:fw-affine}). That optimisation is
-admitted by the architecture but not taken. The two data-dependent forms differ in
-the inference: a gather widens the whole indexed input and needs no combine, whereas a
-scatter replicates the whole target accumulator across workers and recombines the
-partials under the declared combine operator --- which is why the scatter path is
-tied to the reduction algebra and the gather path is not. A scatter whose target
-would have to be split along an affine partition axis is rejected outright rather than
-mis-compiled. The boundary is drawn for safety, not for communication efficiency.
+always a correct superset. That inferred region now governs the wire. For a
+cross-worker edge whose inferred region is a single contiguous span, the producer
+transmits only that span and the receiver pastes it from offset zero, on every tier-1
+backend and under MPI; the send-buffer sizings and the MPI buffered-send budget shrink
+in lock-step, all derived from the one shared shape descriptor so a sender slice and a
+receiver paste cannot disagree by construction. The reduction is real and measured: on
+the four-worker stencil it cuts cross-worker traffic by 71.9\,percent, and on the
+row-partitioned matrix multiply by 50\,percent (\cref{sec:res-quant-comm}). This is the
+saving the inference was always the groundwork for, now taken for the common
+contiguous case --- and it touches neither the firing order, the soundness gate (which
+counts messages, not bytes), nor the byte-level results, exactly as predicted.
+
+Two residuals keep this honest, and both are deliberate rather than overlooked. First,
+the narrowing is confined to contiguous-span edges: a strided per-worker region (a
+column band of a row-major matrix), a halo strip that is not a clean prefix, an
+accumulator fan-in, and any conservatively-widened data-dependent gather or scatter all
+stay whole-array on the wire, because narrowing them safely needs a banded
+pack-and-scatter the backends do not yet emit; the embedded tier likewise stays
+whole-array, since its receiver fills a fixed-shape buffer with no slice-paste and a
+banded send without a banded receive would corrupt. Second, and more fundamental, only
+the \emph{wire} shrinks, not the \emph{footprint}: every worker still allocates the
+array full-shaped and pastes its received span into place, so per-worker memory is
+unchanged. Reducing the allocation to the owned band needs either index rebasing at
+every kernel call or a banded-view abstraction --- a deeper change than the wire flip,
+because downstream reads index with global coordinates --- and it remains open. So the
+over-communication floor is no longer absolute, but it is lowered for one class of edge
+and along one axis only: contiguous spans move less data; everything else, and all
+per-worker allocation, still pays the whole-array cost.
+
+The inference's two data-dependent forms differ in shape, which is why one stays
+whole-array on the wire and the other is tied to the reduction algebra: a gather widens
+the whole indexed input and needs no combine, whereas a scatter replicates the whole
+target accumulator across workers and recombines the partials under the declared
+combine operator. A scatter whose target would have to be split along an affine
+partition axis is rejected outright rather than mis-compiled. The boundary is drawn for
+safety, not for communication efficiency.
 
 \paragraph{Shim sprawl is real and, in principle, unbounded.} The embedded tier's
 generic backend is written once, but every microcontroller family needs its own
@@ -269,15 +281,16 @@ practical consequence is that the strongest, most-exercised evidence comes from 
 commodity-CPU tier, while the distributed and embedded tiers are confirmed more
 narrowly. The distributed tier is exercised as a byte-exact differential against the
 same frozen reference the cheap tier uses, but on a local launcher rather than a
-production cluster: twelve MPI cells spanning eleven examples --- eight schedules
+production cluster: fourteen MPI cells spanning twelve examples --- ten schedules
 under the blocking backend (\texttt{mpi-blocking}) and four asynchronous schedules
 under the non-blocking one --- each launched under \texttt{mpiexec} and byte-diffed
 against the committed reference, on one oversubscribed host rather than across many
-nodes. The blocking arm in particular now spans a 2D-tiled matrix multiply, a sparse
-matrix--vector product, a data-dependent scatter, a transpose, and an iterative
+nodes. The blocking arm in particular now spans a row-partitioned matrix multiply, a sparse
+matrix--vector product, a data-dependent scatter, a transpose, a separable filter, and an iterative
 stencil, not just the original element-wise, split, and reduction shapes. The
-embedded tier is narrower still --- byte-exact co-simulation of three examples,
-now on two microcontroller families (an STM32H7 and an nRF52840) rather than a broad
+embedded tier is narrower still --- byte-exact co-simulation of four examples
+(now including the asynchronous double-buffered DMA-ring schedule of \cref{sec:be-tier3}),
+on two microcontroller families (an STM32H7 and an nRF52840) rather than a broad
 embedded matrix. So the claim is
 strongest where the targets are least exotic, which is the reverse of where extra
 assurance would be most valuable; loopback MPI is not a cluster and a co-simulated
@@ -301,16 +314,20 @@ natural way to push the claim from curated witnesses toward the boundary is
 generative: a property-based harness that synthesises affine, single-assignment
 programs and checks cross-backend byte-identity over them attacks the separation
 harder than a fixed corpus can. Such a harness now exists for a structured subclass
-(\cref{sec:val-differential}): it synthesises one-dimensional element-wise integer
-pipelines, decomposed across a real worker boundary, and checks that all seven
-tier-1 backends and an in-process reference agree byte-for-byte; across the seeds run
-to date it has produced no counterexample. This narrows the gap but does not close
-it, and two things must be said plainly about how far. First, the synthesised
-subclass is much smaller than the grammar the system admits --- the generator emits
-no multi-dimensional, reduction, data-dependent, multi-worker-partitioned, or
-floating-point programs --- so the boundary of the empirical claim has moved outward,
-not vanished, and every shape the generator cannot yet reach remains covered only by
-the curated corpus. Second, the result is still empirical and still intent-bounded:
+(\cref{sec:val-differential}): it synthesises programs in five families --- element-wise
+pipelines, a two-dimensional stencil with halo inference, a binned reduction over all
+six combine operators, a multi-compute-worker partition, and a bounded
+\texttt{for..until} loop --- each decomposed across a real worker boundary, and checks
+that the tier-1 backends required for the family and an in-process reference agree
+byte-for-byte; across the seeds run to date it has produced no counterexample. This
+narrows the gap but does not close it, and two things must be said plainly about how
+far. First, the synthesised subclass is still smaller than the grammar the system
+admits --- the generator emits no floating-point, recursive, or unbounded
+data-dependent programs, and the \texttt{for..until} family is checked on one backend
+only, mirroring the curated multi-worker skip rather than the full seven-way matrix
+--- so the boundary of the empirical claim has moved outward, with the widening from one
+family to five, but not vanished, and every shape the generator cannot yet reach remains
+covered only by the curated corpus. Second, the result is still empirical and still intent-bounded:
 ``no counterexample over the sampled programs'' is stronger than ``no counterexample
 in twenty-nine examples'' but is not a proof, and the generator's in-process
 reference shares the arithmetic intent of the kernels it emits --- indeed it is a
@@ -319,9 +336,11 @@ the separately-authored curated oracle, not more. At the level of author intent 
 bound is the same as the curated case: it guards against a compiler fault that
 mistranslates a kernel, not against an author-level error in the intent itself.
 Extending the
-generator to the multi-dimensional, reduction, and bounded data-dependent shapes is
-the most direct remaining piece of validation work for the correctness claim, a more
-direct one than the performance study of \cref{sec:fw-quant}.
+generator further --- to floating-point shapes, and lifting the \texttt{for..until}
+family from its single backend to the full multi-worker matrix once that construct's
+cross-backend path lands --- remains among the most direct pieces of validation work
+for the correctness claim, a more direct one than the performance study of
+\cref{sec:fw-quant}.
 
 \paragraph{Agreement could be common-mode rather than genuine.} The differential
 rig infers mutual byte-identity transitively, through a shared immutable reference

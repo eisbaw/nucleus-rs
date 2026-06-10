@@ -145,23 +145,31 @@ near-term target but as the natural destination if the two preceding directions
 both succeed, and as an honest marker of how far the current class is from
 general numerical computing.
 
-\paragraph{Precise inference, and transmitting only the inferred region.} The
-transfer-inference pass degrades to whole-array broadcast whenever an index is not an
-affine, contiguous function of the partition variables. A polyhedral analysis, using
-an established integer-set library, could compute precise transferred regions for a
-broader class of affine and piecewise-affine index expressions than the current
-prefix-based inference handles, without changing the language. On its own, though,
-this sharpens only the inferred per-worker region --- which today serves only the
-correctness of the receiver-side gather --- and does \emph{not} by itself reduce
-communication or per-worker memory, because the current backends transmit the whole
-array on every cross-worker edge, allocate it full-shaped, and slice on receipt
-(\cref{sec:disc-shortcomings}). The concrete payoff therefore has two halves that must
-both be built: the precise inference, \emph{and} a backend change that transmits and
-allocates only the inferred region rather than the whole array. Both are internal
-precision improvements that risk nothing in the guarantees --- the firing order, the
-soundness gate, and the byte-level results are unchanged, only the volume moved ---
-which keeps this a comparatively safe direction, but a two-part one rather than the
-drop-in the inference half alone would suggest.
+\paragraph{Precise inference, and the remaining halves of the region saving.} The
+groundwork here is now partly built, which sharpens what is left to do. The backends
+already transmit only the inferred region on a cross-worker edge whose region is a
+single contiguous span, cutting wire volume measurably (\cref{sec:res-quant-comm}); two
+distinct extensions remain, one on the inference side and one on the backend side, and
+they are independent. On the inference side, the transfer-inference pass still degrades
+to whole-array broadcast whenever an index is not an affine, contiguous function of the
+partition variables. A polyhedral analysis, using an established integer-set library,
+could compute precise transferred regions for a broader class of affine and
+piecewise-affine index expressions than the current prefix-based inference handles,
+without changing the language --- and because the wire now follows the inferred region,
+a sharper inference would directly narrow more edges rather than merely improving
+receiver-side correctness. On the backend side, two cases the wire flip deliberately
+left whole-array remain: a \emph{strided} or non-prefix region (a column band of a
+row-major matrix, an irregular halo) needs a banded pack-and-scatter the backends do not
+yet emit, and the embedded tier needs a banded receive to match a banded send. And the
+\emph{footprint} half is wholly untouched: every worker still allocates the array
+full-shaped and pastes its received span into place, so per-worker memory is unchanged;
+reducing the allocation to the owned band needs index rebasing at kernel-call sites or a
+banded-view abstraction, because downstream reads index with global coordinates
+(\cref{sec:disc-shortcomings}). All of these are internal precision improvements that
+risk nothing in the guarantees --- the firing order, the soundness gate, and the
+byte-level results are unchanged, only the volume moved and the memory held --- which
+keeps the direction comparatively safe, but it is a several-part one, of which only the
+contiguous-span wire flip is so far done.
 
 \section{New target tiers}\label{sec:fw-tiers}
 
@@ -219,44 +227,56 @@ controlled hardware, warm-up and variance discipline --- that is a project in it
 and because no runtime number bears on the correctness claims already established: a
 slow but byte-identical program still falsifies nothing.
 
-A scoping observation sharpens why this is more than a matter of securing time on a
-cluster, and it couples the runtime study to the gate-scaling direction below. At the
-corpus's problem sizes the emitted programs' wall-clock is dominated by fixed
-per-invocation overhead rather than by computation --- a single-worker matrix
-multiply at the corpus dimension finishes in about a millisecond, of which the few
-thousand integer multiply--adds account for only microseconds; the remainder is
-process spawn, input loading, and thread setup, not arithmetic --- so a meaningful
-scaling signal emerges only at substantially larger problem sizes. But the soundness gate's cost for a \emph{communicating}
-schedule grows with the firing count (\cref{sec:res-quant-net}), and the gate is not
-separable from the build: there is no option to emit a decomposed program without
-analysing it. Around the sizes at which runtime first rises above the startup floor,
-the expanded net for the multi-worker schedules already demands memory on the order of
-tens of gigabytes, which makes compiling exactly the decompositions one would want to
-time prohibitively expensive on commodity hardware. The single-worker schedules do not
-hit this wall --- the symbolic fast path keeps their compile flat in problem size
-(\cref{sec:res-quant-net}) --- but a single worker has no decomposition to scale. A
-credible runtime study therefore waits not only on a representative cluster and a
-disciplined methodology, but on the communicating-case gate-lifting the next direction
-describes: the two open problems are coupled, and the runtime one cannot be cleanly
-attempted until the compiler one is solved.
+A scoping observation explains why this was, until recently, more than a matter of
+securing time on a cluster, and it once coupled the runtime study tightly to the
+gate-scaling direction below. At the corpus's problem sizes the emitted programs'
+wall-clock is dominated by fixed per-invocation overhead rather than by computation ---
+a single-worker matrix multiply at the corpus dimension finishes in about a
+millisecond, of which the few thousand integer multiply--adds account for only
+microseconds; the remainder is process spawn, input loading, and thread setup, not
+arithmetic --- so a meaningful scaling signal emerges only at substantially larger
+problem sizes. The gate is not separable from the build: there is no option to emit a
+decomposed program without analysing it, so the cost of compiling the decompositions
+one would want to time used to bound what could be timed at all. That coupling has now
+loosened for the dominant case. The gate proves the single-shot matched-pair
+communicating subclass --- which is the shape of most of the corpus's distributed
+schedules --- symbolically, so building the four-worker distributed matrix multiply at
+$N=512$ now costs about 7.2\,megabytes of compiler memory rather than the hundred-plus
+gigabytes its expanded net would project (\cref{sec:res-quant-net}). One can therefore
+now compile exactly those large distributed decompositions, which removes the gate as
+the binding obstacle to timing them. What remains coupled is narrower: the loop-carried
+and pipelined distributed shapes still expand, so a runtime study that needed to scale
+\emph{those} specific schedules would still wait on the gate work below. A credible
+runtime study therefore now waits primarily on a representative cluster and a
+disciplined methodology rather than on the compiler --- except for the residual
+loop-carried and pipelined shapes, where the two open problems remain coupled.
 
-The second follows directly from the gate-scaling limitation that
-\cref{sec:res-quant-net} measured, and it has been \emph{partially} closed. Because the
+The second direction is the gate-scaling limitation that \cref{sec:res-quant-net}
+measured, and it has been \emph{substantially} closed, in two steps. Because the
 soundness gate replayed a net expanded over the iteration space --- roughly one place and
 one transition per kernel firing --- its cost was linear in the number of firings, cheap
-for the corpus but unable to scale to a problem with billions of firings. For the
+for the corpus but unable to scale to a problem with billions of firings. First, for the
 \emph{buffer-free} subclass (a single worker, or any schedule with no cross-worker
 transfer) the gate now reasons about the \emph{looped} structure directly: it proves
 soundness from the rolled ACFG in time independent of the iteration count, never building
-the expansion, and so matches the loop-structured footprint of the generated code there
-(\cref{sec:res-quant-net}). What remains open is the communicating case. A distributed
-schedule's shared buffer places make boundedness and liveness depend on the firing-order
-interleaving, and proving that symbolically --- a steady-state occupancy argument over the
-looped \texttt{Push}/\texttt{Wait} structure rather than its expansion --- is the concrete
-compiler work still outstanding. It is deliberately not approximated: an imprecise buffer
-analysis could accept a net the expanded replay would reject, trading soundness for
-scaling, which the gate's whole purpose forbids --- so the sound expanded replay is kept
-as the fallback until the symbolic argument is proved equivalent on that class too.
+the expansion. Second, and the harder step, the symbolic proof now reaches across a
+cross-worker boundary, to the \emph{single-shot matched-pair} communicating subclass: a
+distributed schedule whose every transfer is one \texttt{Push} matched by one
+\texttt{Wait} at loop depth zero, so the shared buffer place's peak occupancy is provably
+one and at most its capacity. This is the dominant distributed shape --- the corpus's
+distributed reductions, stencils, matrix multiply, sparse mat--vec, histogram, and
+scatter all fall in it --- and proving it symbolically, against a firing-order invariant
+pinned by property tests and cross-checked against the expanded replay on every gated
+cell, is what keeps the $N=512$ distributed matmul compile flat. What remains open is the
+\emph{loop-carried} and \emph{pipelined} communicating shapes --- a transfer whose buffer
+occupancy depends on cross-iteration drainage, or one that deliberately keeps several
+frames in flight --- whose boundedness still depends on a firing-order interleaving the
+symbolic analysis does not yet cover. A steady-state occupancy argument over their looped
+\texttt{Push}/\texttt{Wait} structure is the concrete compiler work still outstanding. It
+is deliberately not approximated: an imprecise buffer analysis could accept a net the
+expanded replay would reject, trading soundness for scaling, which the gate's whole
+purpose forbids --- so anything outside the proven subclasses is routed loudly to the
+sound expanded replay until the symbolic argument is extended to it too.
 
 Taken together, these directions share a common discipline: each is judged not only
 by what it would add but by what it would risk to the determinism the system is

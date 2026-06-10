@@ -40,11 +40,13 @@ not silent gaps: the matrix records a reason for every one, and they fall into a
 well-defined categories. The largest group, thirty-five cells, are embedded-tier fixtures
 that are validated by the simulator gate of \cref{sec:res-tiers} rather than by the
 tier-1 runtime rig, since the embedded backend emits \texttt{no\_std} code that the
-hosted run-and-diff harness cannot execute. The remaining thirty-four divide cleanly: twenty are genuine capability
+hosted run-and-diff harness cannot execute. The remaining thirty-eight divide cleanly: twenty-four are genuine capability
 mismatches --- an asynchronous, buffered schedule asked of a synchronous,
 single-buffer backend, which is rejected at compile time as the capability matrix
 prescribes (\cref{sec:be-matrix}), with the schedule's differential requirement met
-instead by a backend that does offer asynchrony --- and fourteen are language shapes
+instead by a backend that does offer asynchrony (the four newest, the synchronous
+tier-1 backends correctly refusing the double-buffered DMA-ring schedule of
+\cref{sec:be-tier3}) --- and fourteen are language shapes
 honestly unsupported on the multi-worker path: twelve from two \texttt{for..until}
 break-loop examples (a converged and a cap-hit variant, each skipped on the six
 non-\texttt{pthreads-sync} tier-1 backends) and two from an in-loop
@@ -144,15 +146,18 @@ correct point-to-point communication rather than recognising and emitting
 collective operations --- a deliberate deferral noted in \cref{sec:be-tier2}.
 
 The embedded tier is confirmed by co-simulation. A standing gate generates the
-bare-metal binaries for three multi-microcontroller examples, cross-compiles them
+bare-metal binaries for four multi-microcontroller examples, cross-compiles them
 for the embedded target, co-simulates the microcontrollers wired over a virtual
 UART fabric, captures the output bytes, and diffs them against the reference file.
-All three reproduce their reference output byte-exactly: a two-microcontroller
+All four reproduce their reference output byte-exactly: a two-microcontroller
 split-and-add over a 1024-byte payload; the real three-core hearing-aid pipeline,
 with heterogeneous front-end, DSP, and RF-controller workers and bidirectional
-dataflow, over a 512-byte output; and a two-microcontroller demonstration that
+dataflow, over a 512-byte output; a two-microcontroller demonstration that
 drives two transfers by DMA and one by programmed-IO over the same fabric,
-again byte-exact over 1024 bytes. The hearing-aid result (\cref{sec:be-tier3}) is
+byte-exact over 1024 bytes; and a three-core producer--consumer pipeline whose
+cross-worker stream edge is the asynchronous, double-buffered, event-notified DMA-ring
+schedule (\cref{sec:be-tier3}), byte-exact over 64 bytes with the producer's depth-2
+descriptor ring observed reaching full occupancy. The hearing-aid result (\cref{sec:be-tier3}) is
 the load-bearing embedded demonstration: the typed, heterogeneous, multi-worker form
 lowers all the way to a real multi-microcontroller system whose per-frame values are
 correct end-to-end, including the staged boot-order handling that a bare-metal UART channel
@@ -331,6 +336,25 @@ two real \texttt{for} loops in eighteen lines, and a hypothetical $1024\times102
 stencil would compile to the same eighteen lines. Generated-code size is bounded by
 the schedule, not the data.
 
+\subsection{Cross-worker communication volume}\label{sec:res-quant-comm}
+
+A third characteristic is how much data a decomposed program moves between workers.
+Each cross-worker edge whose inferred per-worker region is a single contiguous span now
+transmits only that span rather than the whole array, on every tier-1 backend and under
+MPI (\cref{sec:disc-shortcomings}). The reduction is exact, because the wire shape is a
+deterministic function of the partition: on the four-worker stencil, where each worker
+reads its own row band plus a one-row halo, the cross-worker traffic falls from 8\,192 to
+2\,304 bytes, a 71.9\,percent cut; on the four-worker row-partitioned matrix multiply,
+where each worker owns a row band of the left operand and the full right operand, the
+combined operand-and-result traffic falls from 12\,288 to 6\,144 bytes, a 50\,percent
+cut. The figures are static counts derived from the partition arithmetic, not
+measurements, and they are honestly partial: only edges with a contiguous span narrow
+(strided column bands, non-prefix halos, accumulator fan-ins, and conservatively-widened
+data-dependent transfers stay whole-array), the embedded tier stays whole-array
+entirely, and per-worker \emph{allocation} is unchanged --- every worker still allocates
+the array full-shaped and pastes its received span into place, so this is a wire-volume
+saving, not yet a memory-footprint one.
+
 \subsection{The analysis net and how the gate scales}\label{sec:res-quant-net}
 
 The one place where problem size does drive cost is the soundness gate. The gate
@@ -378,7 +402,7 @@ barriers are introduced.
 This expanded net is what the gate \emph{would} build for every program; it is also
 where the cost lived, since both its construction and the single-order replay are
 linear in the number of firings. That was once an unqualified limitation. It has now
-been lifted for the common case, and the gate decides soundness in one of two regimes.
+been lifted for the common cases, and the gate decides soundness in one of three regimes.
 
 For a \emph{buffer-free} program --- one with no cross-worker transfer, which includes
 every single-worker schedule and so the entire \cref{tab:quant-net} corpus, the matrix
@@ -396,18 +420,37 @@ million kernel firings --- leaves the driver compile time essentially unchanged,
 the gate no longer expands the net; the expansion the fast path skips would itself reach
 about $2N^3 \approx 33$ million nodes at the upper end.
 
-The second regime is the honest residual. A program that distributes work and
-communicates --- the loop-carried \texttt{Push}/\texttt{Wait} shape of the distributed
-schedules --- still falls back to the expanded single-order replay, because the
-boundedness and liveness of a shared buffer place depend on the firing-order
-interleaving, which the symbolic analysis does not yet reason about. For those nets the
-cost remains linear in the number of firings, and a production-scale distributed problem
-with billions of firings would still produce a net the single-replay gate could not
-analyse in the same way. Lifting the bound there too --- a steady-state occupancy
-argument over the looped buffer structure rather than its expansion --- is left as future
-work (\cref{sec:fw-quant}); approximating it imprecisely could accept a net the expanded
-replay would reject, trading soundness for scaling, so the buffer-free case was taken
-first and the communicating case deferred rather than guessed at.
+The second regime extends the symbolic proof across a cross-worker boundary, to the
+\emph{single-shot matched-pair} communicating subclass: a distributed schedule in which
+each transfer is one \texttt{Push} matched by one \texttt{Wait}, both at loop depth zero,
+with no pre-marking, so the buffer place's peak occupancy is exactly one and at most the
+declared capacity. This is the shape of the corpus's distributed reductions, stencils,
+matrix multiply, sparse mat--vec, histogram, and scatter --- the dominant distributed
+class. For it the gate proves boundedness, deadlock-freedom, and single-consumer
+conflict-freedom directly from the rolled ACFG, against a firing-order invariant pinned
+by its own property tests, and an A/B harness confirms the symbolic verdict equals the
+expanded-replay verdict on every gated corpus cell plus a set of synthetic negatives.
+The payoff is the same flatness the buffer-free case enjoys: building the four-worker
+distributed matrix multiply at $N=512$ --- whose expanded net would project to several
+hundred million nodes and over a hundred gigabytes --- gates at about 7.2\,megabytes of peak
+resident memory, only some 350\,kilobytes more than at $N=16$ across a thirty-two-thousand-fold
+rise in firings. The wall the symbolic path removes here is the one that would otherwise
+make compiling exactly the decompositions one would want to scale-test infeasible on
+commodity hardware.
+
+The third regime is the honest residual. A communicating schedule that does \emph{not}
+fit the single-shot shape --- a loop-carried transfer whose buffer occupancy depends on
+cross-iteration drainage (the \texttt{16-jacobi} distributed stencil), or a pipelined
+transfer that intentionally keeps several frames in flight (the producer--consumer and
+convolutional-network pipelines) --- still falls back to the expanded single-order
+replay, because its boundedness and liveness depend on the firing-order interleaving,
+which the symbolic analysis does not yet cover for these shapes. For those nets the cost
+remains linear in the number of firings. The fallback is loud and never silent: anything
+outside the proven subclass is routed to the expanded replay rather than guessed at,
+because approximating the occupancy argument imprecisely could accept a net the replay
+would reject, trading soundness for scaling. Lifting the bound for the loop-carried and
+pipelined shapes too --- a steady-state occupancy argument over their looped buffer
+structure --- is left as future work (\cref{sec:fw-quant}).
 
 \subsection{Compile cost}\label{sec:res-quant-time}
 
@@ -415,12 +458,16 @@ End to end, a single cell compiles in roughly \qtmin{}--\qtmax{} milliseconds on
 development machine: parse, link, elaborate, lower, run the gate, project, and emit.
 For the smaller examples this wall-time is dominated by process startup rather than
 by the pipeline, so the figures should be read as an order of magnitude, not a
-measurement. With the symbolic fast path (\cref{sec:res-quant-net}) the single-worker
-examples --- the matrix multiply included --- compile in time that does not grow with
-their firing count, because the gate no longer expands their nets. The compiles that now
-stand out are the \emph{distributed} matmul decompositions, which still expand their nets
-(they communicate) and so carry the gate's linear replay cost; they are the heaviest in
-the corpus and grow with the worker count. At these sizes the effect is
+measurement. With the symbolic fast path (\cref{sec:res-quant-net}) both the single-worker
+examples --- the matrix multiply included --- and the single-shot-matched-pair distributed
+schedules (the distributed matrix multiply, reductions, stencils, and the rest of that
+dominant class) compile in time that does not grow with their firing count, because the
+gate proves them symbolically and never expands their nets. The compiles that now stand
+out are the schedules outside that subclass --- the loop-carried and pipelined
+distributed shapes (\texttt{16-jacobi} distributed, the producer--consumer and
+convolutional-network pipelines) --- which still expand their nets and so carry the gate's
+linear replay cost; they are the heaviest in the corpus and grow with the worker count
+and firing volume. At these sizes the effect is
 small, and this work did not instrument per-stage timing to attribute it precisely. The
 practical reading is that
 for this class of program the entire compile, soundness gate included, is comfortably
