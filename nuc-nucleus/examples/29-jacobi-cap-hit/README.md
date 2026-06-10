@@ -91,14 +91,30 @@ extracting the last computed generation 16` line.
 | branch exercised | early-exit + runtime final-read rewrite | cap-hit sentinel + did-NOT-converge stderr |
 | output | `field[30]` | `field[16]` |
 
+## Cross-backend differential (all 7 tier-1 backends)
+
+This is the **worst-case full-cap replay** witness, and it runs
+byte-identically on all 7 tier-1 backends. The `naive` schedule is
+host-only (`used_workers <= 1`), so every backend delegates to the SHARED
+`render_single_worker_main` (the multi-worker `break_cond` fail-loud guard
+is never reached — it fires only for a `partition=workers` schedule). The
+`until` predicate NEVER fires inside the cap, so every backend runs the
+FULL `0..ITERS_CAP+1` (16 generations), emits the cap-hit stderr
+diagnostic (`[[nuc_converge]] did NOT converge ...`), and produces
+byte-exact output vs `reference.bin`. So the bounded-data-dependent-
+iteration soundness claim ("the worst-case replay is bounded by the cap")
+holds bit-identically across all 7 backends. Every backend's cell is
+`[[required]]` (epic S7, TASK-0341.02.01.08).
+
 ## What this example does NOT demonstrate
 
-- **Multi-worker / distributed `for..until`.** The break emit is tier-1
-  single-worker pthreads-sync only today; the multi-worker walkers fail
-  loud on a `break_cond`. The 7-backend / multi-worker break
-  differential is epic S7 (TASK-0341.02.01.08). Only
-  `naive × pthreads-sync` is `[[required]]`; the other six tier-1
-  backends are e2e-skipped.
+- **Multi-worker / distributed `for..until`.** A distributed
+  (collective-break) convergence schedule stays out of reach — it
+  inherits the 16-jacobi/distributed blockage (honest-BLOCKED on all 7
+  backends) plus the new collective all-reduce + broadcast machinery; the
+  multi-worker walkers correctly stay fail-loud on `break_cond:Some`
+  (pinned by `backend-common/tests/multi_worker_break_cond_rejected.rs`).
+  This is the remaining scope of epic S7 (TASK-0341.02.01.08).
 - **Floating-point arithmetic.** As 16-jacobi / 21-jacobi-converge,
   integer `/ 4` truncating division is used for bit-determinism.
 

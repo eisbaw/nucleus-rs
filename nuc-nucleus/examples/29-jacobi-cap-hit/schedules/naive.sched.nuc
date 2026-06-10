@@ -6,11 +6,15 @@
 // result must be bit-identical to reference.bin (the last computed
 // generation `field[ITERS_CAP]` on cap-hit).
 //
-// SINGLE-WORKER ONLY by design: the `for..until` break emit is tier-1
-// single-worker pthreads-sync only today. A `partition=workers`
-// schedule would hit the multi-worker walker's fail-loud guard on
-// `break_cond`. The multi-worker / cross-backend break differential is
-// epic S7 (TASK-0341.02.01.08).
+// HOST-ONLY (single-worker) schedule, but RUNS ON ALL 7 TIER-1 BACKENDS
+// (epic S7, TASK-0341.02.01.08): `workers = { host }` means
+// `used_workers <= 1`, so every backend delegates to the SHARED
+// `render_single_worker_main`. The multi-worker `break_cond` fail-loud
+// guard is never reached (it fires only for `partition=workers`). This is
+// the WORST-CASE full-cap replay witness: the `until` predicate never
+// fires inside the cap, so every backend runs the full `0..ITERS_CAP+1`.
+// A distributed (collective-break) convergence schedule remains out of
+// reach — the remaining scope of epic S7.
 
 schedule for "../prog.algo.nuc" {
     workers = { host };

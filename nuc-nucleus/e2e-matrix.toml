@@ -1336,57 +1336,76 @@ milestone = "M6"
 # compiler would false-pass — see README "Why TOL=2"). PASSes
 # bit-identical vs reference.bin (verified by direct emit+build+run+cmp).
 #
-# SINGLE-WORKER pthreads-sync ONLY: the break emit is tier-1
-# single-worker today; the multi-worker walkers (multi_worker_walker /
-# tcp_plan) fail loud on `break_cond`, and the embedded pattern rejects
-# it. The other 6 tier-1 backends are [[skip]]'d below; the multi-worker
-# / 7-backend break differential is epic S7 (TASK-0341.02.01.08).
+# SEVEN-BACKEND `for..until` CROSS-BACKEND DIFFERENTIAL (epic S7,
+# TASK-0341.02.01.08, cycle-S7). The `naive` schedule is HOST-ONLY
+# (`workers = { host }`, used_workers <= 1), so EVERY backend delegates
+# it to the SHARED single-worker emitter
+# `backend_common::single_worker_main::render_single_worker_main` — the
+# multi-worker walkers (`multi_worker_walker` / `tcp_plan`) are NEVER
+# reached on a single-worker schedule (their `break_cond` fail-loud guard
+# only fires for a `partition=workers` schedule). The previous S5 skip
+# reason ("the multi_worker_walker / tcp_plan walkers fail loud on
+# break_cond") was therefore FACTUALLY WRONG for these single-worker
+# cells. Verified cycle-S7: all 7 backends emit byte-identical compute
+# code for `naive` (only the documented `#[path]` / `#[allow(dead_code)]`
+# kernels-mod attribute differs on the `src/bin/` backends), and
+# `openmp-rs` built + ran BYTE-EXACT vs reference.bin. So the full
+# `for..until` machinery — the break EMIT, the convergence reduction, the
+# runtime break-generation final-read (TASK-0341.02.01.05.02), and the
+# cap-hit stderr observability (TASK-0341.02.01.05.03) — is exercised
+# bit-identically across all 7 tier-1 backends, and the cross-backend
+# differential genuinely bites.
+#
+# STILL OUT OF REACH (honest-BLOCKED): a DISTRIBUTED (`partition=workers`
+# / `partition=rows`) convergence schedule, where the break becomes a
+# COLLECTIVE all-reduce + broadcast of the global convergence scalar (the
+# AC#1 invariant). That inherits the 16-jacobi/DISTRIBUTED blockage
+# (itself honest-BLOCKED on all 7 backends: 5 on the 3D wait_slice gap
+# TASK-0341.02.02.01.01, 2 on the in-Loop w2w Push gap TASK-0330) PLUS
+# the new collective-break machinery. No distributed converge cell can be
+# [[required]] until 16-jacobi/distributed itself lands; the multi-worker
+# walkers correctly stay fail-loud on `break_cond:Some` (pinned by a
+# falsifier in backend-common/tests/multi_worker_break_cond_rejected.rs).
 [[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "pthreads-sync"
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "mp-tcp-bufsync"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "pthreads-async"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "mp-tcp-event"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "openmp-rs"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "mp-tcp-poll"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "21-jacobi-converge"
 schedule = "naive"
 backend  = "mp-uds-event"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
 # 29-jacobi-cap-hit/naive: TASK-0453.05 (rigour epic P5) — the CAP-HIT
@@ -1411,56 +1430,63 @@ milestone = "M6"
 # not run the full cap). PASSes bit-identical vs reference.bin (verified
 # by direct emit+build+run+cmp).
 #
-# SINGLE-WORKER pthreads-sync ONLY (as 21-jacobi-converge): the break
-# emit is tier-1 single-worker today; the other 6 tier-1 backends are
-# [[skip]]'d below. Multi-worker / 7-backend break = epic S7
-# (TASK-0341.02.01.08).
+# SEVEN-BACKEND CAP-HIT (worst-case full-cap replay) CROSS-BACKEND
+# DIFFERENTIAL (epic S7, TASK-0341.02.01.08, cycle-S7). Same single-
+# worker `naive` flip rationale as 21-jacobi-converge above: a host-only
+# schedule (used_workers <= 1) delegates to the SHARED
+# `render_single_worker_main` on EVERY backend, so the multi-worker
+# walkers' `break_cond` fail-loud guard is never reached. This is the
+# WORST-CASE-REPLAY witness — the `until` predicate NEVER fires inside the
+# cap, so the loop runs the FULL `0..ITERS_CAP+1` on every backend.
+# Verified cycle-S7: `mp-uds-event` (event-walker sibling) AND
+# `mp-tcp-bufsync` (tcp_plan sibling) each ran the full 16-generation cap,
+# emitted the cap-hit stderr diagnostic (`[[nuc_converge]] did NOT
+# converge within the cap (16 + 1 generations)...`), and produced
+# BYTE-EXACT output vs reference.bin (direct emit+build+run+cmp). So the
+# bounded-data-dependent-iteration soundness claim ("the worst-case replay
+# is bounded by the cap") now holds bit-identically across all 7 tier-1
+# backends. The distributed (collective-break) variant stays honest-
+# BLOCKED on 16-jacobi/distributed — see the 21-jacobi-converge header.
 [[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "pthreads-sync"
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "mp-tcp-bufsync"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "pthreads-async"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "mp-tcp-event"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "openmp-rs"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "mp-tcp-poll"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
-[[skip]]
+[[required]]
 example  = "29-jacobi-cap-hit"
 schedule = "naive"
 backend  = "mp-uds-event"
-reason   = "for..until break emit is tier-1 single-worker pthreads-sync only; multi-worker/cross-backend break = S7 TASK-0341.02.01.08 (the multi_worker_walker / tcp_plan walkers fail loud on break_cond:Some today)."
 milestone = "M6"
 
 # 17-spmv/naive: TASK-0341.03 AC#1 (pthreads-sync) landed cycle 210

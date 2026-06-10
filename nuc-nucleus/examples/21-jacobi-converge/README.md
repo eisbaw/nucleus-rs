@@ -34,7 +34,7 @@ lowering, IR + bounded-cap lowering, break emit).
 | Language    | The `for..until COND` bounded early-exit surface (`docs/grammar-algo.md`).           |
 | Codegen     | Runtime break-generation final-read + cap-hit observability (single-worker).         |
 | Scheduling  | Naive only: every kernel on `host`. No transfers.                                    |
-| Backends    | pthreads-sync ONLY ([[required]]); the other six are e2e-skipped (see below).        |
+| Backends    | ALL 7 tier-1 ([[required]]): single-worker `naive` delegates to the shared emitter (see below). |
 
 ### The `for..until` early-exit
 
@@ -87,16 +87,35 @@ of `field[k]` is load-bearing and the differential vs `reference.bin`
 actually bites. Break gen 30 is comfortably below the cap of 64, so the
 early-exit path is exercised.
 
+## Cross-backend differential (all 7 tier-1 backends)
+
+The `naive` schedule is **host-only** (`workers = { host }`,
+`used_workers <= 1`), so every tier-1 backend delegates it to the SHARED
+single-worker emitter
+`backend_common::single_worker_main::render_single_worker_main` — the
+multi-worker walkers (`multi_worker_walker` / `tcp_plan`) are **never
+reached** on a single-worker schedule (their `break_cond` fail-loud guard
+fires only for a `partition=workers` schedule). All 7 backends therefore
+emit byte-identical compute code (only the documented `#[path]` /
+`#[allow(dead_code)]` kernels-mod attribute differs on the `src/bin/`
+backends), so the full `for..until` machinery — the break EMIT, the
+convergence reduction, the runtime break-generation final-read, and the
+cap-hit observability — is exercised bit-identically across all 7. Every
+backend's cell is `[[required]]` (epic **S7, TASK-0341.02.01.08**).
+
 ## What this example does NOT stress
 
-- **Multi-worker / distributed `for..until`.** The break emit is
-  tier-1 single-worker pthreads-sync ONLY today; the multi-worker
-  walkers (`multi_worker_walker`, `tcp_plan`) fail loud on a
-  `break_cond`, and the embedded pattern rejects it. The 7-backend /
-  multi-worker break differential is epic **S7 (TASK-0341.02.01.08)**.
-  The other six tier-1 backends are `[[skip]]`-ed on this example in
-  `e2e-matrix.toml` with that reason; only `naive` × `pthreads-sync`
-  is `[[required]]`.
+- **Multi-worker / distributed `for..until`.** A distributed
+  (`partition=workers` / `partition=rows`) convergence schedule, where
+  the break becomes a COLLECTIVE all-reduce + broadcast of the global
+  convergence scalar, is out of reach: it inherits the
+  16-jacobi/**distributed** blockage (itself honest-BLOCKED on all 7
+  backends — 5 on the 3D wait_slice gap, 2 on the in-Loop w2w Push gap)
+  plus the new collective-break machinery. No distributed converge cell
+  can be `[[required]]` until 16-jacobi/distributed itself lands; the
+  multi-worker walkers correctly stay fail-loud on `break_cond:Some`
+  (pinned by `backend-common/tests/multi_worker_break_cond_rejected.rs`).
+  This is the remaining scope of epic **S7 (TASK-0341.02.01.08)**.
 - **Overflow stress in the reduction.** The convergence reduction uses
   the overflow-safe `abs_diff_i32` (i64-widening + `unsigned_abs`,
   TASK-0436) — NOT the S3 fixture's `wrapping_sub().abs()`, which

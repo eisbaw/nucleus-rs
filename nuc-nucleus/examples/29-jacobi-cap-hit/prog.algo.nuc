@@ -56,12 +56,15 @@
 //     bytes are untouched (determinism-safe).
 //
 // What this example does NOT demonstrate:
-//   - Multi-worker / distributed `for..until`. As 21-jacobi-converge:
-//     the break emit is tier-1 SINGLE-WORKER pthreads-sync ONLY today;
-//     the multi-worker walkers fail loud on a `break_cond`. The
-//     7-backend / multi-worker break differential is epic S7
-//     (TASK-0341.02.01.08). Only `naive` x `pthreads-sync` is
-//     [[required]]; the other six tier-1 backends are e2e-skipped.
+//   - Multi-worker / DISTRIBUTED `for..until`. As 21-jacobi-converge:
+//     the single-worker `naive` schedule runs byte-identically on ALL 7
+//     tier-1 backends (every backend delegates a host-only schedule to
+//     the shared single-worker emitter — epic S7, TASK-0341.02.01.08).
+//     A DISTRIBUTED (collective-break) convergence schedule stays out of
+//     reach (16-jacobi/distributed blockage + collective all-reduce +
+//     broadcast machinery — the remaining scope of epic S7); the
+//     multi-worker walkers correctly stay fail-loud on `break_cond` for
+//     a partitioned schedule until that lands.
 //   - Floating-point arithmetic. As 16-jacobi / 21-jacobi-converge,
 //     integer `/ 4` truncating division is used for bit-determinism
 //     across schedules and backends.

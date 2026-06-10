@@ -4,11 +4,16 @@
 // `host`; no cross-worker dataflow means no `transfer` directives. The
 // result must be bit-identical to reference.bin.
 //
-// SINGLE-WORKER ONLY by design: the `for..until` break emit is tier-1
-// single-worker pthreads-sync only today. A `partition=workers`
-// schedule would hit the multi-worker walker's fail-loud guard on
-// `break_cond`. The multi-worker / cross-backend break differential is
-// epic S7 (TASK-0341.02.01.08).
+// HOST-ONLY (single-worker) schedule, but RUNS ON ALL 7 TIER-1 BACKENDS
+// (epic S7, TASK-0341.02.01.08): `workers = { host }` means
+// `used_workers <= 1`, so every backend delegates this schedule to the
+// SHARED single-worker emitter `render_single_worker_main` (which fully
+// emits the `for..until` break). The multi-worker walkers' `break_cond`
+// fail-loud guard is NEVER reached here — it fires only for a
+// `partition=workers` schedule. A DISTRIBUTED convergence schedule (the
+// COLLECTIVE all-reduce + broadcast break) remains out of reach: it
+// inherits the 16-jacobi/distributed blockage plus the collective-break
+// machinery — the remaining scope of epic S7.
 
 schedule for "../prog.algo.nuc" {
     workers = { host };
