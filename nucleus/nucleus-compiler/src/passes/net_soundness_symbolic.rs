@@ -101,21 +101,31 @@
 //! sound-equivalent-or-stronger: it changes *when* the expanded analysis
 //! runs, never *whether* an unsound net is caught.
 //!
-//! ## Honest scope (the residual)
+//! ## Scope: buffer-free here, COMMUNICATING nets next door (TASK-0455.01)
 //!
-//! The decidable subclass is exactly the **buffer-free** nets:
+//! The decidable subclass *of this module* is the **buffer-free** nets:
 //! single-worker programs (e.g. every naive schedule, including the
 //! `07-matmul` triple loop the limitation cites) and any multi-worker
-//! program with no cross-worker transfers. A program that *does*
-//! distribute work and communicate — the loop-carried `Push`/`Wait`
-//! shape of the distributed schedules — still falls back to the
-//! expanded, linear-in-firings gate. Lifting the bound there needs a
-//! periodicity / steady-state argument over the shared buffer place's
-//! occupancy under the greedy firing order, which is left as future
-//! work; doing it imprecisely would risk missing a real overflow, which
-//! the guardrail forbids. So this pass lifts the scaling bound for the
-//! no-communication subclass and documents the buffered/distributed
-//! case as the honest residual.
+//! program with no cross-worker transfers.
+//!
+//! A program that *does* distribute work and communicate — carrying
+//! buffer places — is handed to
+//! [`super::net_soundness_symbolic_comm::analyze_communicating_net_symbolic`]
+//! (TASK-0455.01), which proves a decidable subclass of COMMUNICATING
+//! nets symbolically too: the single-shot matched Push/Wait pairs (one
+//! Push + one Wait per seq, at loop-depth 0, no pipeline pre-mark) that
+//! the distributed schedules of `07-matmul`/`03-reduction`/`05-stencil`
+//! et al. emit. This is what lifts the gate's scaling wall at
+//! distributed `matmul` N=512 (the keystone the expansion OOMed on). The
+//! still-residual communicating shapes — loop-carried (`16-jacobi`) and
+//! pipelined (`09-producer-consumer`) transfers — fall back LOUDLY to the
+//! expanded gate from that module; lifting them needs the
+//! cross-iteration / pre-mark steady-state argument, which doing
+//! imprecisely would risk missing a real overflow (the guardrail forbids
+//! it). So the two symbolic modules together lift the scaling bound for
+//! the no-communication subclass AND the single-shot communicating
+//! subclass, and document the loop-carried / pipelined cases as the
+//! honest residual.
 
 use crate::acfg::{ACFGNode, ACFG};
 
@@ -139,24 +149,39 @@ pub enum SymbolicSoundness {
 /// Decide net soundness symbolically from the **rolled** ACFG, without
 /// expanding the net over the iteration space.
 ///
-/// Returns [`SymbolicSoundness::ProvenSound`] iff the ACFG is
-/// buffer-free (no [`Xfer`](crate::acfg::ACFGNode::Xfer) node), which by
-/// the module Theorem implies the expanded net is bounded, deadlock-free
-/// and conflict-free. Otherwise returns
-/// [`SymbolicSoundness::NeedsExpansion`] and the caller falls back to the
-/// expanded gate.
+/// Two-tier symbolic decision (TASK-0453.04 + TASK-0455.01):
 ///
-/// Cost: `O(ACFG nodes)` — a single walk of the rolled tree. It does NOT
-/// descend a `Repeat` body per iteration; it inspects each loop body once
-/// regardless of the range, so the cost is independent of the iteration
-/// counts (the whole point — contrast `acfg_to_net`, which unrolls).
+/// 1. **Buffer-free** (no [`Xfer`](crate::acfg::ACFGNode::Xfer) node):
+///    [`SymbolicSoundness::ProvenSound`] directly by the buffer-free
+///    Theorem in this module's doc — the expanded net is unconditionally
+///    bounded, deadlock-free and conflict-free.
+/// 2. **Communicating** (carries one or more `Xfer`): delegated to
+///    [`super::net_soundness_symbolic_comm::analyze_communicating_net_symbolic`],
+///    which returns `ProvenSound` for the single-shot matched-pair
+///    subclass (one Push + one Wait per seq at loop-depth 0, no pipeline
+///    pre-mark, capacity `>= 1`) by the single-shot theorem there, and
+///    [`SymbolicSoundness::NeedsExpansion`] (loud fallback) for every
+///    other communicating shape (loop-carried / pipelined transfers).
+///
+/// In BOTH tiers `ProvenSound` is returned only for a subclass on which
+/// the expanded gate is *proven* to return `Ok(())`; everything else is
+/// `NeedsExpansion` and the caller falls back to the unchanged expanded
+/// gate. There is no path on which an unsound net is accepted here that
+/// the expanded gate would reject (the cardinal P4 / `sec:fw-quant`
+/// guardrail) — pinned by the A/B equivalence harnesses
+/// (`tests/net_soundness_symbolic.rs`, `tests/symbolic_comm_ab.rs`).
+///
+/// Cost: `O(ACFG nodes)` — a single walk of the rolled tree in each tier.
+/// Neither tier descends a `Repeat` body per iteration; each inspects a
+/// loop body once regardless of the range, so the cost is independent of
+/// the iteration counts (the whole point — contrast `acfg_to_net`, which
+/// unrolls).
 pub fn analyze_net_soundness_symbolic(acfg: &ACFG) -> SymbolicSoundness {
     if contains_xfer(&acfg.root) {
-        return SymbolicSoundness::NeedsExpansion(
-            "net carries cross-worker transfers (buffer places); boundedness/liveness of a \
-             shared buffer place depends on the firing-order interleaving, which is outside \
-             the buffer-free symbolic subclass — falling back to the expanded gate",
-        );
+        // Communicating net: try the single-shot communicating subclass
+        // symbolically; anything outside it returns NeedsExpansion with a
+        // precise reason for the loud fallback.
+        return super::net_soundness_symbolic_comm::analyze_communicating_net_symbolic(acfg);
     }
     SymbolicSoundness::ProvenSound
 }

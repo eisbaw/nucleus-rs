@@ -529,25 +529,38 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // the function level so a future inject-pass regression that DID
     // emit an unsound net would surface as a compile error here rather
     // than as a runtime hang or buffer overrun.
-    // Symbolic fast path (TASK-0453.04, rigour epic P4). For the
-    // buffer-free subclass (single-worker / no-cross-worker-transfer
-    // programs — including the matmul triple loop whose expanded net is
-    // ~2 nodes per kernel firing) the net is provably bounded,
-    // deadlock-free and conflict-free directly from the ROLLED ACFG, in
-    // time independent of the iteration counts. Proving it that way
-    // avoids building (and replaying) the linear-in-firings expanded net
-    // entirely. This is a fast path, never a weakening: every net the
-    // expanded gate could reject (capacity overflow / stall / free-choice
-    // conflict) requires a buffer place, hence an Xfer, hence is
-    // classified `NeedsExpansion` and routed to the unchanged expanded
-    // gate below. See `passes::net_soundness_symbolic` for the theorem +
-    // soundness-equivalence argument.
+    // Symbolic fast path (TASK-0453.04 rigour-epic P4 + TASK-0455.01
+    // production-push keystone). Two decidable subclasses are proved
+    // bounded/deadlock-free/conflict-free directly from the ROLLED ACFG,
+    // in time independent of the iteration counts — avoiding building (and
+    // replaying) the linear-in-firings expanded net entirely:
+    //
+    //   1. BUFFER-FREE nets (single-worker / no cross-worker transfer —
+    //      including the matmul triple loop whose expanded net is ~2 nodes
+    //      per kernel firing). TASK-0453.04.
+    //   2. SINGLE-SHOT COMMUNICATING nets (one Push + one Wait per seq at
+    //      loop-depth 0, no pipeline pre-mark, capacity >= 1 — the shape
+    //      every distributed schedule of matmul/reduction/stencil/etc.
+    //      emits). TASK-0455.01: this is what lifts the gate's scaling wall
+    //      at distributed matmul N=512, where the expanded net OOMed
+    //      (~25 GB RSS).
+    //
+    // This is a fast path, NEVER a weakening: `analyze_net_soundness_symbolic`
+    // returns `ProvenSound` only for a subclass on which the expanded gate
+    // is PROVEN to return Ok (the two theorems in
+    // `passes::net_soundness_symbolic` / `net_soundness_symbolic_comm`).
+    // Every other shape — loop-carried / pipelined transfers, non-unit
+    // Push/Wait counts, a pre-mark — is classified `NeedsExpansion` with a
+    // precise reason and routed to the unchanged expanded gate below. There
+    // is no path on which an unsound net is accepted here that the expanded
+    // gate would reject (the cardinal `sec:fw-quant` guardrail; pinned by
+    // the A/B equivalence harness `tests/symbolic_comm_ab.rs`).
     match analyze_net_soundness_symbolic(&acfg) {
         SymbolicSoundness::ProvenSound => {
             nucleus_compiler::nuc_trace!(
-                "soundness gate: net is buffer-free; proved bounded/deadlock-free/conflict-free \
-                 symbolically from the rolled ACFG without expanding it over the iteration space \
-                 (TASK-0453.04)"
+                "soundness gate: net proved bounded/deadlock-free/conflict-free symbolically \
+                 from the rolled ACFG (buffer-free or single-shot communicating subclass) \
+                 without expanding it over the iteration space (TASK-0453.04 / TASK-0455.01)"
             );
         }
         SymbolicSoundness::NeedsExpansion(reason) => {

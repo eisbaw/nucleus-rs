@@ -45,6 +45,17 @@ pub mod net_soundness;
 // never skips a rejection — every unsound net carries a buffer place
 // and is routed to the expanded gate). See module doc for the theorem.
 pub mod net_soundness_symbolic;
+// TASK-0455.01 (production push, the keystone): symbolic soundness for
+// COMMUNICATING nets. Extends `net_soundness_symbolic` past the
+// buffer-free subclass to the single-shot matched Push/Wait pairs (one
+// Push + one Wait per seq at loop-depth 0, no pipeline pre-mark) that the
+// distributed schedules emit — proving them bounded/deadlock-free/
+// conflict-free from the ROLLED ACFG without building the linear-in-
+// firings expanded net (which OOMed at distributed matmul N=512). Loud
+// `NeedsExpansion` fallback for every other communicating shape
+// (loop-carried / pipelined); ZERO silent accept. See module doc for the
+// single-shot theorem + the A/B equivalence pin.
+pub mod net_soundness_symbolic_comm;
 // TASK-0260 Stage 1: halo region inference from kernel access patterns.
 // Runs AFTER `apply_partition_blocks2d` (driver pass order), AFTER
 // `build_acfg` (needs name_iter_vars / name_kernels). Pure +

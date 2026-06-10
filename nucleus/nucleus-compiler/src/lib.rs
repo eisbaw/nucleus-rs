@@ -92,6 +92,12 @@ pub use passes::net_soundness::{check_net_sound, PetriAnalysisError};
 // net; the driver skips the expanded gate on `ProvenSound` and falls
 // back to `check_net_sound` on `NeedsExpansion`.
 pub use passes::net_soundness_symbolic::{analyze_net_soundness_symbolic, SymbolicSoundness};
+// TASK-0455.01 (production push, keystone): symbolic soundness for
+// COMMUNICATING nets — single-shot matched Push/Wait subclass proved from
+// the rolled ACFG. `analyze_net_soundness_symbolic` delegates here for
+// nets that carry a transfer; exported so the A/B harness can pin the
+// communicating-subclass verdict directly against the expanded gate.
+pub use passes::net_soundness_symbolic_comm::analyze_communicating_net_symbolic;
 // TASK-0329.01.02 slice 2: host-mediated data-relay injection for mp-tcp-event.
 pub use passes::host_data_relay_inject::apply_host_data_relay_inject;
 pub use passes::host_mediation_inject::apply_host_mediation_inject;

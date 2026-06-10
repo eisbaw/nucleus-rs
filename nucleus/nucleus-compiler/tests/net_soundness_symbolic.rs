@@ -55,7 +55,10 @@ fn read_example(relpath: &str) -> String {
 
 /// Build the injected ACFG for an example/schedule pair using the same
 /// minimal pipeline the boundedness/deadlock integration tests use
-/// (`build_acfg` → `inject_syncs` → `inject_transfers`).
+/// (`build_acfg` → `inject_syncs` → `inject_transfers`). NOTE: this
+/// pipeline SKIPS the partition / halo / reuse passes, so for a
+/// `partition=` schedule the transfer loop-nesting differs from
+/// production — use [`pipeline_to_acfg_full`] when that matters.
 fn pipeline_to_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
         .expect("algo lower");
@@ -65,6 +68,23 @@ fn pipeline_to_acfg(algo_rel: &str, sched_rel: &str) -> ACFG {
     let acfg = nucleus_compiler::acfg::build_acfg(&linked).expect("build_acfg");
     let acfg = inject_syncs(acfg).expect("inject_syncs");
     inject_transfers(&linked, acfg).expect("inject_transfers")
+}
+
+/// Build the injected ACFG via the FULL pre-mediation pass chain the
+/// driver runs (`run_pre_mediation_passes`: build_acfg → block_transform →
+/// partition_{workers,rows,blocks2d} → halo/reuse inference → inject_syncs
+/// → inject_transfers). This is the ACFG the production soundness gate
+/// actually sees, so a `partition=rows` schedule (e.g. 16-jacobi) shows
+/// its real loop-nested transfer structure here.
+fn pipeline_to_acfg_full(algo_rel: &str, sched_rel: &str) -> ACFG {
+    let algo = lower_algo(&parse_algo(&read_example(algo_rel)).expect("algo parse"))
+        .expect("algo lower");
+    let sched = lower_sched(&parse_sched(&read_example(sched_rel)).expect("sched parse"))
+        .expect("sched lower");
+    let linked = link::link(algo, sched).expect("link");
+    nucleus_compiler::run_pre_mediation_passes(&linked)
+        .expect("run_pre_mediation_passes")
+        .0
 }
 
 /// Lower an in-memory matmul-shaped algorithm of dimension `n` to an
@@ -135,16 +155,21 @@ fn acfg_node_count(node: &ACFGNode) -> usize {
 }
 
 // The corpus cells exercised by the equivalence pin: a mix of
-// single-worker (buffer-free) and distributed (buffered) schedules.
+// single-worker (buffer-free), single-shot distributed (buffered but
+// proven), and loop-carried / pipelined (buffered, NeedsExpansion).
 const CORPUS: &[(&str, &str)] = &[
     ("07-matmul/prog.algo.nuc", "07-matmul/schedules/naive.sched.nuc"),
     ("01-elementwise-add/prog.algo.nuc", "01-elementwise-add/schedules/naive.sched.nuc"),
     ("03-reduction/prog.algo.nuc", "03-reduction/schedules/naive.sched.nuc"),
     ("05-stencil/prog.algo.nuc", "05-stencil/schedules/naive.sched.nuc"),
+    // Single-shot distributed (buffered, ProvenSound via TASK-0455.01).
     ("03-reduction/prog.algo.nuc", "03-reduction/schedules/distributed.sched.nuc"),
     ("05-stencil/prog.algo.nuc", "05-stencil/schedules/distributed.sched.nuc"),
     ("07-matmul/prog.algo.nuc", "07-matmul/schedules/distributed.sched.nuc"),
     ("06-separable-filter/prog.algo.nuc", "06-separable-filter/schedules/distributed.sched.nuc"),
+    // Loop-carried / pipelined (buffered, NeedsExpansion — the residual).
+    ("16-jacobi/prog.algo.nuc", "16-jacobi/schedules/distributed.sched.nuc"),
+    ("09-producer-consumer/prog.algo.nuc", "09-producer-consumer/schedules/pipelined.sched.nuc"),
 ];
 
 // --------------------------------------------------------------------
@@ -168,18 +193,54 @@ fn single_worker_matmul_is_proven_sound_without_expansion() {
 }
 
 #[test]
-fn distributed_program_needs_expansion() {
+fn single_shot_distributed_matmul_is_proven_sound_without_expansion() {
+    // TASK-0455.01: distributed matmul carries buffer places, but each
+    // seq is a SINGLE-SHOT matched Push/Wait pair at loop-depth 0 (the
+    // transfers are hoisted to per-band granularity, outside the `i`
+    // loop), so the communicating-net symbolic gate proves it sound
+    // directly from the rolled ACFG — WITHOUT building the expanded net
+    // that OOMs at N=512. This is the keystone the task lifts.
     let acfg = pipeline_to_acfg(
         "07-matmul/prog.algo.nuc",
         "07-matmul/schedules/distributed.sched.nuc",
     );
     assert!(
         buffer_place_count(&acfg) > 0,
-        "distributed matmul must carry buffer places"
+        "distributed matmul must carry buffer places (it communicates)"
+    );
+    assert!(
+        is_proven_sound(&acfg),
+        "single-shot distributed matmul must be ProvenSound (communicating subclass)"
+    );
+    // Soundness-equivalence: a ProvenSound net MUST also be accepted by
+    // the expanded gate (the single-shot theorem). Never trade soundness.
+    assert!(
+        check_net_sound(&acfg_to_net(&acfg)).is_ok(),
+        "THEOREM VIOLATED: ProvenSound single-shot net but expanded gate rejects"
+    );
+}
+
+#[test]
+fn loop_carried_transfer_needs_expansion() {
+    // The honest residual: a transfer whose Push/Wait sit INSIDE a loop
+    // (loop-depth >= 1) shares its buffer place across unrolled iterations.
+    // Its steady-state peak occupancy is NOT covered by the single-shot
+    // theorem, so it must fall back LOUDLY to the expanded gate — never an
+    // optimistic accept. 16-jacobi/distributed is the representative
+    // (seq0-11 are loop-nested). Uses the FULL pipeline because the
+    // loop-nesting is created by `partition_rows` over the spatial `y`
+    // axis inside the time loop — only the full pass chain reaches it.
+    let acfg = pipeline_to_acfg_full(
+        "16-jacobi/prog.algo.nuc",
+        "16-jacobi/schedules/distributed.sched.nuc",
+    );
+    assert!(
+        buffer_place_count(&acfg) > 0,
+        "16-jacobi distributed must carry buffer places"
     );
     assert!(
         !is_proven_sound(&acfg),
-        "a program with cross-worker transfers must be NeedsExpansion (fall back)"
+        "a loop-carried (loop-nested) transfer must be NeedsExpansion (fall back)"
     );
 }
 
@@ -196,17 +257,17 @@ fn combined_verdict_matches_expanded_gate_on_corpus() {
         let acfg = pipeline_to_acfg(algo, sched);
         let net = acfg_to_net(&acfg);
         let expanded_ok = check_net_sound(&net).is_ok();
-        let bufs = net.places.iter().filter(|p| p.name.starts_with("buf_")).count();
         let sym = analyze_net_soundness_symbolic(&acfg);
 
-        // The symbolic classification is EXACTLY the buffer-free
-        // structural property — no over/under-reach.
-        let proven = matches!(sym, SymbolicSoundness::ProvenSound);
-        assert_eq!(
-            proven,
-            bufs == 0,
-            "{sched}: ProvenSound iff buffer-free (bufs={bufs})"
-        );
+        // Post-TASK-0455.01 the symbolic classification is no longer
+        // "ProvenSound iff buffer-free": a single-shot communicating net
+        // (buffered but one Push + one Wait per seq at loop-depth 0) is
+        // also ProvenSound. The load-bearing property is the
+        // soundness-EQUIVALENCE: the combined verdict equals the expanded
+        // verdict, and ProvenSound never over-reaches (it implies the
+        // expanded gate accepts). The "ProvenSound iff buffer-free" pin is
+        // superseded; see `tests/symbolic_comm_ab.rs` for the full A/B
+        // equivalence over the WHOLE corpus.
 
         // The combined gate the driver runs: ProvenSound short-circuits
         // to "sound", otherwise the expanded gate decides.
@@ -214,7 +275,8 @@ fn combined_verdict_matches_expanded_gate_on_corpus() {
             SymbolicSoundness::ProvenSound => {
                 saw_proven = true;
                 // Soundness-equivalence: a ProvenSound net MUST also be
-                // accepted by the expanded gate (the module theorem).
+                // accepted by the expanded gate (the module theorem). This
+                // is the direction that matters — never trade soundness.
                 assert!(
                     expanded_ok,
                     "{sched}: ProvenSound but expanded gate rejected — theorem violated"
