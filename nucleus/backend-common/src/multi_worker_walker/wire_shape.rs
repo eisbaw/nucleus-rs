@@ -39,16 +39,18 @@
 //! expression, the payload extent (elements / bytes), AND the receiver
 //! `_tmp` offset basis, so every site reads ONE source of truth.
 //!
-//! # This task does NOT change wire behaviour
+//! # Two-phase history: consolidate (0455.07), then flip (0453.22)
 //!
-//! [`WireShape::derive`] today always resolves to the whole-array
-//! transmitted shape (`recv_basis == None` ⇒ the whole-symbol sender
-//! payload + the whole-array receiver assign). The emitted code is
-//! BYTE-IDENTICAL to pre-TASK-0455.07. The point of consolidation is
-//! exactly so TASK-0453.22 flips the whole-array decision to the
-//! inferred region in ONE place (the `recv_basis`/sender-expr coupling
-//! here) with per-backend validation, instead of five-plus
-//! independent edits.
+//! TASK-0455.07 landed this module behaviour-neutral (every edge still
+//! transmitted the whole array; emit byte-identical). TASK-0453.22
+//! then flipped the decision IN THIS ONE PLACE: edges whose
+//! [`WireShape::contiguous_span`] is `Some` now transmit only that
+//! span (sender slice + from-0 receiver rebase, derived together so
+//! they cannot diverge); everything else — strided `Rows`,
+//! leading-bearing `NestedRows`, accumulate fan-in, opaque
+//! gather/scatter dims, whole-array tiles, and the embedded backend
+//! (`from_tile(None)`) — deliberately stays whole-array. See
+//! `contiguous_span`'s docstring for the per-arm rationale.
 //!
 //! # Parametric-substrate precedent
 //!
@@ -150,18 +152,17 @@ pub enum RecvBasis {
 ///   byte count. Consumed by MPI buffered-send sizing and the embedded
 ///   `size_of_val`-equivalent length argument.
 ///
-/// # Whole-array today (TASK-0455.07), inferred-region next (TASK-0453.22)
+/// # Transmitted shape (since TASK-0453.22)
 ///
-/// Today `recv_basis` is the whole-array/slice-paste classification the
-/// receiver already computed, and the SENDER helpers always return the
-/// WHOLE symbol regardless of `recv_basis` — preserving byte-identical
-/// emit (the wire still carries the whole array even when the receiver
-/// only pastes a band). TASK-0453.22 will tighten the sender helpers to
-/// emit only the `recv_basis` region (a slice expression / a
-/// sub-extent), flipping the transmitted shape in this ONE place; the
-/// receiver basis then indexes `_tmp` from 0 rather than from the
-/// destination offset. That coupling is why the sender expression and
-/// the receiver basis must be derived together here.
+/// When [`contiguous_span`](Self::contiguous_span) is `Some((lo, hi))`
+/// the SENDER helpers return the `[lo..hi]` slice / sub-extent and the
+/// receiver basis indexes `_tmp` from 0 — the wire carries only the
+/// span. When it is `None` (strided `Rows`, leading-bearing
+/// `NestedRows`, accumulate fan-in, opaque gather/scatter, whole-array
+/// tiles, embedded `from_tile(None)`) the sender helpers return the
+/// WHOLE symbol and the receiver keeps destination-offset indexing.
+/// Sender expression and receiver basis are derived together here so a
+/// shape mismatch is impossible by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireShape {
     /// The receiver `_tmp` offset basis. `None` ⇒ whole-array assign;

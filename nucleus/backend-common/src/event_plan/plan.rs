@@ -494,8 +494,11 @@ impl<'a, T: EventTransport> Plan<'a, T> {
     /// derives its own `WireShape` and the max is the true largest
     /// on-wire payload. A datum with no `ResolvedType` is skipped
     /// (contributes 0) — matching the pre-flip `ok_or_else` guard's
-    /// intent (it cannot size a typeless symbol; the paired Wait render
-    /// fails loud on the same gap if such an edge ever ships).
+    /// intent (it cannot size a typeless symbol; the loud guard for
+    /// that gap is the same edge's Push/Wait EMIT type-guard in the
+    /// encode path, which aborts the emit before any generated program
+    /// could run against an under-sized buffer — the whole-array Wait
+    /// render itself never looks the type up; wave-5 review P3.1).
     pub(crate) fn max_payload_bytes(&self) -> Result<usize, EmitError> {
         let mut max = 0usize;
         for (d, s) in self.chan_ids.keys() {

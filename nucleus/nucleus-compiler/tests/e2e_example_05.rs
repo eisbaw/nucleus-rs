@@ -542,6 +542,22 @@ fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
          fan-out Push synthesis is stranded again.\n\n\
          Emitted main.rs:\n{main_rs}"
     );
+
+    // TASK-0453.22 narrowed-emit pin (wave-5 review P2.2): the count
+    // above deliberately accepts BOTH the whole-array and the narrowed
+    // form (TASK-0267's invariant is push-per-worker), so on its own a
+    // regression reverting `contiguous_span` to always-None would pass
+    // every integration test. Pin the narrowing itself: at least one
+    // host fan-out push must carry a BAND SLICE of img_in (the
+    // per-worker contiguous span), i.e. `.push(img_in[` — not only
+    // `.push(img_in.clone())`.
+    assert!(
+        main_rs.contains(".push(img_in["),
+        "TASK-0453.22: expected at least one narrowed band-slice push \
+         (`.push(img_in[lo..hi].to_vec())`) in the host fan-out — the \
+         contiguous-span narrowing appears to have regressed to \
+         whole-array.\n\nEmitted main.rs:\n{main_rs}"
+    );
 }
 
 /// TASK-0268: real-pipeline regression pin for sync_inject's

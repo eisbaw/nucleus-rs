@@ -219,5 +219,17 @@ fn sender_span_equals_receiver_paste_length_flat() {
             hi - lo,
             lo_iv..hi_iv
         );
+        // Wave-5 review P3.4: the equality above is extent_elems'
+        // definition for a present span — also pin the RENDERED sender
+        // expression text against the span, crossing derivation ->
+        // emitted code (catches a sender helper drifting off the span
+        // while extent_elems still agrees with it).
+        assert_eq!(
+            wire.sender_value_expr("x"),
+            format!("x[{lo}usize..{hi}usize].to_vec()"),
+            "narrowed Flat sender expression must slice exactly the \
+             contiguous span for band {:?}",
+            lo_iv..hi_iv
+        );
     }
 }

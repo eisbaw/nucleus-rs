@@ -871,3 +871,44 @@ fn task0322_rendezvous_prefix_substituted_on_push_emit() {
         );
     }
 }
+
+/// Wave-5 review P3.2: receiver-side pin for the NARROWED NestedRows
+/// arm (empty leading axes ⇒ banded dim 0 + full trailing ⇒ one
+/// contiguous span ⇒ `contiguous_span() == Some`, the wire carries only
+/// the band, and the paste source is FROM-0 over the span). The
+/// sender half is pinned in `wire_shape_narrow.rs`; this pins the
+/// emitted receiver text, completing the pair. Fixture: dims [5,8,8]
+/// with the BAND on the t axis (dim 0) and y/x FULL — the dual of
+/// `nd_banded_rank3_emits_nested_rows_slice_paste` above, whose band
+/// on y (dim 1) makes t a leading axis and must stay whole-array.
+#[test]
+fn nd_banded_dim0_narrowed_paste_sources_tmp_from_zero() {
+    let data = DataId(0);
+    let seq = SeqTag(3);
+    let t_iv = IterVar(2);
+    let y_iv = IterVar(4);
+    let x_iv = IterVar(3);
+    let (names, sidecar) = make_minimal_tables(data, "field", vec![5, 8, 8]);
+    // Band on t (rows 1..3); y and x FULL ⇒ no leading axes, trailing
+    // absorbed: band_lo_off = 1*64 = 64, band_hi_off = 3*64 = 192,
+    // span = 128.
+    let tile = IterTile::new(vec![(t_iv, 1..3), (y_iv, 0..8), (x_iv, 0..8)]);
+    let (ids, tiles) = one_pair(data, seq, 7, tile.clone());
+
+    let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
+        .expect("banded-dim-0 Wait must render the narrowed nested-rows paste");
+
+    assert!(
+        out.contains(
+            "field[_base + 64usize.._base + 192usize].copy_from_slice(\
+             &_tmp[0usize..128usize])"
+        ),
+        "banded-dim-0 (no leading axes) must paste the narrowed payload \
+         FROM 0 (`_tmp[0..128]`) into the destination band [64..192); \
+         got:\n{out}"
+    );
+    assert!(
+        !out.contains("for _a0"),
+        "no leading axes ⇒ no leading `for` loop may be emitted; got:\n{out}"
+    );
+}

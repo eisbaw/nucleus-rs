@@ -202,8 +202,12 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// over its edges. Pre-flip this iterated DataIds and always took the
     /// whole-array size; the per-edge max is `<=` that, so the SO_*BUF
     /// floor only ever shrinks. A typeless symbol is skipped (contributes
-    /// 0) — the paired Wait render fails loud on the same gap if such an
-    /// edge ships.
+    /// 0) — the loud guard for that gap is the same edge's Push/Wait
+    /// EMIT type-guard (`tcp_plan::events`), which aborts the emit
+    /// before any generated program could run against an under-sized
+    /// buffer (the whole-array Wait render itself never looks the type
+    /// up — wave-5 review P3.1 corrected the earlier wrong-mechanism
+    /// claim here).
     pub(crate) fn max_payload_bytes(&self) -> Result<usize, EmitError> {
         let mut max = 0usize;
         for (d, s) in self.pair_tiles.keys() {

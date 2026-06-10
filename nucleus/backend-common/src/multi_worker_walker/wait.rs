@@ -26,7 +26,9 @@ use crate::render::EmitError;
 /// Render the receiver-side assignment statement for one Wait event.
 /// Returns one statement (no trailing newline).
 ///
-/// Three shapes, dispatched by `wait_slice`:
+/// Shapes, dispatched by the [`super::wire_shape::RecvBasis`] on the
+/// edge's [`super::wire_shape::WireShape`] (the `wait_slice` dispatcher
+/// moved there in TASK-0455.07):
 /// - **Whole-array assign** (`name = <rhs>;`) — the pre-TASK-0117
 ///   single-pair behaviour. Selected when the pair's tile is empty
 ///   (no enclosing iteration nest, e.g. a top-level load_input ⇒ host
@@ -34,8 +36,10 @@ use crate::render::EmitError;
 ///   data's full range on the corresponding dim (i.e. the producer
 ///   sent the whole array on this pair).
 /// - **1D slice-paste** (`{ let _tmp = <rhs>; name[lo..hi]
-///   .copy_from_slice(&_tmp[lo..hi]); }`) — TASK-0117 leading-axis
-///   gather. Selected when the tile has a single bound (or only one
+///   .copy_from_slice(&_tmp[0..hi-lo]); }`) — TASK-0117 leading-axis
+///   gather; since TASK-0453.22 the wire carries only the band, so the
+///   `_tmp` source is from-0 (narrowed) rather than `[lo..hi]`.
+///   Selected when the tile has a single bound (or only one
 ///   bound is consultable against the data's dim rank).
 /// - **2D row-loop slice-paste** (`{ let _tmp = <rhs>; for _y in
 ///   outer_lo..outer_hi { let _r = _y * row_stride; name[_r +
