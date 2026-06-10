@@ -91,6 +91,20 @@ tutorial:
 case-study:
     nix develop .#mpi --command bash scripts/case-study-run.sh
 
+# Background (TASK-0455.04; docs/perf-study.md + docs/perf-study-methodology.md):
+# sweeps wall-clock vs {worker count} x {problem size} x {backend} for distributed
+# matmul / stencil / reduction on pthreads-async + a message-passing backend
+# (mp-tcp-*), asserts every measured point byte-identical to an INDEPENDENT
+# generated reference oracle, and MEASURES on-the-wire transfer volume (strace
+# sendto bytes) vs the whole-array baseline. All fixtures + schedule variants are
+# generated into nucleus/target/perf-study/ scratch — the committed examples are
+# reused by invocation, never edited. Loopback, not a cluster (see the doc's "what
+# this does NOT show"). `PERF_SMOKE=1 just perf-study` runs a trimmed wiring check.
+#
+# Run the runtime performance + scaling study end-to-end (docs/perf-study.md).
+perf-study:
+    nix develop --command bash scripts/perf-study-run.sh
+
 # Generative cross-backend differential fuzzer over five synthesised
 # families (TASK-0453.01 / .05 / .01.01).
 #
