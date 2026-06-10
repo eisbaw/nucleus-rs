@@ -237,3 +237,80 @@ fn weighted_arcs_consume_multiple_tokens() {
     // Second fire would need 3 from p but only 2 remain.
     assert!(matches!(net.fire(t), Err(FireError::NotEnabled { .. })));
 }
+
+/// TASK-0455.10: the gate passes were changed to replay on a BORROWED
+/// `&Net` plus an owned [`Marking`] via [`Net::fire_marking`] instead of
+/// cloning the whole net and calling [`Net::fire_in_place`] on its
+/// `current_marking`. The two paths MUST be byte-for-byte equivalent —
+/// same committed marking on success, same `FireError` (untouched
+/// marking) on failure — or the clone elimination silently changed gate
+/// verdicts. This pins that equivalence over a representative firing
+/// sequence covering success, a capacity-overflow failure, and an
+/// enabling-stall failure.
+#[test]
+fn fire_marking_matches_fire_in_place_step_for_step() {
+    use nucleus_compiler::petri::Marking;
+
+    // Build a small net with a producer, a cap=1 buffer, and a consumer.
+    //   produce --[1]--> buf(cap=1) --[1]--> consume
+    // Sequence: produce (ok), produce again (CapacityExceeded), consume
+    // (ok), consume again (NotEnabled).
+    let mut net = Net::new();
+    let ctl_p = net.add_place("ctl_p", cap(4), 4);
+    let ctl_c = net.add_place("ctl_c", cap(4), 4);
+    let buf = net.add_place("buf", cap(1), 0);
+    let produce = net.add_transition("produce", Some(WorkerId(0)));
+    let consume = net.add_transition("consume", Some(WorkerId(1)));
+    net.add_arc(ArcKind::PtoT, ctl_p, produce, 1);
+    net.add_arc(ArcKind::TtoP, buf, produce, 1);
+    net.add_arc(ArcKind::PtoT, ctl_c, consume, 1);
+    net.add_arc(ArcKind::PtoT, buf, consume, 1);
+
+    let seq = [produce, produce, consume, consume];
+
+    // Path A: the historical clone-and-fire-in-place path.
+    let mut clone = net.clone();
+    clone.reset_to_initial();
+    let index_a = net.build_arc_index();
+    let mut results_a = Vec::new();
+    let mut markings_a = Vec::new();
+    for &t in &seq {
+        let r = clone.fire_in_place(t, &index_a);
+        results_a.push(r);
+        markings_a.push(clone.current_marking.clone());
+    }
+
+    // Path B: the borrowed-net + owned-marking path the gate now uses.
+    let index_b = net.build_arc_index();
+    let mut marking_b: Marking = net.initial_marking.clone();
+    let mut results_b = Vec::new();
+    let mut markings_b = Vec::new();
+    for &t in &seq {
+        let r = net.fire_marking(t, &mut marking_b, &index_b);
+        results_b.push(r);
+        markings_b.push(marking_b.clone());
+    }
+
+    assert_eq!(
+        results_a, results_b,
+        "fire_marking must produce the same Result sequence as fire_in_place"
+    );
+    assert_eq!(
+        markings_a, markings_b,
+        "fire_marking must leave the same marking after each step (incl. \
+         untouched marking on the Err steps) as fire_in_place"
+    );
+
+    // Spot-check the expected verdicts so a regression in BOTH paths
+    // (which would keep them equal but wrong) is still caught.
+    assert!(results_b[0].is_ok(), "first produce fills the cap=1 buffer");
+    assert!(
+        matches!(results_b[1], Err(FireError::CapacityExceeded { .. })),
+        "second produce overflows the cap=1 buffer"
+    );
+    assert!(results_b[2].is_ok(), "consume drains the buffer");
+    assert!(
+        matches!(results_b[3], Err(FireError::NotEnabled { .. })),
+        "second consume stalls on the now-empty buffer"
+    );
+}

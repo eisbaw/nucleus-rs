@@ -442,6 +442,13 @@ impl Net {
     /// `current_marking` as the pre-firing ("before") state inside an
     /// `Err` arm.
     ///
+    /// This is a thin wrapper over [`Net::fire_marking`] that targets
+    /// `self.current_marking`. Callers that fire many transitions and
+    /// do NOT need the net's own `current_marking` mutated (the
+    /// analysis passes) should call [`Net::fire_marking`] directly with
+    /// a borrowed `&Net` and a single owned [`Marking`], avoiding the
+    /// whole-net clone the passes used to take per build (TASK-0455.10).
+    ///
     /// Behaviour is identical to the old all-arcs-scan `fire`: `needs`
     /// and `produces` are summed into `BTreeMap`s keyed by place
     /// (order-independent), capacity is checked against the
@@ -450,6 +457,44 @@ impl Net {
     /// same `FireError` variants are produced. `index` MUST have been
     /// built from this net (or a clone of it); see [`ArcIndex`].
     pub fn fire_in_place(&mut self, t: TransitionId, index: &ArcIndex) -> Result<(), FireError> {
+        // Split-borrow workaround: `fire_marking` reads `&self.arcs` /
+        // `&self.places` while mutating a `&mut Marking`, but
+        // `self.current_marking` is borrowed FROM `self`. Move the
+        // marking out, fire against the borrowed net, move it back.
+        // `mem::take` leaves an empty `Marking` behind transiently; we
+        // restore the (possibly-mutated) marking on BOTH the Ok and Err
+        // paths so `current_marking` is never observably empty and the
+        // `Err`-arm "before" state is preserved exactly (the failure
+        // modes leave `marking` untouched, see `fire_marking`).
+        let mut marking = std::mem::take(&mut self.current_marking);
+        let result = self.fire_marking(t, &mut marking, index);
+        self.current_marking = marking;
+        result
+    }
+
+    /// Fire transition `t` against an externally-owned `marking`,
+    /// consulting a prebuilt [`ArcIndex`] (TASK-0377) to find `t`'s
+    /// incident arcs in O(deg(t)). Reads the net immutably (`&self`):
+    /// only the passed `marking` is mutated. On success the new marking
+    /// is committed into `marking` in place; on failure nothing is
+    /// mutated — every failure mode is checked before any token moves,
+    /// so the caller may treat `marking` as the pre-firing ("before")
+    /// state inside an `Err` arm.
+    ///
+    /// This is the borrow-friendly core extracted in TASK-0455.10 so
+    /// the gate passes (`check_bounded`, `derive_firing_order`,
+    /// `check_deadlock_free`, `check_conflict_free`) can replay on a
+    /// borrowed `&Net` plus a single cloned [`Marking`] instead of
+    /// cloning the WHOLE net (places + transitions + arcs + both
+    /// markings) just to mutate the marking. `index` MUST have been
+    /// built from this net; see [`ArcIndex`]. Behaviour is byte-for-byte
+    /// identical to the old `fire_in_place`-on-`current_marking` path.
+    pub fn fire_marking(
+        &self,
+        t: TransitionId,
+        marking: &mut Marking,
+        index: &ArcIndex,
+    ) -> Result<(), FireError> {
         if (t.0 as usize) >= self.transitions.len() {
             return Err(FireError::UnknownTransition(t));
         }
@@ -468,7 +513,7 @@ impl Net {
                 .expect("arc-weight sum overflowed u32");
         }
         for (place, need) in &needs {
-            let have = self.current_marking.get(*place);
+            let have = marking.get(*place);
             if have < *need {
                 return Err(FireError::NotEnabled {
                     transition: t,
@@ -500,7 +545,7 @@ impl Net {
         touched.sort();
         touched.dedup();
         for place in &touched {
-            let have = self.current_marking.get(*place);
+            let have = marking.get(*place);
             let consumed = needs.get(place).copied().unwrap_or(0);
             let produced = produces.get(place).copied().unwrap_or(0);
             // `have >= consumed` was just enforced above for needs;
@@ -525,11 +570,11 @@ impl Net {
 
         // 3. Commit. We already proved all checked_sub/checked_add hold.
         for place in &touched {
-            let have = self.current_marking.get(*place);
+            let have = marking.get(*place);
             let consumed = needs.get(place).copied().unwrap_or(0);
             let produced = produces.get(place).copied().unwrap_or(0);
             let new = have - consumed + produced;
-            self.current_marking.set(*place, new);
+            marking.set(*place, new);
         }
 
         Ok(())

@@ -84,6 +84,9 @@
 use std::num::NonZeroU32;
 
 use crate::petri::{FireError, Marking, Net, PlaceId, TransitionId};
+// `Marking` is used both in `BoundednessError::CapacityExceeded`'s
+// payload type and for the borrowed-replay state in `check_bounded` /
+// `derive_firing_order` (TASK-0455.10 cut the whole-net clone).
 
 // --------------------------------------------------------------------
 // BoundednessError
@@ -178,24 +181,27 @@ impl std::error::Error for BoundednessError {}
 /// which keeps the error surface small and matches the "fail fast and
 /// verbosely" rule.
 pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), BoundednessError> {
-    // Work on a clone so callers don't observe state mutation.
-    let mut sim = net.clone();
-    sim.reset_to_initial();
+    // Replay on a borrowed `&net` plus an owned copy of the initial
+    // marking. We do NOT clone the whole net (places + transitions +
+    // arcs): the replay only ever mutates the marking, so cloning just
+    // the `Marking` is sufficient and cuts the gate's per-pass memory
+    // from "one net" to "one marking" (TASK-0455.10). `Net::reset_to_initial`
+    // copies `initial_marking` into `current_marking`; we clone the same
+    // source directly.
+    let mut marking = net.initial_marking.clone();
 
     // Build the per-transition arc index ONCE (O(A)) so each fire is
     // O(deg(t)) instead of an all-arcs scan (TASK-0377). The index is
-    // keyed by TransitionId and built from `net`; it stays valid
-    // against the clone `sim` (transition ids == vec index, preserved
-    // by clone — see `petri::ArcIndex`).
+    // keyed by TransitionId and built from `net`.
     let index = net.build_arc_index();
 
     for &tid in firing_order {
-        // `fire_in_place` leaves `sim.current_marking` unmutated on
-        // failure (all failure modes are checked before any token
-        // moves), so on the CapacityExceeded arm `sim.current_marking`
-        // IS the marking *before* the offending firing — clone it
-        // lazily there rather than every step (TASK-0377).
-        match sim.fire_in_place(tid, &index) {
+        // `fire_marking` leaves `marking` unmutated on failure (all
+        // failure modes are checked before any token moves), so on the
+        // CapacityExceeded arm `marking` IS the marking *before* the
+        // offending firing — clone it lazily there rather than every
+        // step (TASK-0377).
+        match net.fire_marking(tid, &mut marking, &index) {
             Ok(()) => {}
             Err(FireError::UnknownTransition(t)) => {
                 return Err(BoundednessError::UnknownTransition(t));
@@ -226,7 +232,7 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
                     place_name: name_of_place(net, place),
                     transition,
                     transition_name: name_of_transition(net, transition),
-                    marking_before: sim.current_marking.clone(),
+                    marking_before: marking.clone(),
                     would_be,
                     capacity,
                 });
@@ -328,16 +334,17 @@ pub fn derive_firing_order(net: &Net) -> Vec<TransitionId> {
     let mut order = Vec::with_capacity(total);
     let mut fired: Vec<bool> = vec![false; total];
 
-    // Replay against a cloned net so we don't touch the caller's
-    // marking. `reset_to_initial` makes the simulator start from the
-    // declared initial marking (TASK-0134's `initial_marking = D`
-    // lands here).
-    let mut sim = net.clone();
-    sim.reset_to_initial();
+    // Replay against an owned copy of the initial marking so we don't
+    // touch the caller's net. Cloning the `Marking` (not the whole net)
+    // is sufficient because the firability probe below only mutates the
+    // marking (TASK-0455.10). Starting from `net.initial_marking` is
+    // exactly what `reset_to_initial` would copy in (TASK-0134's
+    // `initial_marking = D` lands here).
+    let mut marking = net.initial_marking.clone();
 
     // Build the per-transition arc index ONCE (O(A)) so the firability
     // oracle below is O(deg(t)) per probe instead of an all-arcs scan
-    // (TASK-0377). Valid against the clone `sim` — see `check_bounded`.
+    // (TASK-0377).
     let index = net.build_arc_index();
 
     // Scan cursor: `start` is the lowest index still `false` in
@@ -359,7 +366,7 @@ pub fn derive_firing_order(net: &Net) -> Vec<TransitionId> {
             if fired[idx] {
                 continue;
             }
-            if sim.fire_in_place(t.id, &index).is_ok() {
+            if net.fire_marking(t.id, &mut marking, &index).is_ok() {
                 order.push(t.id);
                 fired[idx] = true;
                 // Advance the cursor past any now-contiguous fired

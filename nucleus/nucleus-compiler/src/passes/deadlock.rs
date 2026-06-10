@@ -226,21 +226,24 @@ impl std::error::Error for DeadlockError {}
 /// firing_order)` this function returns the same `Result` every
 /// call, including the same `marking_before` snapshot.
 pub fn check_deadlock_free(net: &Net, firing_order: &[TransitionId]) -> Result<(), DeadlockError> {
-    // Work on a clone — callers don't observe state mutation.
-    let mut sim = net.clone();
-    sim.reset_to_initial();
+    // Replay on a borrowed `&net` plus an owned copy of the initial
+    // marking — no whole-net clone. The replay only mutates the marking,
+    // so cloning just the `Marking` cuts this pass's memory from "one
+    // net" to "one marking" (TASK-0455.10). `net.initial_marking` is the
+    // same source `reset_to_initial` would copy in.
+    let mut marking = net.initial_marking.clone();
 
     // Build the per-transition arc index ONCE (O(A)) so each fire is
     // O(deg(t)) instead of an all-arcs scan (TASK-0377). Keyed by
-    // TransitionId; valid against the clone `sim` — see `check_bounded`.
+    // TransitionId.
     let index = net.build_arc_index();
 
     for (position, &tid) in firing_order.iter().enumerate() {
-        // `fire_in_place` leaves `sim.current_marking` unmutated on
-        // failure, so inside the Stalled arm `sim.current_marking` IS
-        // the marking *before* the stall — clone it lazily there rather
-        // than every step (TASK-0377).
-        match sim.fire_in_place(tid, &index) {
+        // `fire_marking` leaves `marking` unmutated on failure, so
+        // inside the Stalled arm `marking` IS the marking *before* the
+        // stall — clone it lazily there rather than every step
+        // (TASK-0377).
+        match net.fire_marking(tid, &mut marking, &index) {
             Ok(()) => {}
             Err(FireError::UnknownTransition(t)) => {
                 return Err(DeadlockError::UnknownTransition(t));
@@ -258,7 +261,7 @@ pub fn check_deadlock_free(net: &Net, firing_order: &[TransitionId]) -> Result<(
                     place_name: name_of_place(net, place),
                     have,
                     need,
-                    marking_before: sim.current_marking.clone(),
+                    marking_before: marking.clone(),
                     position,
                 });
             }

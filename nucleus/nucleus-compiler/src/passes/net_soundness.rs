@@ -368,10 +368,11 @@ impl std::error::Error for ConflictError {}
 /// Only a SMALL contested net (`<= CONFLICT_BFS_TRANSITION_LIMIT`
 /// transitions — the architect's counterexample, the synthetic tests)
 /// runs the coverability BFS: O(reachable-markings × T) bounded by
-/// [`CONFLICT_STATE_SPACE_CAP`], reusing one `sim` and firing in place
-/// (O(deg(t)) per successor, no per-step net clone), with each marking's
-/// conflict check touching only the contested places' consumers via a
-/// per-transition `needs` table precomputed in O(A). Such nets are tiny,
+/// [`CONFLICT_STATE_SPACE_CAP`], replaying on the borrowed `&net` plus a
+/// per-successor [`crate::petri::Marking`] clone via `fire_marking`
+/// (O(deg(t)) per successor, no whole-net clone — TASK-0455.10), with each
+/// marking's conflict check touching only the contested places' consumers
+/// via a per-transition `needs` table precomputed in O(A). Such nets are tiny,
 /// so correctness/determinism/termination — not throughput — are the
 /// requirements; the transition limit and marking cap guarantee
 /// termination. The `gate_stays_near_linear_under_large_net` pin in
@@ -477,8 +478,10 @@ fn check_conflict_free_with_order(
 
     // Small contested net ⇒ run the coverability BFS over ALL reachable,
     // capacity-respecting markings (not just one order's markings).
-    let mut sim = net.clone();
-    sim.reset_to_initial();
+    // Replay on the borrowed `&net` plus an owned root marking — no
+    // whole-net clone (TASK-0455.10). `net.initial_marking` is the BFS
+    // root (the same source `reset_to_initial` would copy in).
+    let root_marking = net.initial_marking.clone();
 
     // Frontier of (marking, depth). `visited` dedups by the canonical key
     // (sorted (place.0, count) tuples). `Marking::set(p, 0)` removes the
@@ -487,8 +490,8 @@ fn check_conflict_free_with_order(
     // is what makes the dedup correct (no absent-vs-zero split).
     let mut frontier: VecDeque<(Marking, usize)> = VecDeque::new();
     let mut visited: BTreeSet<Vec<(u32, u32)>> = BTreeSet::new();
-    frontier.push_back((sim.current_marking.clone(), 0));
-    visited.insert(marking_key(&sim.current_marking));
+    frontier.push_back((root_marking.clone(), 0));
+    visited.insert(marking_key(&root_marking));
 
     while let Some((marking, depth)) = frontier.pop_front() {
         // Check the conflict predicate at THIS reachable marking. The
@@ -525,21 +528,23 @@ fn check_conflict_free_with_order(
         // respecting reachability; the conflict PREDICATE still ignores
         // capacity, which is correct and unchanged).
         //
-        // We reuse the single `sim` rather than cloning the whole net per
-        // transition: before each attempt we restore `sim.current_marking`
-        // to this frontier marking, then `fire_in_place` mutates only the
-        // places incident to the fired transition (O(deg(t))). On failure
-        // `fire_in_place` leaves the marking untouched, so the restore at
-        // the top of the next iteration is what guarantees independence.
+        // For each transition we clone THIS frontier marking (a `Marking`,
+        // not the whole net) into `succ`, then `fire_marking` mutates only
+        // the places incident to the fired transition (O(deg(t))). On
+        // failure `fire_marking` leaves `succ` untouched. Per-successor
+        // independence comes from the fresh `succ` clone each iteration;
+        // TASK-0455.10 replaced the whole-net `sim` (cloned once and
+        // re-stamped per transition) with this borrowed `&net` + per-probe
+        // marking clone — same behaviour, no places/transitions/arcs copy.
         for ti in 0..net.transitions.len() {
             let tid = TransitionId(ti as u32);
-            sim.current_marking = marking.clone();
-            if sim.fire_in_place(tid, &index).is_err() {
+            let mut succ = marking.clone();
+            if net.fire_marking(tid, &mut succ, &index).is_err() {
                 continue;
             }
-            let key = marking_key(&sim.current_marking);
+            let key = marking_key(&succ);
             if visited.insert(key) {
-                frontier.push_back((sim.current_marking.clone(), depth + 1));
+                frontier.push_back((succ, depth + 1));
             }
         }
     }
@@ -627,8 +632,10 @@ fn conflict_free_single_order_fallback(
         }
     };
 
-    let mut sim = net.clone();
-    sim.reset_to_initial();
+    // Replay on the borrowed `&net` + an owned marking — no whole-net
+    // clone (TASK-0455.10). `net.initial_marking` is the same source
+    // `reset_to_initial` would copy in.
+    let mut marking = net.initial_marking.clone();
 
     // Inspect each marking along the order, then fire to the next.
     // `position` counts firings already committed (position == 0 is the
@@ -636,7 +643,7 @@ fn conflict_free_single_order_fallback(
     // verbatim as the above-cap residual.
     for position in 0..=order.len() {
         if let Some(conflict) =
-            find_conflict_at_marking(net, &sim.current_marking, consumers, needs, position)
+            find_conflict_at_marking(net, &marking, consumers, needs, position)
         {
             return Err(conflict);
         }
@@ -644,7 +651,7 @@ fn conflict_free_single_order_fallback(
             // A stall/overflow here is a boundedness/deadlock concern,
             // not a conflict; we simply stop the scan (the order cannot
             // advance).
-            if sim.fire_in_place(tid, index).is_err() {
+            if net.fire_marking(tid, &mut marking, index).is_err() {
                 break;
             }
         }
