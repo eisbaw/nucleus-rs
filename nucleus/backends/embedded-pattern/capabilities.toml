@@ -29,33 +29,69 @@
 # follow-up) and TASK-0049.05 (the BIN slice); do NOT widen these to
 # make ex14 pass without making that decision.
 #
-# ## What is DEFERRED to the M10 shim (TASK-0048), NOT declared here
+# ## ASYNC + DOUBLE-BUFFERED + IRQ-EVENT NOTIFY now declared (TASK-0455.02)
 #
-# PRD §7.3 row `embedded-cortexm-dma-irq` advertises the full surface:
-# IRQ + completion notify, descriptor-ring buffering, async semantics,
-# and physical memory regions (`tcm_per_core`, `shared_sram`, external
-# SDRAM). NONE of that is claimed here because M9 ships a do-nothing
-# STUB shim: there is no real DMA, no real IRQ, no async runtime. A
-# schedule asking for `async` / `buffer=N>1` / `notify=irq` / a TCM
-# region MUST be rejected at the capability-compat check rather than
-# compiled against a stub that cannot honour it. The M10 reference shim
-# is what legitimately flips `supports_async`, `supports_buffer`,
-# `notify=["irq"]`, and the `memory_regions` list to the §7.3 surface.
+# PRD §7.3 row `embedded-cortexm-dma-irq` advertises IRQ + completion
+# notify, descriptor-ring buffering, and async semantics — the headline
+# "IO semantics as swappable schedule directives" contribution, which
+# matters MOST on bare metal (no OS to absorb latency; the 2013 ISP-
+# firmware double-buffered DMA pipelines). TASK-0455.02 lands that on the
+# DMA-mode (`mode=dma`) transport path:
+#   * `supports_async = true`  — an `async` transfer no longer rejects;
+#     the DMA-mode Push arms a descriptor and the matched Wait completes
+#     it, so the producer is not blocked at the arm site.
+#   * `supports_buffer = true`, `max_buffer = 2` — a DMA-mode transfer
+#     crossing INSIDE a `loop V : pipeline=2` body renders a DEPTH-2
+#     descriptor ring (split-phase: arm iteration i+1 while i is in
+#     flight); the renderer carries the double-buffering as software
+#     pipelining in the loop body (no new Event variant — TASK-0455.02
+#     finding 1). `max_buffer = 2` is the HONEST cap: the modelled shim
+#     tracks a two-slot ring, so `buffer=3..` (e.g. ex9's `buffer=4`)
+#     STILL rejects loudly with `BufferTooLarge` — deeper rings are
+#     follow-up work, not a capability lie.
+#   * `notify = ["event", "poll", "barrier", "blocking"]` — `notify=event`
+#     and `notify=poll` (the two schedule-surface notify modes, PRD §6.3.4)
+#     now both accepted on the DMA path: the renderer honours `event` via
+#     IRQ-driven completion (`dma_link_irq_wait` — `wfi` until the modelled
+#     DMA-complete event) and `poll`/absent via the existing
+#     `dma_link_poll` busy-spin. Declaring BOTH keeps the cap surface
+#     consistent with what `render_completion_wait` actually emits (a
+#     `notify=poll` DMA edge must NOT reject when the backend genuinely
+#     supports the poll completion). The two legacy modes
+#     (`barrier`/`blocking`) stay so the existing sync barrier
+#     (`irq_barrier`) + blocking-recv paths are unchanged.
 #
-# `transport = "embedded-dma"` is the one tier-3-specific value declared
-# now: it names the channel a future `Push` lowers onto (a DMA
-# descriptor enqueue), per the §7.4 table. It is inert at M9 (the naive
-# schedules have no cross-worker `Push`), but naming it makes the
-# backend's tier-3 identity explicit and matches the §8.3 Region note.
+# SCOPE LIMITS (honest, NOT a capability lie):
+#   * Double-buffering applies ONLY on the `mode=dma` transport path. A
+#     PIO (`mode=pio` / absent) transfer ignores `buffer`/`notify` and
+#     renders the unchanged blocking byte-loop — there is no ring there.
+#   * `max_buffer = 2` only. Depth >2 rings (and the `notify=irq` doorbell
+#     variant) are NOT claimed.
+#   * Single-worker (no `--shim`) and multi-MCU (`--shim stm32h7` /
+#     `nrf52840`) all share the SAME `run<S>` lowering, so the ring emit is
+#     family-agnostic; the concrete ring/IRQ-wait shim methods have a
+#     DEFAULT impl (delegating to the existing modelled-DMA hooks), so no
+#     per-family churn and StubShim stays compile-only-honest.
+#
+# `transport = "embedded-dma"` names the channel a `mode=dma` Push lowers
+# onto (a DMA descriptor enqueue), per the §7.4 table.
+#
+# Physical memory regions (`tcm_per_core`, `shared_sram`, external SDRAM)
+# are STILL not declared (`memory_regions = ["heap"]`): TCM/SRAM placement
+# is a compiler-pass (`place_data` lowering / `Event::Alloc` emission)
+# concern in `nucleus-compiler`, NOT backend codegen, so it is honest-
+# deferred here (TASK-0455.02 finding 2 — the embedded backend's
+# `Event::Alloc`/`Event::Free` arm stays a fail-loud reject; the variants
+# are kept, not deleted, because the compiler still owns their fate).
 
 schema_version  = 1
 name            = "embedded-pattern"
 tier            = 3
 transport       = "embedded-dma"
-notify          = ["barrier", "blocking"]
-supports_async  = false
-supports_buffer = false
-max_buffer      = 1
+notify          = ["event", "poll", "barrier", "blocking"]
+supports_async  = true
+supports_buffer = true
+max_buffer      = 2
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
 

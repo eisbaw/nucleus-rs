@@ -324,6 +324,7 @@ pub fn render_multimcu_bin_main(
     kernel_defs: &str,
     run_body: &str,
     count_summaries: &[CountSummary],
+    ring_suffixes: &[String],
 ) -> String {
     let mut s = String::new();
     s.push_str(&format!(
@@ -336,7 +337,7 @@ pub fn render_multimcu_bin_main(
          //! other workers' bins via the generated multi-machine `.resc`.\n\
          #![no_std]\n\
          #![no_main]\n\
-         #![allow(unused_mut, dead_code, unused_variables, non_upper_case_globals)]\n\
+         #![allow(unused_mut, dead_code, unused_variables, non_upper_case_globals, static_mut_refs)]\n\
          \n\
          use core::panic::PanicInfo;\n\
          use cortex_m_rt::entry;\n\
@@ -352,6 +353,9 @@ pub fn render_multimcu_bin_main(
 
     let count_idents: Vec<&str> = count_summaries.iter().map(|c| c.ident.as_str()).collect();
     render_count_statics(&mut s, &count_idents);
+    // TASK-0455.02 DMA-ring occupancy/high-water trackers (IDENTICAL statics
+    // to the single-MCU bin + lib paths).
+    crate::render_dma_ring::render_ring_statics(&mut s, ring_suffixes);
 
     s.push_str("/// Pure compute kernels, copied verbatim from the source kernels.rs.\n");
     s.push_str("mod kernels {\n");

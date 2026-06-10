@@ -78,6 +78,14 @@ declares them explicitly. Unknown fields are rejected
   surface options. The wider set (`barrier`, `blocking`, `irq`) is
   declared here so a backend can advertise what *it* can do regardless
   of whether v2 schedules can request it yet.
+- Tier note (TASK-0455.02): the tier-3 `embedded-pattern` backend
+  declares `notify = ["event", "poll", "barrier", "blocking"]`. On its
+  `mode=dma` ring path it is the FIRST backend to HONOUR the per-seq
+  `notify` choice: `event` completes via the IRQ-driven
+  `dma_link_irq_wait` hook, `poll`/absent via the `dma_link_poll`
+  busy-spin. (`barrier`/`blocking` remain for the existing sync barrier +
+  blocking-recv paths.) Declaring both `event` and `poll` keeps the cap
+  surface consistent with what the renderer actually emits.
 - Unknown elements rejected with `CapError::UnknownNotify`.
 
 ### `supports_async`
@@ -87,6 +95,11 @@ declares them explicitly. Unknown fields are rejected
 - Semantics: when `false`, the schedule must not request `async` on
   any `transfer` directive. Asking yields
   `CapMismatch::AsyncNotSupported`.
+- Tier note (TASK-0455.02): the tier-3 `embedded-pattern` backend
+  declares `supports_async = true`. On its `mode=dma` transport path an
+  `async` transfer arms a DMA descriptor (the producer is not blocked at
+  the arm site); a `mode=pio` transfer ignores it. See `supports_buffer`
+  for the depth-2 descriptor ring this enables.
 
 ### `supports_buffer`
 
@@ -113,6 +126,15 @@ declares them explicitly. Unknown fields are rejected
   - `supports_buffer = false` AND `max_buffer > 1` is allowed and
     treated as "no in-flight buffering" — the `supports_buffer` check
     fires first.
+- Tier note (TASK-0455.02): the tier-3 `embedded-pattern` backend
+  declares `supports_buffer = true`, `max_buffer = 2`. A `mode=dma`
+  transfer crossing inside a pipelined loop body lowers to a DEPTH-2
+  descriptor ring (the producer arms transfer `i+1` while `i` is in
+  flight — the bare-metal double-buffered DMA pipeline). `max_buffer = 2`
+  is the honest cap: `buffer=3..` (e.g. example 9's `buffer=4`) STILL
+  rejects with `BufferTooLarge`; deeper rings are follow-up work, not a
+  capability lie. On a `mode=pio` (or absent-`mode=`) transfer the buffer
+  fact is ignored (no ring).
 
 ### `worker_classes`
 

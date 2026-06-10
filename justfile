@@ -1892,8 +1892,17 @@ renode-multimcu EX="02-split-add" SCHED="split":
 #      1024B vs reference.bin (TASK-0438.03, the DMA-vs-PIO demo). The
 #      modes are value-equivalent over the SAME UART fabric so the app
 #      stays byte-exact — value-correctness, NOT timing (AC#4).
+#   4. 09-producer-consumer/embedded_dma_buffered — 3 STM32H7 MCUs (host +
+#      producer + consumer): the ASYNC DOUBLE-BUFFERED DMA pipeline
+#      (TASK-0455.02). `transfer stream : async, buffer=2, notify=event,
+#      mode=dma` + `loop n : pipeline=2` lowers the loop-nested `stream`
+#      Push to a DEPTH-2 descriptor ring (producer-side drain-when-full —
+#      occupancy high-water reaches 2, the AC#4 observability witness) and
+#      the matched Wait to the IRQ-event `dma_link_irq_wait` completion;
+#      BYTE-EXACT 64B vs reference.bin. The headline "IO semantics as
+#      swappable schedule directives" contribution on the bare-metal tier.
 #
-# `just` runs prerequisite recipes before the body, so all three
+# `just` runs prerequisite recipes before the body, so all four
 # `renode-multimcu` invocations run; each fails LOUD (exit 1) on any
 # byte-count/diff mismatch, which fails this gate. No new co-sim logic
 # lives here — it composes the
@@ -1908,8 +1917,8 @@ renode-multimcu EX="02-split-add" SCHED="split":
 # `[[skip]]` for the same reason — the standing gate is THIS Renode recipe
 # path, NOT the e2e matrix. The ci.yml `renode-multimcu` job runs this gate
 # best-effort (PRD §10.3); it is NOT part of the merge-blocking `just ci`.
-renode-multimcu-gate: (renode-multimcu "02-split-add" "split") (renode-multimcu "14-hearing-aid" "embedded_multimcu_sync") (renode-multimcu "22-dma-pio-demo" "dma_pio")
-    @echo "OK: tier-3 M11 multi-MCU value-correctness gate PASSED — 02-split-add 2-MCU 1024B + 14-hearing-aid 3-MCU 512B + 22-dma-pio-demo 2-MCU 1024B (DMA+PIO) all BYTE-EXACT vs reference.bin (TASK-0049.10.08 AC#4 + TASK-0438.03)."
+renode-multimcu-gate: (renode-multimcu "02-split-add" "split") (renode-multimcu "14-hearing-aid" "embedded_multimcu_sync") (renode-multimcu "22-dma-pio-demo" "dma_pio") (renode-multimcu "09-producer-consumer" "embedded_dma_buffered")
+    @echo "OK: tier-3 M11 multi-MCU value-correctness gate PASSED — 02-split-add 2-MCU 1024B + 14-hearing-aid 3-MCU 512B + 22-dma-pio-demo 2-MCU 1024B (DMA+PIO) + 09-producer-consumer 3-MCU 64B (async double-buffered DMA ring + IRQ-event notify, TASK-0455.02) all BYTE-EXACT vs reference.bin (TASK-0049.10.08 AC#4 + TASK-0438.03 + TASK-0455.02)."
 
 # Tier-3 M10 GENERATED firmware -> Renode -> reference.bin diff
 # (TASK-0048.01 emission + TASK-0048.02 value-correctness + TASK-0048.03

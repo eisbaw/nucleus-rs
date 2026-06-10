@@ -564,6 +564,7 @@ pub fn render_bin_main(
     kernel_defs: &str,
     run_body: &str,
     count_summaries: &[CountSummary],
+    ring_suffixes: &[String],
 ) -> String {
     let spec = bin_spec(target);
     let mut s = String::new();
@@ -576,8 +577,10 @@ pub fn render_bin_main(
          // non_upper_case_globals: the Count counter statics preserve the\n\
          // source loop-var spelling (e.g. lowercase `i`), matching the\n\
          // tier-1 convention and keeping the name greppable back to the\n\
-         // directive (TASK-0048.08).\n\
-         #![allow(unused_mut, dead_code, unused_variables, non_upper_case_globals)]\n\
+         // directive (TASK-0048.08). static_mut_refs: the TASK-0455.02\n\
+         // DMA-ring OCC/HWM trackers are plain `static mut` (single-core\n\
+         // firmware, touched only inside `run`).\n\
+         #![allow(unused_mut, dead_code, unused_variables, non_upper_case_globals, static_mut_refs)]\n\
          \n\
          use core::panic::PanicInfo;\n\
          use cortex_m_rt::entry;\n\
@@ -593,6 +596,10 @@ pub fn render_bin_main(
     // emits a USART1 summary after `run` returns (TASK-0048.08).
     let count_idents: Vec<&str> = count_summaries.iter().map(|c| c.ident.as_str()).collect();
     render_count_statics(&mut s, &count_idents);
+    // The TASK-0455.02 DMA-ring occupancy/high-water trackers — IDENTICAL
+    // statics to the lib path (the ring arms in render_event reference
+    // NUC_DMA_RING_{OCC,HWM}_<suffix> on both paths).
+    crate::render_dma_ring::render_ring_statics(&mut s, ring_suffixes);
     // The pure kernel bodies live in a private `mod kernels` — the same
     // `kernels::<name>(..)` call spelling the run body emits (identical
     // to the lib path).

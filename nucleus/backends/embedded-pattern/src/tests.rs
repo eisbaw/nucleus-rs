@@ -22,6 +22,7 @@ use crate::emit;
 mod bin_shape;
 mod bin_shape_nrf;
 mod boot_order;
+mod dma_ring_render;
 mod input_offsets;
 mod output_capture;
 mod sync_guard;

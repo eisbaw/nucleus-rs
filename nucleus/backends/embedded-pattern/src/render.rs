@@ -394,36 +394,50 @@ fn render_event(
                     .ok();
                 }
                 TransportMode::Dma => {
-                    // DMA-async push: arm a transfer descriptor, then spin on
-                    // the completion flag. This is a MODELLED DMA SHAPE, NOT a
-                    // silicon DMA engine (AC#4) — the bytes ride the SAME UART
-                    // fabric (the default `dma_link_arm` delegates to
-                    // `link_push`). The real STM32H7 DMA engine is deferred to
-                    // TASK-0048.12.
-                    //
-                    // SPIN, not `wfi` (AC#2): the modelled shim completes the
-                    // transfer synchronously inside the arm call (no real
-                    // DMA-complete IRQ fires), so `wfi` would deadlock waiting
-                    // for an interrupt that never arrives. `dma_link_poll`
-                    // returns true immediately, so the spin loop is the honest
-                    // structural completion-wait and terminates on its first
-                    // iteration.
-                    writeln!(
-                        out,
-                        "{pad}// DMA-async push of `{name}` (seq {chan}): arm descriptor, then spin on completion."
-                    )
-                    .ok();
-                    writeln!(
-                        out,
-                        "{pad}shim.dma_link_arm({chan}, {name}.as_ptr() as *const u8, \
-                         {byte_len});"
-                    )
-                    .ok();
-                    writeln!(
-                        out,
-                        "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
-                    )
-                    .ok();
+                    // DMA push. A `buffer>=2` edge (TASK-0455.02) renders the
+                    // depth-2 descriptor RING (split-phase, occupancy-tracked,
+                    // notify-selected completion); a `buffer=1` / no-`buffer=`
+                    // edge keeps the single-buffer arm + completion-spin
+                    // (byte-identical to pre-TASK-0455.02, load-bearing for the
+                    // 22-dma-pio-demo gate whose edges are all single-buffered).
+                    if crate::render_dma_ring::is_double_buffered(ctx.sidecar.xfer_buffer(*seq)) {
+                        let suf = crate::render_dma_ring::ring_suffix(*seq);
+                        let notify = ctx.sidecar.xfer_notify(*seq);
+                        crate::render_dma_ring::render_ring_push(
+                            out, &pad, &name, &byte_len, chan, &suf, notify,
+                        )?;
+                    } else {
+                        // Single-buffer DMA-async push: arm a transfer
+                        // descriptor, then spin on the completion flag. This is
+                        // a MODELLED DMA SHAPE, NOT a silicon DMA engine (AC#4)
+                        // — the bytes ride the SAME UART fabric (the default
+                        // `dma_link_arm` delegates to `link_push`). The real
+                        // STM32H7 DMA engine is deferred to TASK-0048.12.
+                        //
+                        // SPIN, not `wfi` (AC#2): the modelled shim completes
+                        // the transfer synchronously inside the arm call (no
+                        // real DMA-complete IRQ fires), so `wfi` would deadlock
+                        // waiting for an interrupt that never arrives.
+                        // `dma_link_poll` returns true immediately, so the spin
+                        // loop is the honest structural completion-wait and
+                        // terminates on its first iteration.
+                        writeln!(
+                            out,
+                            "{pad}// DMA-async push of `{name}` (seq {chan}): arm descriptor, then spin on completion."
+                        )
+                        .ok();
+                        writeln!(
+                            out,
+                            "{pad}shim.dma_link_arm({chan}, {name}.as_ptr() as *const u8, \
+                             {byte_len});"
+                        )
+                        .ok();
+                        writeln!(
+                            out,
+                            "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
+                        )
+                        .ok();
+                    }
                 }
             }
             Ok(())
@@ -470,22 +484,34 @@ fn render_event(
                     .ok();
                 }
                 TransportMode::Dma => {
-                    writeln!(
-                        out,
-                        "{pad}// DMA-async receive of `{name}` (seq {chan}): arm descriptor, then spin on completion."
-                    )
-                    .ok();
-                    writeln!(
-                        out,
-                        "{pad}shim.dma_link_recv_arm({chan}, {name}.as_mut_ptr() as *mut u8, \
-                         {byte_len});"
-                    )
-                    .ok();
-                    writeln!(
-                        out,
-                        "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
-                    )
-                    .ok();
+                    // Symmetric to the Push DMA arm: a `buffer>=2` edge renders
+                    // the depth-2 ring receive (TASK-0455.02); a single-buffer
+                    // edge keeps the arm + completion-spin (byte-identical to
+                    // pre-TASK-0455.02).
+                    if crate::render_dma_ring::is_double_buffered(ctx.sidecar.xfer_buffer(*seq)) {
+                        let suf = crate::render_dma_ring::ring_suffix(*seq);
+                        let notify = ctx.sidecar.xfer_notify(*seq);
+                        crate::render_dma_ring::render_ring_recv(
+                            out, &pad, &name, &byte_len, chan, &suf, notify,
+                        )?;
+                    } else {
+                        writeln!(
+                            out,
+                            "{pad}// DMA-async receive of `{name}` (seq {chan}): arm descriptor, then spin on completion."
+                        )
+                        .ok();
+                        writeln!(
+                            out,
+                            "{pad}shim.dma_link_recv_arm({chan}, {name}.as_mut_ptr() as *mut u8, \
+                             {byte_len});"
+                        )
+                        .ok();
+                        writeln!(
+                            out,
+                            "{pad}while !shim.dma_link_poll({chan}) {{ core::hint::spin_loop(); }}"
+                        )
+                        .ok();
+                    }
                 }
             }
             Ok(())

@@ -153,12 +153,24 @@ When aggregate matching lands, this example does not need to change.
 
 ## Required schedules
 
-| Schedule                  | Backends required at M3                     | Why                                                          |
-| ------------------------- | ------------------------------------------- | ------------------------------------------------------------ |
-| `naive.sched.nuc`         | `pthreads-sync`, `mp-tcp-bufsync`, `pthreads-async` | Single-worker smoke test; every tier-1 backend must produce bit-identical output. pthreads-async's single-worker arm delegates to the shared single-worker renderer. |
-| `pipelined.sched.nuc`     | `pthreads-async` only (M4 cell)             | Requires `async + buffer=4 + notify=event`; only pthreads-async's capability surface satisfies this. The other two backends are [[skip]] in `e2e-matrix.toml` with the capability mismatch cited verbatim. |
+| Schedule                       | Backends required at M3                     | Why                                                          |
+| ------------------------------ | ------------------------------------------- | ------------------------------------------------------------ |
+| `naive.sched.nuc`              | `pthreads-sync`, `mp-tcp-bufsync`, `pthreads-async` | Single-worker smoke test; every tier-1 backend must produce bit-identical output. pthreads-async's single-worker arm delegates to the shared single-worker renderer. |
+| `pipelined.sched.nuc`          | `pthreads-async` only (M4 cell)             | Requires `async + buffer=4 + notify=event`; only pthreads-async's capability surface satisfies this. The other two backends are [[skip]] in `e2e-matrix.toml` with the capability mismatch cited verbatim. |
+| `embedded_dma_buffered.sched.nuc` | `embedded-pattern --shim stm32h7` (tier-3 Renode gate) | Requires `async + buffer=2 + notify=event + mode=dma`; the tier-3 embedded backend's DEPTH-2 DMA descriptor ring + IRQ-event completion (TASK-0455.02). Runs as a 3-MCU STM32H7 Renode co-sim, BYTE-EXACT 64B; the standing gate is `just renode-multimcu-gate` (NOT the e2e matrix — same tier-3-outside-default-ci rule as the other embedded cells). `buffer=2` is the embedded backend's `max_buffer`, so the `pipelined` schedule's `buffer=4` STILL rejects there. |
 
-The pipelined schedule places `produce` on `producer`, `transform` on
+The `pipelined` schedule places `produce` on `producer`, `transform` on
 `consumer`, and runs the inter-stage edge as
 `transfer stream : async, buffer=4, notify=event` with
 `loop n : pipeline=4`. Four samples in flight at steady state.
+
+The `embedded_dma_buffered` schedule is the tier-3 analogue
+(TASK-0455.02): same producer/consumer dataflow, but
+`transfer stream : async, buffer=2, notify=event, mode=dma` with
+`loop n : pipeline=2`. The embedded-pattern backend lowers the
+loop-nested `stream` Push to a producer-side DEPTH-2 descriptor ring
+(occupancy high-water reaches 2 — the observable double-buffer witness)
+and the matched Wait to the IRQ-event `dma_link_irq_wait` completion. See
+that schedule file's header for the honest modelled-DMA boundary
+(Renode's DMA completes synchronously, so the proof is ring occupancy +
+byte-exact value-correctness, not silicon timing).

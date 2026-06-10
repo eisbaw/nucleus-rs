@@ -1,0 +1,81 @@
+// Embedded async DOUBLE-BUFFERED DMA pipeline (TASK-0455.02) — the
+// tier-3 headline: IO semantics as swappable schedule directives, landed
+// on the bare-metal tier that motivated them (the 2013 ISP-firmware
+// double-buffered DMA pipelines; PRD §7.3 `embedded-cortexm-dma-irq`).
+//
+// Same three-worker producer/consumer dataflow as `pipelined.sched.nuc`,
+// but with the cross-worker `stream` edge tuned to the capability surface
+// the embedded-pattern backend now advertises (TASK-0455.02):
+//
+//   transfer stream : async, buffer=2, notify=event, mode=dma
+//
+//   - async      : the producer does not block at the arm site — it arms a
+//                  DMA descriptor and runs ahead (the next `produce`) while
+//                  the transfer is in flight.
+//   - buffer=2   : a DEPTH-2 descriptor ring. The embedded-pattern renderer
+//                  (render_dma_ring.rs) lowers the loop-nested `stream` Push
+//                  to a producer-side double buffer: arm iteration i, defer
+//                  its completion, and only DRAIN-when-FULL — so at the top
+//                  of every steady-state iteration TWO descriptors are
+//                  simultaneously enqueued (ring occupancy reaches 2, the
+//                  observable `NUC_DMA_RING_HWM_*` high-water witness).
+//                  `buffer=2` is the embedded backend's `max_buffer`; a
+//                  deeper request (e.g. `pipelined.sched.nuc`'s `buffer=4`)
+//                  still rejects loudly with `BufferTooLarge`.
+//   - notify=event : the matched Wait completes via the IRQ-driven
+//                  `shim.dma_link_irq_wait` hook (the FIRST consumer of the
+//                  per-seq `XferFacts::notify` fact, TASK-0455.08), not the
+//                  busy-spin poll the default/poll modes use.
+//   - mode=dma   : the DMA transport CODE PATH (descriptor arm + ring), not
+//                  the PIO byte loop. Double-buffering applies ONLY on the
+//                  DMA path; a `mode=pio` edge ignores buffer/notify.
+//
+// `loop n : pipeline=2` matches `buffer=2` (the link-step gate requires
+// pipeline depth <= buffer capacity, PRD §8.2): sample n on the consumer
+// side while sample n+1 is on the producer side.
+//
+// HONEST model boundary (mirrors `22-dma-pio-demo`'s caveat)
+// ----------------------------------------------------------
+// Under Renode the modelled DMA completes SYNCHRONOUSLY inside the arm
+// (`dma_link_arm` delegates to the same UART transport; the IRQ-wait /
+// poll return promptly — no real DMA-complete IRQ fires). So the two
+// in-flight ring slots do NOT produce genuine temporal overlap on the
+// non-cycle-accurate emulator, and the per-iteration `irq_barrier` the
+// multi-worker walker brackets each loop body with serialises it anyway.
+// What this schedule proves, soundly and observably, is (a) the depth-2
+// ring OCCUPANCY genuinely reaching 2 (the producer-side high-water static)
+// and (b) BYTE-EXACT value-correct output across the 3-MCU co-sim. A real
+// silicon async DMA engine — where the CPU runs ahead while the stream
+// drains and per-slot staging prevents clobber — is the forward follow-up
+// (TASK-0048.12 / TASK-0438.03), the same boundary the single-buffer
+// `mode=dma` arm already carries.
+//
+// Renode gate: `just renode-embedded-dma-buffered` (a sibling of
+// `renode-multimcu-gate`, NOT in the merge-blocking `just ci` — same
+// tier-3-outside-default-ci rule, needs the `.#embedded` + `.#renode`
+// shells). Runs the 3-MCU co-sim and `cmp`s the host's saved `result`
+// BYTE-EXACT (64 bytes) against this example's `reference.bin`.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, producer, consumer };
+
+    // I/O on host (owns the file system / injected input region).
+    place load_input  on host;
+    place save_output on host;
+
+    // Stage 1 on producer, stage 2 on consumer.
+    place produce   on producer;
+    place transform on consumer;
+
+    // Sample n on consumer while sample n+1 is on producer.
+    loop n : pipeline=2;
+
+    // The inter-stage edge: async + DEPTH-2 DMA ring + IRQ-event notify.
+    // This is the directive the embedded-pattern backend now honours
+    // (TASK-0455.02) and the whole point of the schedule.
+    transfer stream : async, buffer=2, notify=event, mode=dma;
+
+    // Fan-in / fan-out hops to/from host (outside the pipelined loop).
+    transfer seeds  : sync;
+    transfer result : sync;
+}

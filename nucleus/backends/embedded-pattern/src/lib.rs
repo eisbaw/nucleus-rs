@@ -149,6 +149,7 @@ use nucleus_compiler::sidecar::NameSidecar;
 mod kernel_extract;
 mod multimcu;
 mod render;
+mod render_dma_ring;
 mod skeleton;
 
 /// The tier-3 target-shim selector for the Renode-runnable BIN path
@@ -652,7 +653,16 @@ fn render_lib_rs(
 ) -> Result<String, EmitError> {
     let (kernel_defs, run_body) = lower_kernels_and_run(events, names, sidecar, kernels_src)?;
     let count_idents: Vec<&str> = count_loops.iter().map(|c| c.ident.as_str()).collect();
-    Ok(skeleton::render_lib(&kernel_defs, &run_body, &count_idents))
+    // Depth-2 DMA-ring occupancy statics for every `mode=dma`+`buffer>=2`
+    // seq (TASK-0455.02). Empty for every existing schedule (no buffered
+    // DMA edge), so the lib shape is byte-unchanged there.
+    let ring_suffixes = render_dma_ring::collect_ring_suffixes(events, sidecar);
+    Ok(skeleton::render_lib(
+        &kernel_defs,
+        &run_body,
+        &count_idents,
+        &ring_suffixes,
+    ))
 }
 
 /// Render the complete Renode-runnable `no_std` BIN source: cortex-m-rt
@@ -682,11 +692,13 @@ fn render_main_rs(
             latency_max_ns: c.latency_max_ns,
         })
         .collect();
+    let ring_suffixes = render_dma_ring::collect_ring_suffixes(events, sidecar);
     Ok(skeleton::render_bin_main(
         target,
         &kernel_defs,
         &run_body,
         &summaries,
+        &ring_suffixes,
     ))
 }
 
@@ -712,11 +724,13 @@ fn render_multimcu_main_rs(
             latency_max_ns: c.latency_max_ns,
         })
         .collect();
+    let ring_suffixes = render_dma_ring::collect_ring_suffixes(events, sidecar);
     Ok(skeleton::render_multimcu_bin_main(
         wplan,
         &kernel_defs,
         &run_body,
         &summaries,
+        &ring_suffixes,
     ))
 }
 
