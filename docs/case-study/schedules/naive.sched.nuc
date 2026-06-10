@@ -1,0 +1,23 @@
+// Case study schedule #1: naive — single worker, no decomposition.
+//
+// The smoke-test / single-worker baseline. Everything runs on one
+// worker (`host`); no cross-worker dataflow, so no `transfer`
+// directives (PRD §6.3.4: a transfer is required ONLY for a data
+// symbol that crosses a worker boundary).
+//
+// This single-worker schedule is what the symbolic soundness gate
+// (TASK-0455.01) carries via its BUFFER-FREE fast path — the net has
+// no shared buffer place at all, so the gate proves it sound without
+// any occupancy argument. The runner uses this cell as the
+// single-worker runtime/compile baseline against which the distributed
+// decomposition's numbers are read.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on host;
+
+    // No loop transforms, no transfers — single worker.
+}

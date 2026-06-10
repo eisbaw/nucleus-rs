@@ -216,14 +216,14 @@ milestone = "M1"
 #   - 03-reduction/distributed          (multi-worker SPMD tree-reduce, -n 5)
 #   - 06-separable-filter/distributed   (multi-worker row-band, non-stencil, -n 5)
 #   - 06-separable-filter/distributed2  (multi-worker w<->w tmp fan-out, -n 5)
-#   - 07-matmul/distributed             (multi-worker 2D row-band, -n 5)
+#   - 07-matmul/distributed             (multi-worker 1D row-band on the outer i axis, -n 5)
 #   - 08-histogram/distributed          (multi-worker scatter + partial-sum, -n 5)
 #   - 15-transpose/distributed-rows     (multi-worker row-band permute, -n 5)
 #   - 16-jacobi/distributed             (multi-worker stencil iteration, -n 5)
 #   - 17-spmv/distributed               (multi-worker sparse mat-vec gather, -n 5)
 # The 01/02/03 cells are also independently proven out-of-band by
 # `just check-mpi`; TASK-0453.09 added 07/08/15/16/17 (distinct shapes:
-# 2D tiling, data-dependent scatter, permute, iterative stencil, gather)
+# row-band matmul, data-dependent scatter, permute, iterative stencil, gather)
 # as COUNTED harness differential cells, broadening the blocking arm from
 # 3 to 8; TASK-0464 then added the two 06-separable-filter cells (the
 # row-band non-stencil shape + the FIRST w<->w-data mpi-blocking cell),

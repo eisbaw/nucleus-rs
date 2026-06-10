@@ -1,0 +1,110 @@
+// Production case study: VGA (640x480) video frame-strip 3x3 box-blur stencil.
+//
+// This file is the PRODUCTION WITNESS for TASK-0455.03. It is a
+// realistic-size instance of the same 3x3 box blur as the toy example
+// 05-stencil (16x16), scaled to a STRIP OF 32 VGA FRAMES so that
+// runtime dominates the process-startup floor.
+//
+// SIZE JUSTIFICATION (the load-bearing decision; see docs/case-study.md)
+// ---------------------------------------------------------------------
+// A SINGLE VGA frame (640x480, 307200 px) blurs in ~4.5ms wall on the
+// dev machine — but the measured nucleus-generated STARTUP FLOOR (spawn
+// + runtime init + trivial IO) is ~0.6ms, so a single frame clears the
+// floor by only ~8x, far short of the >=100x the case study must show.
+// The blur compute is sub-millisecond at VGA; the 4.5ms is dominated by
+// process spawn and 2.4MB of IO. To make COMPUTE dominate, the problem
+// must be ~25x-40x larger.
+//
+// The realistic production unit for an image pipeline is a STREAM of
+// frames, not one frame. We model that as a 32-frame strip stacked
+// vertically: H = 32 * 480 = 15360, W = 640. This is ~half a second of
+// 60fps VGA video processed as one batch — 9.83M px, 39MB per array.
+// Measured: 15360x640 runs in ~122ms wall = ~204x the 0.6ms floor
+// (single-worker naive), well past the >=100x target, and the runtime
+// now scales with problem size, not startup (sec:res-quant-time).
+//
+// Stacking frames into one tall image keeps the net LOOP-DEPTH-0 (a
+// single-shot blur over a bigger array) — which is exactly why the
+// landed symbolic gate carries it FLAT in N (see below). A frame LOOP
+// (for f in 0..32) would instead put the cross-worker transfer inside a
+// Repeat, expanding the net per iteration — the shape the gate CANNOT
+// carry at realistic counts (16-jacobi class). The strip framing is the
+// honest way to scale a single-pass stencil; the cross-frame seam rows
+// blur across the 480-row boundary, a documented, benign artifact (the
+// reference oracle blurs the identical strip, so byte-identity holds).
+//
+// It lives under docs/case-study/ (NOT under nuc-nucleus/examples/) so
+// the e2e matrix — which enumerates only nuc-nucleus/examples/<NN-name>/
+// — does NOT pick it up. The case study is exercised by its own
+// `just case-study` recipe instead (scripts/case-study-run.sh).
+//
+// WHY THIS WORKLOAD (honesty about what the landed machinery carries)
+// -------------------------------------------------------------------
+// A single-pass stencil's distributed (partition=rows) net is
+// LOOP-DEPTH-0: one Push and one Wait per shared buffer place, fired
+// once, NOT inside an iteration Repeat. That is exactly the subclass
+// the symbolic soundness gate (TASK-0455.01, landed) proves bounded +
+// deadlock-free FLAT IN N — the gate's peak-occupancy argument runs on
+// the rolled ACFG and never expands the net. So this workload compiles
+// at VGA size in milliseconds with a few MB of gate RSS, where the
+// expanded-replay gate would have demanded tens of GB.
+//
+// What the landed machinery does NOT carry at realistic N, and which
+// is therefore deliberately NOT this case study:
+//   - 16-jacobi (loop-carried / iterative stencil): each time-step
+//     Repeat carries a cross-worker halo transfer, so the net expands
+//     per iteration — still gated by the expanded replay. Realistic
+//     iteration counts OOM. See sec:fw-quant.
+//   - 09-producer-consumer / 13-cnn (pipelined): pre-marked buffers
+//     inside a Repeat — also fall back to expansion.
+// Picking the single-pass stencil is an HONEST choice of a workload
+// the gate actually carries, stated as such (TASK-0455.01 final summary).
+//
+// NUMERIC CHOICE: i32 with wrapping_add + truncating integer division,
+// identical to 05-stencil. Integer arithmetic is bit-deterministic by
+// language definition (PRD §10.1), which the cross-backend bit-identical
+// differential and the independent reference oracle both require.
+
+const H : usize = 15360;    // 32 VGA frames stacked (32 * 480); 15360 * 640 * 4 = 39_321_600 bytes
+const W : usize = 640;      // image width (VGA)
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1;
+// the dataflow writes each interior img_out[y][x] exactly once. Each
+// array is 15360*640 = 9_830_400 i32 = 39_321_600 bytes (~39 MB).
+data img_in  : i32[H][W];
+data img_out : i32[H][W];
+
+// Pure compute kernel: reorderable, deduplicable, eliminable. The
+// scalar nine-argument signature matches the 3x3 access pattern below
+// without aggregate-type machinery (same shape as 05-stencil's blur3).
+kernel blur3 : (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 pure;
+
+// I/O kernels. Effectful: ordering preserved within a basic block,
+// never duplicated. Aggregate-typed in Nuc; Rust side uses Vec<i32>.
+kernel load_image : ()          -> i32[H][W] effectful;
+kernel save_image : (i32[H][W]) -> ()         effectful;
+
+// Dataflow. The for-loop iteration variables (y, x) are the handles a
+// schedule references. blur3's nine-neighbour access on img_in is what
+// the compiler reads to infer the halo region (offsets -1,0,+1 on each
+// axis) when a schedule distributes the work across row bands.
+//
+// Boundary handling: the loop walks y in 1..H-1 and x in 1..W-1 — the
+// outermost ring of pixels is NOT written and stays at its
+// single-assignment default (0). Identical policy to 05-stencil; the
+// reference oracle (docs/case-study/reference/) matches it exactly.
+// (The 31 inter-frame seam rows are blurred like any interior row — a
+// benign artifact the reference reproduces, so byte-identity holds.)
+
+img_in <-- load_image();
+
+for y : 1 .. H-1 {
+for x : 1 .. W-1 {
+    img_out[y][x] <-- blur3(
+        img_in[y-1][x-1], img_in[y-1][x], img_in[y-1][x+1],
+        img_in[y  ][x-1], img_in[y  ][x], img_in[y  ][x+1],
+        img_in[y+1][x-1], img_in[y+1][x], img_in[y+1][x+1]
+    );
+}}
+
+save_image(img_out);

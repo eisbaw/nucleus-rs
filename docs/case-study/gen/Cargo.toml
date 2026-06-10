@@ -1,0 +1,35 @@
+# Deterministic input-frame generator for the VGA stencil case study.
+#
+# CODE-INDEPENDENT of Nucleus (same policy §2 rationale as the reference
+# oracle): `std` only, no Nucleus crate, no Nuc-generated source, no
+# `[workspace]` parent link. It generates the committed `input.bin` so
+# the fixture is reproducible from source — re-running it on any machine
+# yields byte-identical bytes (deterministic by construction; no RNG, no
+# clock, no HashMap iteration).
+#
+# Regenerate `input.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path docs/case-study/gen/Cargo.toml -- \
+#     --out docs/case-study/input.bin
+#
+# This crate is kept SEPARATE from the reference oracle so a bug in the
+# generator cannot share code with the reference (the generator decides
+# the pixel values; the reference decides the expected blur of them).
+
+[package]
+name        = "vga-stencil-gen"
+version     = "0.1.0"
+edition     = "2021"
+description = "Deterministic VGA input-frame generator for the stencil case study."
+publish     = false
+
+[workspace]
+# Empty: intentionally standalone.
+
+[[bin]]
+name = "vga-stencil-gen"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"

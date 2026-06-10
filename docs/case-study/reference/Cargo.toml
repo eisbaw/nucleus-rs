@@ -1,0 +1,38 @@
+# Standalone reference oracle for the VGA stencil production case study.
+#
+# CODE-INDEPENDENT of Nucleus per docs/reference-impl-policy.md §2: no
+# dependency on the nucleus-compiler crate, on any backend crate, or on
+# any Nuc-generated source. `std` only. Lives OUTSIDE the nucleus
+# workspace (no `[workspace]` parent link). The case-study runner runs
+# `just check-reference-independence`'s policy §2 scan over this manifest
+# before trusting the differential.
+#
+# Regenerate `reference.bin` with:
+#
+#   cargo run --release \
+#     --manifest-path docs/case-study/reference/Cargo.toml -- \
+#     --in    docs/case-study/input.bin \
+#     --out   docs/case-study/reference.bin
+#
+# The crate is excluded from the parent `nucleus/` workspace by living
+# under docs/ (which the workspace glob does not include); the empty
+# `[workspace]` table below makes that intent defensive against future
+# workspace globs.
+
+[package]
+name        = "vga-stencil-reference"
+version     = "0.1.0"
+edition     = "2021"
+description = "Hand-written reference oracle for the VGA stencil case study."
+publish     = false
+
+[workspace]
+# Empty: this crate is intentionally standalone. See file header.
+
+[[bin]]
+name = "vga-stencil-reference"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism: keep optimisations on but make panic behaviour explicit.
+panic = "abort"

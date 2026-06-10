@@ -1,0 +1,75 @@
+// Case study schedule #2: distributed — 4 compute workers, row-band
+// partition, async input streaming, sync output write-back.
+//
+// This is the PRODUCTION DECOMPOSITION the case study witnesses. The
+// outer y-loop is partitioned across 4 compute workers as contiguous
+// row bands (partition=rows); the host owns I/O and broadcasts/gathers.
+//
+// WHY THE GATE CARRIES THIS AT VGA SIZE (the keystone point)
+// ----------------------------------------------------------
+// A single-pass stencil's cross-worker transfers (img_in host->workers,
+// img_out workers->host) are LOOP-DEPTH-0: one Push + one Wait per
+// shared buffer place, fired once, NOT inside an iteration Repeat.
+// That is the single-shot matched-pair subclass the symbolic soundness
+// gate (TASK-0455.01) proves bounded + deadlock-free FLAT IN N (peak
+// occupancy = 1 <= cap, on the ROLLED ACFG, without expanding the net).
+// So this schedule gates at VGA size in a few MB of RSS, where the
+// expanded-replay gate projected ~125GB at production sizes.
+//
+// CAPABILITY SURFACE (which backends carry this cell)
+// ---------------------------------------------------
+// `transfer img_in : async, buffer=2, notify=event` requires async +
+// buffer + event notification. Backends that DO satisfy it:
+//   - pthreads-async  (tier-1, shared-memory threads)        [runner arm 1]
+//   - mpi-nonblocking (tier-2, MPI_Ibsend/Imrecv, .#mpi)     [runner arm 2]
+//   - mp-tcp-event / mp-uds-event (tier-1, event reactors)
+// Backends that REJECT it at the capability check (sync / single-buffer
+// / no-event): pthreads-sync, mp-tcp-bufsync, mp-tcp-poll, openmp-rs,
+// mpi-blocking. The rejection is loud and pre-codegen, by design (the
+// schedule names a capability the backend's capabilities.toml does not
+// list). The runner picks pthreads-async + mpi-nonblocking — one
+// tier-1 and one tier-2 arm — and asserts both are byte-identical to
+// the independent reference oracle.
+//
+// ROW-BAND DIVISIBILITY (load-bearing math)
+// -----------------------------------------
+// The compute loop walks y in 1..H-1 = 1..15359 (length 15358). The
+// partition_rows pass splits 15358 rows across 4 workers with the
+// numpy.array_split floor-with-spillover remainder policy (TASK-0262):
+// 15358 = 4*3839 + 2, so the first 2 workers get 3840 rows and the last
+// 2 get 3839 (bands of length 3840/3840/3839/3839). halo_y = 1
+// (inferred from blur3's 3x3 access on img_in) extends each band by one
+// row on each interior side, so each worker's img_in tile is its band
+// + halo.
+//
+// WIRE NARROWING (the transfer-volume story; TASK-0453.22, landed)
+// ---------------------------------------------------------------
+// Both edges are contiguous row spans (RecvBasis::Flat), so the wire
+// flip narrows them from the whole ~39MB array to each worker's band:
+// img_in host->workers transmits only the band+halo, img_out
+// workers->host transmits only the interior band. The runner records
+// the measured per-edge byte volume. Per-worker MEMORY is still
+// full-shaped (the receiver allocates the whole [N] dest and pastes the
+// band in) — the honest footprint residual, filed as TASK-0455.14.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0, w1, w2, w3 };
+
+    place load_image on host;
+    place save_image on host;
+    place blur3      on { w0, w1, w2, w3 };
+
+    // Outer y-loop: row-band partition across the 4 compute workers.
+    // The halo (one row each side) is inferred from blur3's access
+    // pattern, NOT declared in the schedule (PRD §6.3.3).
+    loop y : partition=rows;
+
+    // host -> workers: pipelined async streaming, two row-bands in
+    // flight. Event-driven notification — a sync-only backend rejects
+    // this schedule at compile time, by design.
+    transfer img_in  : async, buffer=2, notify=event;
+
+    // workers -> host: blocking write-back. Host waits for all workers
+    // to finish before save_image runs.
+    transfer img_out : sync;
+}
