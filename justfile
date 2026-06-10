@@ -1225,12 +1225,10 @@ check-mega-files:
     printf '%s\n' \
         'nucleus/nucleus-compiler/src/passes/reuse_inference.rs' \
         'nucleus/nucleus-compiler/src/sched/lower.rs' \
-        'nucleus/nucleus-compiler/src/passes/halo_inference.rs' \
         'nucleus/nucleus-compiler/src/algo/lower.rs' \
         'nucleus/nucleus-compiler/src/passes/host_data_relay_inject.rs' \
         'nucleus/nucleus-compiler/src/sched/ir.rs' \
         'nucleus/backends/pthreads-async/src/multi_worker.rs' \
-        'nucleus/e2e/src/main.rs' \
         'nucleus/e2e/src/tests.rs' \
         'nucleus/nucleus-compiler/src/event.rs' \
         | sort > $allow_f; \

@@ -394,7 +394,7 @@ impl<'a> Plan<'a> {
         // NUC_NONDET_TEST per-process nonce here, TASK-0145) was
         // relocated harness-side in TASK-0157: the e2e determinism
         // harness post-processes ONE of its two emitted trees when
-        // NUC_NONDET_TEST=1. See nucleus/e2e/src/main.rs
+        // NUC_NONDET_TEST=1. See nucleus/e2e/src/determinism.rs
         // `maybe_perturb_for_nondet_test`. Do NOT reintroduce an env
         // read or self-corruption branch on the codegen critical path.
 
