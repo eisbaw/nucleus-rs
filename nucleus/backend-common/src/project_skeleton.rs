@@ -37,9 +37,36 @@
 //!   multi-process variants) for backends that emit N binaries under
 //!   `src/bin/<name>.rs` and orchestrate them via a launcher script
 //!   (`mp-tcp-bufsync`, `mp-tcp-event`). The Cargo.toml takes an
-//!   optional extra-dependencies block (mp-tcp-event passes `mio =
+//!   optional [`CargoDependencies`] block (mp-tcp-event passes `mio =
 //!   ...`); the run.sh takes per-backend SO_BUF commentary as a
 //!   parameter.
+//!
+//! # The [`CargoDependencies`] slot (TASK-0288)
+//!
+//! Both `render_cargo_toml` entry points take a typed
+//! [`CargoDependencies`] rather than the original raw
+//! `Option<&str>` textual passthrough (TASK-0257 forward-carried
+//! P2.1 hardening). The typed slot models exactly the real caller
+//! usage: an OPTIONAL single `[dependencies]` section whose body is
+//! verbatim TOML text. Both the renderer and the type own the
+//! `[dependencies]` header — the caller supplies ONLY the body
+//! (dependency entries plus any `#` comment lines), never the
+//! section header itself.
+//!
+//! Why a newtype over the body, not a `&[(name, spec)]` map: the
+//! real bodies interleave `#` comment lines with the entries
+//! (mp-tcp-event / mp-uds-event explain their `mio` feature choices
+//! inline; see `MIO_DEPENDENCY_BLOCK`). A structured key/value map
+//! would not round-trip those comments byte-for-byte, and modelling
+//! arbitrary TOML value syntax (`mio = { version = ..., features =
+//! [...] }`) is speculative generality the two-comment-plus-one-entry
+//! real usage does not justify. The newtype keeps the body verbatim
+//! while making the *section* typed: a future caller cannot silently
+//! jam a `[dev-dependencies]` / `[build-dependencies]` / multi-section
+//! TOML string through a parameter that the type system says is the
+//! body of a single `[dependencies]` section. If a real second
+//! section type ever materialises, extend [`CargoDependencies`] then
+//! (a typed `dev: Option<...>` field), not pre-emptively.
 //!
 //! # Header text
 //!
@@ -54,23 +81,125 @@
 //! to each other modulo the per-cell scratch path, which the cross-
 //! backend tests already strip).
 
+/// Typed slot for the optional `[dependencies]` section a generated
+/// Cargo.toml may carry (TASK-0288 — replaces the original raw
+/// `Option<&str>` textual passthrough that TASK-0257 P2.1 flagged).
+///
+/// # What this models — and what it deliberately does NOT
+///
+/// A `CargoDependencies` is the BODY of a single, optional
+/// `[dependencies]` section: the dependency entries plus any `#`
+/// comment lines that explain them. The `[dependencies]` header
+/// itself is owned by the renderer, never by the caller's string.
+/// [`CargoDependencies::none`] emits no section at all (byte-stable
+/// shape for the dependency-free backends); [`CargoDependencies::
+/// section_body`] interpolates the supplied verbatim body inside one
+/// `[dependencies]` section.
+///
+/// It does NOT model `[dev-dependencies]`, `[build-dependencies]`,
+/// target-specific dependency tables, or multiple sections. The
+/// original `Option<&str>` parameter — named "dependencies" but in
+/// fact a free-form TOML passthrough — silently let a caller jam any
+/// of those through; the whole point of this type is that the type
+/// system now rejects that. No real caller needs a second section
+/// today (verified across all nine call sites: mpi-blocking /
+/// mpi-nonblocking pass `mpi = "0.8"`, openmp-rs passes `rayon =
+/// "1"`, mp-tcp-event / mp-uds-event pass a commented `mio` block,
+/// every other arm passes [`none`](CargoDependencies::none)). When a
+/// real second section type materialises, add a typed field for it
+/// here — do not reach back to the free-form string.
+///
+/// # Body verbatim-ness
+///
+/// The body is stored verbatim (comments and all) precisely because
+/// the real `mio` bodies interleave explanatory `#` comments with the
+/// `mio = { ... }` entry. A structured key/value map would not
+/// round-trip those comments byte-for-byte; preserving the emitted
+/// Cargo.toml byte-for-byte across this lift is the load-bearing
+/// invariant (TASK-0288 AC#2), so the body stays an opaque verbatim
+/// string. Trailing-newline normalisation (in the private
+/// `render_into` helper) means a caller may supply the body with or
+/// without a trailing `\n` and get the same bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CargoDependencies<'a> {
+    /// `None` => no `[dependencies]` section is emitted. `Some(body)`
+    /// => exactly one `[dependencies]` section with `body` as its
+    /// verbatim contents.
+    section_body: Option<&'a str>,
+}
+
+impl<'a> CargoDependencies<'a> {
+    /// No `[dependencies]` section. The byte-stable shape every
+    /// dependency-free backend arm relies on (pthreads-sync,
+    /// pthreads-async, the single-worker arms of openmp-rs / the
+    /// mp-* backends). Equivalent to the original `extra_dependencies
+    /// = None`.
+    pub const fn none() -> Self {
+        Self { section_body: None }
+    }
+
+    /// One `[dependencies]` section with `body` as its verbatim
+    /// contents (entries plus any leading `#` comment lines). The
+    /// caller MUST NOT include the `[dependencies]` header line —
+    /// the renderer emits it. Equivalent to the original
+    /// `extra_dependencies = Some(body)`.
+    pub const fn section_body(body: &'a str) -> Self {
+        Self {
+            section_body: Some(body),
+        }
+    }
+
+    /// Interpolate the `[dependencies]` section (if any) into `s`,
+    /// which must already end at the point a `[dependencies]` section
+    /// would begin (i.e. just after the `[workspace]` block's
+    /// trailing blank line). Shared by both
+    /// [`single_binary::render_cargo_toml`] and
+    /// [`multi_binary::render_cargo_toml`] so the section shape —
+    /// header, verbatim body, and the exactly-one-blank-line spacing
+    /// before whatever follows — is byte-identical across the two
+    /// project layouts (it always was; this just makes the shared
+    /// shape a single source of truth rather than two copies).
+    ///
+    /// Trailing-newline normalisation: the body may arrive with or
+    /// without a trailing `\n`; either way the result ends with
+    /// exactly one blank line (`"\n\n"`) so the section that follows
+    /// (`[[bin]]`) starts at a byte-stable offset.
+    fn render_into(&self, s: &mut String) {
+        let Some(body) = self.section_body else {
+            return;
+        };
+        s.push_str("[dependencies]\n");
+        s.push_str(body);
+        if !s.ends_with("\n\n") {
+            if !s.ends_with('\n') {
+                s.push('\n');
+            }
+            s.push('\n');
+        }
+    }
+}
+
 /// Project-skeleton renderers for the SINGLE-BINARY tier-1 backends
 /// (`pthreads-sync`, `pthreads-async`). Both emit one Cargo project
 /// with one `[[bin]]` target named `nuc-generated`; the only
 /// per-backend variation is the `main.rs` body, not the project
 /// skeleton, so the templates are shared verbatim.
 pub mod single_binary {
+    use super::CargoDependencies;
+
     /// Emit the standalone Cargo.toml the generated project ships.
     ///
     /// Shared by pthreads-sync + pthreads-async + openmp-rs (TASK-0246
     /// for the first two; TASK-0044.01.01 cycle 196 added the
-    /// `extra_dependencies` parameter for openmp-rs's multi-worker arm
-    /// which needs `rayon = "1"` in the emitted `[dependencies]`
-    /// section). The `nuc-generated` binary name is deliberately
-    /// backend-agnostic: the choice of single-binary backend only
-    /// changes per-loop codegen, not the project skeleton.
+    /// `deps` parameter for openmp-rs's multi-worker arm which needs
+    /// `rayon = "1"` in the emitted `[dependencies]` section; TASK-0288
+    /// replaced that raw `Option<&str>` with the typed
+    /// [`CargoDependencies`] slot). The `nuc-generated` binary name is
+    /// deliberately backend-agnostic: the choice of single-binary
+    /// backend only changes per-loop codegen, not the project
+    /// skeleton.
     ///
-    /// `extra_dependencies = None` (the byte-stable original shape)
+    /// [`CargoDependencies::none`] (the byte-stable original shape)
     /// emits NO `[dependencies]` section — used by pthreads-sync,
     /// pthreads-async, and openmp-rs's SINGLE-worker arm (every
     /// single-worker emit must remain byte-identical across the three
@@ -79,12 +208,14 @@ pub mod single_binary {
     /// single_worker_empty_eventlist_emits_byte_identical_to_pthreads_sync`
     /// pins that invariant).
     ///
-    /// `extra_dependencies = Some(deps)` interpolates `deps` into a
-    /// `[dependencies]` section between the `[workspace]` block and
-    /// the `[[bin]]` target (same shape as
+    /// [`CargoDependencies::section_body`] interpolates the verbatim
+    /// body into a `[dependencies]` section between the `[workspace]`
+    /// block and the `[[bin]]` target (same shared private
+    /// `render_into` path
     /// [`super::multi_binary::render_cargo_toml`] uses). Used by
-    /// openmp-rs's MULTI-worker arm to emit `rayon = "1"`.
-    pub fn render_cargo_toml(extra_dependencies: Option<&str>) -> String {
+    /// openmp-rs's MULTI-worker arm to emit `rayon = "1"` and by
+    /// mpi-blocking / mpi-nonblocking to emit `mpi = "0.8"`.
+    pub fn render_cargo_toml(deps: CargoDependencies<'_>) -> String {
         let mut s = String::from(
             "# Generated by the nucleus pre-compiler. Do not edit; rerun \
              `nucleus build` to regenerate.\n\
@@ -98,20 +229,11 @@ pub mod single_binary {
              # Empty: this crate is standalone, not part of any parent workspace.\n\
              \n",
         );
-        if let Some(deps) = extra_dependencies {
-            s.push_str("[dependencies]\n");
-            s.push_str(deps);
-            // Trailing-newline normalisation: mirror multi_binary's
-            // contract so callers may pass `deps` with or without a
-            // trailing newline. Exactly one blank line before
-            // `[[bin]]` is the byte-stable shape.
-            if !s.ends_with("\n\n") {
-                if !s.ends_with('\n') {
-                    s.push('\n');
-                }
-                s.push('\n');
-            }
-        }
+        // Optional `[dependencies]` section via the shared typed slot
+        // (TASK-0288). Byte-identical to the prior inline
+        // interpolation: same header, verbatim body, and exactly-one-
+        // blank-line normalisation before `[[bin]]`.
+        deps.render_into(&mut s);
         s.push_str(
             "[[bin]]\n\
              name = \"nuc-generated\"\n\
@@ -168,22 +290,26 @@ pub mod single_binary {
 /// backend differential against the independent `reference.bin`
 /// oracle still bites.
 pub mod multi_binary {
+    use super::CargoDependencies;
     use std::fmt::Write as _;
 
     /// Emit the Cargo.toml the generated multi-binary project ships.
     ///
     /// One `[[bin]]` per `bin_names` entry, pointing at `src/bin/
-    /// <name>.rs`. `extra_dependencies = Some(deps)` interpolates the
-    /// supplied lines into a `[dependencies]` section before the
-    /// `[[bin]]` targets — used by `mp-tcp-event` to pull in `mio`;
-    /// `mp-tcp-bufsync` passes `None` (no external deps).
+    /// <name>.rs`. [`CargoDependencies::section_body`] interpolates
+    /// the supplied verbatim body into a `[dependencies]` section
+    /// before the `[[bin]]` targets — used by `mp-tcp-event` /
+    /// `mp-uds-event` to pull in `mio`; `mp-tcp-bufsync` / `mp-tcp-poll`
+    /// pass [`CargoDependencies::none`] (no external deps). TASK-0288
+    /// replaced the prior raw `Option<&str>` passthrough with the
+    /// typed slot.
     ///
     /// Header: neutral `# Generated by the nucleus pre-compiler.`
     /// (TASK-0257 follows the TASK-0246 single_binary precedent —
     /// per-backend provenance is recorded in the per-worker `.rs`
     /// file headers via each backend's `render_worker_program`, not
     /// the project skeleton).
-    pub fn render_cargo_toml(bin_names: &[String], extra_dependencies: Option<&str>) -> String {
+    pub fn render_cargo_toml(bin_names: &[String], deps: CargoDependencies<'_>) -> String {
         let mut s = String::from(
             "# Generated by the nucleus pre-compiler. Do not edit; rerun \
              `nucleus build` to regenerate.\n\
@@ -197,20 +323,11 @@ pub mod multi_binary {
              # Empty: standalone, not part of any parent workspace.\n\
              \n",
         );
-        if let Some(deps) = extra_dependencies {
-            s.push_str("[dependencies]\n");
-            s.push_str(deps);
-            // Trailing newlines: callers may supply `deps` with or
-            // without a trailing `\n`. Ensure exactly one blank line
-            // before the [[bin]] targets so the post-deps spacing is
-            // byte-stable across callers.
-            if !s.ends_with("\n\n") {
-                if !s.ends_with('\n') {
-                    s.push('\n');
-                }
-                s.push('\n');
-            }
-        }
+        // Optional `[dependencies]` section via the shared typed slot
+        // (TASK-0288). Byte-identical to the prior inline
+        // interpolation: same header, verbatim body, and exactly-one-
+        // blank-line normalisation before the `[[bin]]` targets.
+        deps.render_into(&mut s);
         for b in bin_names {
             // Each worker is its own binary target. `src/bin/<name>.rs`
             // is the conventional auto-discovered location but we
@@ -389,6 +506,7 @@ pub mod multi_binary {
 #[cfg(test)]
 mod tests {
     use super::single_binary::{render_cargo_toml, render_run_sh};
+    use super::CargoDependencies;
 
     /// The Cargo.toml header is the FIRST line emitted; the
     /// cross-backend byte-identical invariants
@@ -401,7 +519,7 @@ mod tests {
     /// below pins the new form.
     #[test]
     fn cargo_toml_header_byte_stable() {
-        let s = render_cargo_toml(None);
+        let s = render_cargo_toml(CargoDependencies::none());
         assert!(
             s.starts_with("# Generated by the nucleus pre-compiler."),
             "Cargo.toml header drifted: {:?}",
@@ -427,27 +545,27 @@ mod tests {
     /// by post-processing the string.
     #[test]
     fn cargo_toml_emits_single_bin_target() {
-        let s = render_cargo_toml(None);
+        let s = render_cargo_toml(CargoDependencies::none());
         assert_eq!(s.matches("[[bin]]").count(), 1);
         assert!(s.contains("name = \"nuc-generated\""));
         assert!(s.contains("path = \"src/main.rs\""));
     }
 
-    /// TASK-0044.01.01 cycle 196: `extra_dependencies = None` MUST
+    /// TASK-0044.01.01 cycle 196: [`CargoDependencies::none`] MUST
     /// NOT emit a `[dependencies]` block. This is the byte-stable
     /// shape pthreads-sync, pthreads-async, and openmp-rs's
     /// single-worker arm all rely on (the cross-backend single-worker
     /// differential is anchored on this byte equality).
     #[test]
     fn cargo_toml_omits_dependencies_when_none() {
-        let s = render_cargo_toml(None);
+        let s = render_cargo_toml(CargoDependencies::none());
         assert!(
             !s.contains("[dependencies]"),
-            "[dependencies] section MUST NOT appear when extra_dependencies is None; got:\n{s}"
+            "[dependencies] section MUST NOT appear for CargoDependencies::none(); got:\n{s}"
         );
     }
 
-    /// TASK-0044.01.01 cycle 196: `extra_dependencies = Some(...)`
+    /// TASK-0044.01.01 cycle 196: [`CargoDependencies::section_body`]
     /// interpolates the supplied content as a `[dependencies]` block
     /// between `[workspace]` and `[[bin]]`. This is the openmp-rs
     /// multi-worker shape (pulls in `rayon`). The block MUST appear
@@ -456,10 +574,10 @@ mod tests {
     #[test]
     fn cargo_toml_emits_dependencies_when_some() {
         let deps = "rayon = \"1\"\n";
-        let s = render_cargo_toml(Some(deps));
+        let s = render_cargo_toml(CargoDependencies::section_body(deps));
         assert!(
             s.contains("[dependencies]\n"),
-            "[dependencies] section MUST appear when extra_dependencies is Some; got:\n{s}"
+            "[dependencies] section MUST appear for CargoDependencies::section_body; got:\n{s}"
         );
         assert!(
             s.contains("rayon = \"1\""),
@@ -473,15 +591,16 @@ mod tests {
         );
     }
 
-    /// `extra_dependencies = Some(...)` accepts a `deps` string with
+    /// [`CargoDependencies::section_body`] accepts a body string with
     /// OR without a trailing newline. The post-deps spacing is
     /// byte-stable across callers (exactly one blank line before
-    /// `[[bin]]`). Mirrors `multi_binary::render_cargo_toml`'s
-    /// trailing-newline normalisation contract.
+    /// `[[bin]]`). The normalisation lives in the private
+    /// `CargoDependencies::render_into` helper, shared with
+    /// `multi_binary::render_cargo_toml`.
     #[test]
     fn cargo_toml_normalises_trailing_newline_on_extra_deps() {
-        let with_nl = render_cargo_toml(Some("rayon = \"1\"\n"));
-        let without_nl = render_cargo_toml(Some("rayon = \"1\""));
+        let with_nl = render_cargo_toml(CargoDependencies::section_body("rayon = \"1\"\n"));
+        let without_nl = render_cargo_toml(CargoDependencies::section_body("rayon = \"1\""));
         assert_eq!(
             with_nl, without_nl,
             "trailing-newline on deps MUST be normalised away (byte-stable post-deps shape)"
@@ -492,13 +611,17 @@ mod tests {
 #[cfg(test)]
 mod multi_binary_tests {
     use super::multi_binary::{render_cargo_toml, render_run_sh_multi, render_run_sh_single};
+    use super::CargoDependencies;
 
     /// Cargo.toml header is the FIRST line and the load-bearing
     /// regression canary. Same neutral form single_binary uses
     /// (TASK-0257 follows the TASK-0246 precedent).
     #[test]
     fn cargo_toml_header_byte_stable() {
-        let s = render_cargo_toml(&[String::from("host"), String::from("w0")], None);
+        let s = render_cargo_toml(
+            &[String::from("host"), String::from("w0")],
+            CargoDependencies::none(),
+        );
         assert!(
             s.starts_with("# Generated by the nucleus pre-compiler."),
             "multi_binary Cargo.toml header drifted: {:?}",
@@ -517,7 +640,7 @@ mod multi_binary_tests {
             String::from("w1"),
             String::from("w2"),
         ];
-        let s = render_cargo_toml(&names, None);
+        let s = render_cargo_toml(&names, CargoDependencies::none());
         assert_eq!(s.matches("[[bin]]").count(), 4);
         for n in &names {
             assert!(
@@ -532,27 +655,30 @@ mod multi_binary_tests {
         assert!(s.contains("[profile.release]\npanic = \"abort\"\n"));
     }
 
-    /// `extra_dependencies = None` MUST NOT emit a `[dependencies]`
+    /// [`CargoDependencies::none`] MUST NOT emit a `[dependencies]`
     /// block. This is the mp-tcp-bufsync shape (no external crates).
     #[test]
     fn cargo_toml_omits_dependencies_when_none() {
-        let s = render_cargo_toml(&[String::from("nuc-generated")], None);
+        let s = render_cargo_toml(&[String::from("nuc-generated")], CargoDependencies::none());
         assert!(
             !s.contains("[dependencies]"),
-            "[dependencies] section MUST NOT appear when extra_dependencies is None; got:\n{s}"
+            "[dependencies] section MUST NOT appear for CargoDependencies::none(); got:\n{s}"
         );
     }
 
-    /// `extra_dependencies = Some(...)` emits a `[dependencies]`
+    /// [`CargoDependencies::section_body`] emits a `[dependencies]`
     /// block with the supplied content, before the `[[bin]]` targets.
     /// This is the mp-tcp-event shape (pulls in `mio`).
     #[test]
     fn cargo_toml_emits_dependencies_when_some() {
         let deps = "mio = { version = \"0.8\", default-features = false, features = [\"os-poll\", \"net\"] }\n";
-        let s = render_cargo_toml(&[String::from("nuc-generated")], Some(deps));
+        let s = render_cargo_toml(
+            &[String::from("nuc-generated")],
+            CargoDependencies::section_body(deps),
+        );
         assert!(
             s.contains("[dependencies]\n"),
-            "[dependencies] section MUST appear when extra_dependencies is Some; got:\n{s}"
+            "[dependencies] section MUST appear for CargoDependencies::section_body; got:\n{s}"
         );
         assert!(
             s.contains("mio = { version = \"0.8\""),
@@ -679,5 +805,98 @@ mod multi_binary_tests {
         assert!(s.contains("NUC_RENDEZVOUS_DIR=\"$here/.nuc-rendezvous-$$\""));
         assert!(s.contains("trap 'rm -rf \"$NUC_RENDEZVOUS_DIR\"' EXIT"));
         assert!(s.contains("export NUC_RENDEZVOUS_DIR"));
+    }
+}
+
+/// TASK-0288: unit tests for the typed [`CargoDependencies`] slot
+/// itself — the constructors, the verbatim-body contract, and the
+/// renderer-owns-the-header invariant the type exists to enforce.
+/// These exercise both `render_cargo_toml` entry points so the typed
+/// shape is pinned independent of which project layout consumes it.
+#[cfg(test)]
+mod cargo_dependencies_tests {
+    use super::{multi_binary, single_binary, CargoDependencies};
+
+    /// `Default` and `none()` agree (both = no section). Pins the
+    /// derive so a future field addition cannot silently make
+    /// `Default` emit a section.
+    #[test]
+    fn default_equals_none() {
+        assert_eq!(CargoDependencies::default(), CargoDependencies::none());
+    }
+
+    /// The header is owned by the RENDERER, not the caller. A real
+    /// `mio` body (comment lines + one `mio = { ... }` entry) is
+    /// interpolated verbatim, and the body the caller supplied must
+    /// NOT itself contain a `[dependencies]` header line — i.e. the
+    /// emitted Cargo.toml has exactly ONE `[dependencies]` section
+    /// even though the body is a multi-line comment-bearing block.
+    /// This is the invariant the typed slot exists to make
+    /// impossible to violate by jamming a second section header
+    /// through a free-form string.
+    #[test]
+    fn section_body_is_interpolated_verbatim_under_one_owned_header() {
+        let mio_body = "# explanatory comment line\n\
+                        mio = { version = \"0.8\", default-features = false, features = [\"os-poll\", \"net\"] }\n";
+        let s = single_binary::render_cargo_toml(CargoDependencies::section_body(mio_body));
+        // Exactly one [dependencies] header — the renderer's, never
+        // the caller's. The verbatim comment + entry are both present.
+        assert_eq!(
+            s.matches("[dependencies]").count(),
+            1,
+            "renderer MUST emit exactly one [dependencies] header; got:\n{s}"
+        );
+        assert!(s.contains("# explanatory comment line\n"));
+        assert!(s.contains("mio = { version = \"0.8\""));
+    }
+
+    /// AC#3: the typed shape is the single source of truth for the
+    /// `[dependencies]` section across BOTH project layouts. The
+    /// section body (header + verbatim contents + the one-blank-line
+    /// spacing that follows) emitted by `single_binary` and
+    /// `multi_binary` for the SAME [`CargoDependencies`] is
+    /// byte-identical — they share the private `render_into` helper.
+    /// Were a second typed section ever added (e.g. a `dev:` field),
+    /// this cross-layout equality is the regression that guards it.
+    #[test]
+    fn dependencies_section_is_byte_identical_across_both_layouts() {
+        let body = "rayon = \"1\"\n";
+        let single = single_binary::render_cargo_toml(CargoDependencies::section_body(body));
+        let multi = multi_binary::render_cargo_toml(
+            &[String::from("nuc-generated")],
+            CargoDependencies::section_body(body),
+        );
+        // Slice each emit from the `[dependencies]` header to just
+        // before its first `[[bin]]` target; those slices are the
+        // shared section and MUST be byte-equal.
+        let dep_slice = |s: &str| -> String {
+            let start = s.find("[dependencies]").expect("[dependencies] present");
+            let end = s.find("[[bin]]").expect("[[bin]] present");
+            s[start..end].to_string()
+        };
+        assert_eq!(
+            dep_slice(&single),
+            dep_slice(&multi),
+            "the [dependencies] section MUST be byte-identical across single_binary + multi_binary \
+             (both share CargoDependencies::render_into)"
+        );
+    }
+
+    /// Trailing-newline normalisation lives in the typed slot and so
+    /// is shared by both layouts: a body with or without a trailing
+    /// `\n` yields byte-identical output in EACH layout. (The
+    /// single_binary copy of this is in `mod tests`; this pins the
+    /// multi_binary side too, closing the silent-sibling gap.)
+    #[test]
+    fn trailing_newline_normalised_in_multi_binary_too() {
+        let names = [String::from("nuc-generated")];
+        let with_nl =
+            multi_binary::render_cargo_toml(&names, CargoDependencies::section_body("rayon = \"1\"\n"));
+        let without_nl =
+            multi_binary::render_cargo_toml(&names, CargoDependencies::section_body("rayon = \"1\""));
+        assert_eq!(
+            with_nl, without_nl,
+            "trailing-newline on the body MUST be normalised away in multi_binary too"
+        );
     }
 }

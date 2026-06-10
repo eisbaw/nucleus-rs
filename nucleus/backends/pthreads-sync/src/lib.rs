@@ -96,6 +96,7 @@ use nucleus_compiler::sidecar::NameSidecar;
 // live in backend-common — every backend (this one, pthreads-async,
 // mp-tcp-bufsync) consumes the SAME implementation, no drift.
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
+use backend_common::project_skeleton::CargoDependencies;
 // Re-export the codegen-time error type so downstream callers (the
 // driver, tests, other backends that delegate to this crate's
 // single-worker emitter) continue to spell it `pthreads_sync::
@@ -204,11 +205,12 @@ pub fn emit(
     let run_sh = out_dir.join("run.sh");
 
     // ---- Render Cargo.toml ----
-    // `extra_dependencies = None` keeps the emitted Cargo.toml
+    // `CargoDependencies::none()` keeps the emitted Cargo.toml
     // byte-identical to its pre-cycle-196 shape (TASK-0044.01.01
-    // added the parameter for openmp-rs's multi-worker `rayon` dep;
-    // pthreads-sync has no extra dep).
-    write_file(&cargo_toml, &render_cargo_toml(None))?;
+    // added the parameter for openmp-rs's multi-worker `rayon` dep,
+    // TASK-0288 made it the typed slot; pthreads-sync has no extra
+    // dep).
+    write_file(&cargo_toml, &render_cargo_toml(CargoDependencies::none()))?;
 
     // ---- Copy kernels.rs verbatim ----
     write_file(&kernels_rs, &kernels_src)?;

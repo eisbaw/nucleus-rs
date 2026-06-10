@@ -17,7 +17,7 @@
 //!   `backend_common::single_worker_main::render_single_worker_main` plus the SHARED
 //!   `backend_common::project_skeleton::single_binary::
 //!   {render_cargo_toml, render_run_sh}` with
-//!   `extra_dependencies = None`, so the emitted artefact is
+//!   `CargoDependencies::none()`, so the emitted artefact is
 //!   BYTE-IDENTICAL to pthreads-sync's / pthreads-async's single-worker
 //!   output for any naive schedule. The cross-backend single-worker
 //!   differential invariant holds by construction.
@@ -27,7 +27,8 @@
 //!   `std::thread::spawn` + `handle.join()` to `rayon::scope` +
 //!   `s.spawn(move |_| ...)`. The emitted Cargo.toml gains
 //!   `rayon = "1"` in its `[dependencies]` block via the cycle-196
-//!   addition `extra_dependencies = Some(_)`. `Slot<T>` + `Arc<Barrier>`
+//!   addition (now `CargoDependencies::section_body(RAYON_DEPENDENCY_BLOCK)`
+//!   after the TASK-0288 typed slot). `Slot<T>` + `Arc<Barrier>`
 //!   primitives carry over verbatim (std::sync — work identically
 //!   inside rayon::scope). Bit-identical OUTPUT on the 8 multi-worker
 //!   SYNC schedules (02/split, 03/distributed, 06/distributed +
@@ -134,9 +135,10 @@ pub use nucleus_compiler::NameTables;
 
 // Shared project-skeleton renderers — same single source of truth as
 // pthreads-sync and pthreads-async (TASK-0246 + TASK-0044.01.01
-// cycle-196 `extra_dependencies` parameter for the multi-worker
-// `rayon = "1"` dep).
+// cycle-196 `deps` parameter for the multi-worker `rayon = "1"` dep,
+// now the typed `CargoDependencies` slot after TASK-0288).
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
+use backend_common::project_skeleton::CargoDependencies;
 
 // Single-worker main.rs body — the SHARED straight-line emitter, now
 // in `backend_common::single_worker_main` (relocated from pthreads-sync
@@ -153,7 +155,7 @@ mod multi_worker;
 /// when openmp-rs's multi-worker arm fires. `rayon = "1"` accepts any
 /// 1.x release — broadly compatible API surface (rayon::scope +
 /// Scope::spawn have been stable since 1.0). The single-worker arm
-/// passes `extra_dependencies = None`, so the single-worker emit
+/// passes `CargoDependencies::none()`, so the single-worker emit
 /// remains byte-identical to pthreads-sync's.
 ///
 /// Kept as a module constant rather than inlined so the cycle-196
@@ -191,11 +193,12 @@ pub struct EmitResult {
 ///   `main.rs` is byte-identical to pthreads-sync's. The Cargo.toml
 ///   and run.sh come from `backend_common::project_skeleton::
 ///   single_binary::{render_cargo_toml, render_run_sh}` with
-///   `extra_dependencies = None` for the same byte-identity reason.
+///   `CargoDependencies::none()` for the same byte-identity reason.
 /// - `used_workers >= 2` → MULTI-WORKER. Delegates to
 ///   `multi_worker::render_main_rs_multi` (rayon::scope spawn site +
 ///   verbatim `Slot<T>` / `Arc<Barrier>` rendezvous). The emitted
-///   Cargo.toml gains `rayon = "1"` via `extra_dependencies = Some(_)`.
+///   Cargo.toml gains `rayon = "1"` via
+///   `CargoDependencies::section_body(RAYON_DEPENDENCY_BLOCK)`.
 pub fn emit(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -250,7 +253,7 @@ pub fn emit(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let body = render_single_worker_main(events, names, sidecar)?;
-        (body, None)
+        (body, CargoDependencies::none())
     } else {
         // ---- Multi-worker arm (TASK-0044.01.01 cycle 196). ----
         //
@@ -262,7 +265,7 @@ pub fn emit(
         // emitted Cargo.toml gains `rayon = "1"` so the generated
         // project builds standalone.
         let body = multi_worker::render_main_rs_multi(per_worker, names, sidecar)?;
-        (body, Some(RAYON_DEPENDENCY_BLOCK))
+        (body, CargoDependencies::section_body(RAYON_DEPENDENCY_BLOCK))
     };
 
     write_file(&cargo_toml, &render_cargo_toml(cargo_extra_deps))?;

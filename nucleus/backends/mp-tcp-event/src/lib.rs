@@ -160,6 +160,7 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::project_skeleton::multi_binary;
+use backend_common::project_skeleton::CargoDependencies;
 
 // Single-worker emit delegate. The shared single-worker renderer
 // lives in `backend_common::single_worker_main` (relocated there from
@@ -336,7 +337,10 @@ pub fn emit(
         write_file(&bin_path, &wrap_single_worker(&body))?;
         write_file(
             &cargo_toml,
-            &multi_binary::render_cargo_toml(&[String::from("nuc-generated")], None),
+            &multi_binary::render_cargo_toml(
+                &[String::from("nuc-generated")],
+                CargoDependencies::none(),
+            ),
         )?;
         write_file(&run_sh, &multi_binary::render_run_sh_single())?;
         mark_executable(&run_sh);
@@ -376,7 +380,10 @@ pub fn emit(
 
     write_file(
         &cargo_toml,
-        &multi_binary::render_cargo_toml(&bin_names, Some(MIO_DEPENDENCY_BLOCK)),
+        &multi_binary::render_cargo_toml(
+            &bin_names,
+            CargoDependencies::section_body(MIO_DEPENDENCY_BLOCK),
+        ),
     )?;
     write_file(&run_sh, &multi_worker::render_run_sh(&plan)?)?;
     mark_executable(&run_sh);
@@ -402,9 +409,12 @@ pub fn emit(
 // `backend_common::project_skeleton::multi_binary`. The only
 // mp-tcp-event-specific data the shared Cargo.toml emitter needs is
 // the mio `[dependencies]` block below — interpolated via
-// `multi_binary::render_cargo_toml(..., Some(MIO_DEPENDENCY_BLOCK))`
-// from the multi-worker call site (single-worker arm passes `None`,
-// matching mp-tcp-bufsync's single-worker shape).
+// `multi_binary::render_cargo_toml(...,
+// CargoDependencies::section_body(MIO_DEPENDENCY_BLOCK))` from the
+// multi-worker call site (single-worker arm passes
+// `CargoDependencies::none()`, matching mp-tcp-bufsync's single-worker
+// shape). TASK-0288 replaced the prior raw `Some(...)`/`None`
+// passthrough with the typed slot.
 //
 // The mp-tcp-event-specific multi-process SO_BUF commentary +
 // per-worker launcher payload still live in
@@ -420,9 +430,10 @@ pub fn emit(
 /// keep the emitted dependency tree small. Interpolated into the
 /// Cargo.toml's `[dependencies]` section by
 /// [`multi_binary::render_cargo_toml`] when the multi-worker arm of
-/// [`emit`] passes `Some(MIO_DEPENDENCY_BLOCK)`. The single-worker
-/// arm uses the shared single-binary skeleton (no external deps) so
-/// this block is absent there.
+/// [`emit`] passes
+/// `CargoDependencies::section_body(MIO_DEPENDENCY_BLOCK)`. The
+/// single-worker arm passes `CargoDependencies::none()` (no external
+/// deps) so this block is absent there.
 pub(crate) const MIO_DEPENDENCY_BLOCK: &str =
     "# PRD §12 \"one well-known crate\" allowance: mio drives the\n\
      # reactor + per-(seq, peer) outbound queue + per-seq inbound\n\

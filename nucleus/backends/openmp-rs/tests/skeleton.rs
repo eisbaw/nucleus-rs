@@ -5,12 +5,13 @@
 //! Single-worker arm IMPLEMENTED (cycle 191): delegates to
 //! `backend_common::single_worker_main::render_single_worker_main` +
 //! `backend_common::project_skeleton::single_binary` with
-//! `extra_dependencies = None`.
+//! `CargoDependencies::none()`.
 //!
 //! Multi-worker arm IMPLEMENTED (cycle 196): rayon::scope spawn site
 //! plus verbatim Slot<T> / Arc<Barrier> rendezvous from pthreads-sync;
 //! emitted Cargo.toml carries `rayon = "1"` via
-//! `extra_dependencies = Some(_)`.
+//! `CargoDependencies::section_body(RAYON_DEPENDENCY_BLOCK)`
+//! (TASK-0288 typed slot).
 //!
 //! Tests pinned here:
 //! 1. The `EmitResult` struct shape (compile-pin via constructor).
@@ -136,7 +137,7 @@ fn emit_result_shape_is_single_binary_five_field() {
 
 /// Empty per-worker map MUST still succeed via the single-worker arm
 /// (used_workers.len() == 0 -> dispatch to pthreads-sync's straight-line
-/// emitter; Cargo.toml `extra_dependencies = None` keeps the bytes
+/// emitter; Cargo.toml `CargoDependencies::none()` keeps the bytes
 /// identical to pthreads-sync's). Mirrors pthreads-sync's empty-event
 /// behavioural pin.
 #[test]

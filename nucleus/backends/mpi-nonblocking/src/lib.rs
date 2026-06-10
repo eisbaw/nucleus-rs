@@ -101,6 +101,7 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::project_skeleton::single_binary;
+use backend_common::project_skeleton::CargoDependencies;
 use backend_common::single_worker_main::render_single_worker_main_with_signature;
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
@@ -196,7 +197,7 @@ pub fn emit(
         let ranks = used_workers.len();
         write_file(&kernels_rs, &kernels_src)?;
         write_file(&main_rs, &main_body)?;
-        write_file(&cargo_toml, &single_binary::render_cargo_toml(Some(MPI_DEP)))?;
+        write_file(&cargo_toml, &single_binary::render_cargo_toml(CargoDependencies::section_body(MPI_DEP)))?;
         write_file(&run_sh, &render_run_sh(ranks))?;
         mark_executable(&run_sh);
         return Ok(EmitResult {
@@ -231,7 +232,7 @@ pub fn emit(
     write_file(&kernels_rs, &kernels_src)?;
     write_file(&compute_rs, &compute_body)?;
     write_file(&main_rs, MPI_SPMD_MAIN)?;
-    write_file(&cargo_toml, &single_binary::render_cargo_toml(Some(MPI_DEP)))?;
+    write_file(&cargo_toml, &single_binary::render_cargo_toml(CargoDependencies::section_body(MPI_DEP)))?;
     write_file(&run_sh, &render_run_sh(1))?;
     mark_executable(&run_sh);
 

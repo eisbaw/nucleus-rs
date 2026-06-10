@@ -125,6 +125,7 @@ pub use nucleus_compiler::NameTables;
 //     0/1-used-worker arm IS that single-worker main.rs, byte-identical
 //     by construction.
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
+use backend_common::project_skeleton::CargoDependencies;
 use backend_common::single_worker_main::render_single_worker_main;
 
 // AlgoIR-free: the only `nucleus_compiler::*` surface this crate uses is the
@@ -253,10 +254,11 @@ pub fn emit(
 
         let main_rs_src = render_main_rs_multi(per_worker, names, sidecar)?;
 
-        // `extra_dependencies = None`: pthreads-async's emitted
+        // `CargoDependencies::none()`: pthreads-async's emitted
         // Cargo.toml has no extra deps (TASK-0044.01.01 cycle 196
-        // added the parameter for openmp-rs's multi-worker `rayon`).
-        write_file(&cargo_toml, &render_cargo_toml(None))?;
+        // added the parameter for openmp-rs's multi-worker `rayon`;
+        // TASK-0288 made it the typed slot).
+        write_file(&cargo_toml, &render_cargo_toml(CargoDependencies::none()))?;
         write_file(&kernels_rs, &kernels_src)?;
         write_file(&main_rs, &main_rs_src)?;
         write_file(&run_sh, &render_run_sh())?;
@@ -314,9 +316,10 @@ pub fn emit(
         .unwrap_or(&[]);
     let main_rs_src = render_single_worker_main(events, names, sidecar)?;
 
-    // `extra_dependencies = None`: pthreads-async single-worker has
-    // no extra deps (TASK-0044.01.01 cycle 196 parameter).
-    write_file(&cargo_toml, &render_cargo_toml(None))?;
+    // `CargoDependencies::none()`: pthreads-async single-worker has
+    // no extra deps (TASK-0044.01.01 cycle 196 parameter; TASK-0288
+    // typed slot).
+    write_file(&cargo_toml, &render_cargo_toml(CargoDependencies::none()))?;
     write_file(&kernels_rs, &kernels_src)?;
     write_file(&main_rs, &main_rs_src)?;
     write_file(&run_sh, &render_run_sh())?;

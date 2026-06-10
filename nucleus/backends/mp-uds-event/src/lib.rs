@@ -114,6 +114,7 @@ pub use nucleus_compiler::NameTables;
 // project_skeleton::multi_binary). Using these IS how the cross-backend
 // byte-identical invariant holds for single-worker artefacts.
 use backend_common::project_skeleton::multi_binary;
+use backend_common::project_skeleton::CargoDependencies;
 
 // Single-worker main.rs body — the only inter-backend arrow that
 // genuinely is a semantic delegation (NOT inert string templating).
@@ -289,7 +290,10 @@ pub fn emit(
 
         write_file(
             &cargo_toml,
-            &multi_binary::render_cargo_toml(&bin_names, Some(MIO_UDS_DEPENDENCY_BLOCK)),
+            &multi_binary::render_cargo_toml(
+                &bin_names,
+                CargoDependencies::section_body(MIO_UDS_DEPENDENCY_BLOCK),
+            ),
         )?;
         write_file(&run_sh, &multi_worker::render_run_sh(&plan)?)?;
         mark_executable(&run_sh);
@@ -330,7 +334,10 @@ pub fn emit(
     write_file(&bin_path, &body)?;
     write_file(
         &cargo_toml,
-        &multi_binary::render_cargo_toml(&[String::from("nuc-generated")], None),
+        &multi_binary::render_cargo_toml(
+            &[String::from("nuc-generated")],
+            CargoDependencies::none(),
+        ),
     )?;
     write_file(&run_sh, &multi_binary::render_run_sh_single())?;
     mark_executable(&run_sh);
@@ -355,8 +362,9 @@ pub fn emit(
 /// dependency tree small. Interpolated into the Cargo.toml's
 /// `[dependencies]` section by [`multi_binary::render_cargo_toml`]
 /// when the multi-worker arm of [`emit`] passes
-/// `Some(MIO_UDS_DEPENDENCY_BLOCK)`. The single-worker arm uses the
-/// shared single-binary skeleton (no external deps) so this block
+/// `CargoDependencies::section_body(MIO_UDS_DEPENDENCY_BLOCK)`
+/// (TASK-0288 typed slot). The single-worker arm passes
+/// `CargoDependencies::none()` (no external deps) so this block
 /// is absent there.
 pub(crate) const MIO_UDS_DEPENDENCY_BLOCK: &str =
     "# PRD §12 \"one well-known crate\" allowance: mio drives the\n\

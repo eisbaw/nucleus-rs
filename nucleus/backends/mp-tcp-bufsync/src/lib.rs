@@ -98,6 +98,7 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::project_skeleton::multi_binary;
+use backend_common::project_skeleton::CargoDependencies;
 use backend_common::single_worker_main::render_single_worker_main_with_kernels_attr;
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
@@ -194,7 +195,10 @@ pub fn emit(
         write_file(&bin_path, &body)?;
         write_file(
             &cargo_toml,
-            &multi_binary::render_cargo_toml(&[String::from("nuc-generated")], None),
+            &multi_binary::render_cargo_toml(
+                &[String::from("nuc-generated")],
+                CargoDependencies::none(),
+            ),
         )?;
         write_file(&run_sh, &multi_binary::render_run_sh_single())?;
         mark_executable(&run_sh);
@@ -229,7 +233,7 @@ pub fn emit(
 
     write_file(
         &cargo_toml,
-        &multi_binary::render_cargo_toml(&bin_names, None),
+        &multi_binary::render_cargo_toml(&bin_names, CargoDependencies::none()),
     )?;
     write_file(&run_sh, &plan.render_run_sh()?)?;
     mark_executable(&run_sh);
