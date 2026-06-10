@@ -1311,10 +1311,15 @@ schedule for \"../prog.algo.nuc\" {
 #[test]
 fn positive_reordered_distinct_loop_options_still_lower() {
     // §2 note 7 / §5.1: order is insignificant; distinct options OK.
+    // (`partition=workers` rather than `unroll=N` here: unroll is
+    // loud-rejected as accepted-but-unimplemented since TASK-0458 — see
+    // tests/sched_unroll_unimplemented.rs — and `pipeline` would trip the
+    // TASK-0215 block+pipeline conflict; this test pins option
+    // reordering, not any specific option.)
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
-    loop x : reuse, unroll=8, block=64;
+    loop x : reuse, partition=workers, block=64;
 }
 ";
     let ir = lower_str(src).expect("distinct reordered options must lower");

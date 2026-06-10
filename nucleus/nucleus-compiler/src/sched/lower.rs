@@ -161,6 +161,7 @@ use super::ir::{
 /// | `MissingLatencyMax` / `CheckOnStripMinedLoop` | Independent | yes      | never |
 /// | `BlockPipelineConflict`                | Independent | yes               | never |
 /// | `UnrollNotDivisibleByBlock`            | Independent | yes               | never |
+/// | `UnrollUnimplemented`                  | Independent | yes               | never |
 /// | `UnknownWorkerClass`                   | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced class is in `failed_decls` (dormant today) |
 /// | `UnknownMemoryRegion`                  | Path-1 candidate | yes (no current Path-1 source) | Path-1 if referenced region is in `failed_decls` (dormant today) |
 /// | `UnknownPlaceWorker`                   | Path-1 candidate + **Path-2 LIVE** | yes | Path-1 dormant; Path-2 active under `workers_missing` |
@@ -994,6 +995,24 @@ fn lower_loop(l: &super::ast::LoopDirective, ir: &mut SchedIR) -> Result<(), Sch
                 var_span.clone(),
             ));
         }
+    }
+
+    // TASK-0458: `unroll=N` is accepted-but-unimplemented — it lowers to
+    // `ResolvedLoopOption::Unroll` (just above) but NO downstream pass
+    // consumes it, so silently accepting it is the exact silent-downgrade
+    // pattern the capability matrix forbids elsewhere. Reject loudly until
+    // TASK-0293 lands the real transform (PRD §6.3.3). This check is placed
+    // AFTER the `block + unroll`-divisibility check above so that the more
+    // specific `UnrollNotDivisibleByBlock` diagnostic still wins for a
+    // non-divisible `block=N, unroll=M` pair; every other `unroll=N` shape
+    // (bare, or block-divisible) falls through to this loud reject. When the
+    // TASK-0293 consumer lands, REMOVE this reject and route the variant to
+    // the new pass (the divisibility check then becomes load-bearing again).
+    if unroll_m.is_some() {
+        return Err(SchedLowerError::at(
+            SchedLowerErrorKind::UnrollUnimplemented { var: var.clone() },
+            var_span.clone(),
+        ));
     }
 
     // TASK-0144.01 Stage 3 (vectorize-divisibility check) REMOVED

@@ -633,6 +633,20 @@ pub enum SchedLowerErrorKind {
     /// directive entirely — eliminating a silent-no-op footgun.
     /// `var` is the loop variable carrying the option.
     UnitPipelineOption { var: String },
+    /// `unroll=N` on a loop (TASK-0458). The directive is parsed
+    /// (parser.rs), positivity-checked, and lowered to
+    /// `ResolvedLoopOption::Unroll` — but consumed by NO downstream
+    /// pass. A schedule author writing `unroll=8` to tune the backend
+    /// would silently get nothing: the exact silent-downgrade pattern
+    /// the capability matrix forbids elsewhere (fail-fast violation).
+    /// PRD §6.3.3 defers the real transform to TASK-0293 (reopen on
+    /// concrete LLVM-vs-DSL divergence evidence); until that consumer
+    /// lands, the only honest behaviour is a loud reject naming the
+    /// option as accepted-but-unimplemented. When TASK-0293 lands the
+    /// real unroll transform, REMOVE this variant + its reject and
+    /// route `ResolvedLoopOption::Unroll` to the new consumer instead.
+    /// `var` is the loop variable carrying the option.
+    UnrollUnimplemented { var: String },
 
     // ----- Multiple workers decls -----
     /// More than one `workers = ...` directive in a single schedule.
@@ -775,6 +789,14 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 f,
                 "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
                  (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
+            ),
+            SchedLowerErrorKind::UnrollUnimplemented { var } => write!(
+                f,
+                "loop `{var}` has `unroll=N`, which is accepted by the grammar but \
+                 not yet implemented — no compiler pass consumes it, so the option \
+                 would silently do nothing. Remove the `unroll` option for now. \
+                 Implementation is deferred to TASK-0293 (PRD §6.3.3); SIMD/unroll \
+                 is currently delegated to the host Rust compiler + LLVM."
             ),
             SchedLowerErrorKind::ZeroLatencyMax { var } => write!(
                 f,
