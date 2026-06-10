@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-10 08:37'
+updated_date: '2026-06-10 09:00'
 labels:
   - test-flake
   - mp-tcp-bufsync
@@ -40,3 +41,15 @@ Related: TASK-0426 (same backend, different mode: scratch-dir NotFound race; its
 - [ ] #3 Pingpong scratch dirs reclaimed on success; accumulated ~812 stale dirs cleaned
 - [ ] #4 Full just test green 10 consecutive runs after the fix (subsumes TASK-0426 AC#2 evidence)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+FORWARD-NOTE from TASK-0426.01 scratch-dir sweep (read-only observation, NOT a fix — connect path is backend src, owned here):
+
+(A) CONNECT/RETRY PATTERN POINTERS. The generated host/w0 connect+accept logic is rendered from nucleus/backend-common/src/tcp_plan/worker_program.rs; the runtime framing/read side is nucleus/mp-tcp-common/src/wire_runtime.rs (+ src/lib.rs). The documented design (mp-tcp-bufsync/src/lib.rs:32-50): host binds 127.0.0.1:0 per non-host worker, atomically writes the port to NUC_RENDEZVOUS_DIR/<worker>.port via tmp+rename; each worker polls the rendezvous file 600x10ms=6s, then connects with a bounded retry loop described as symmetric with the 6s file-poll bound.
+
+(B) INCONSISTENCY WORTH A WITNESS. The TASK-0461 evidence (10.5h at 0% CPU, NO established sockets in ss -tnp) is INCONSISTENT with a connect retry that is actually bounded at ~6s and fails loud. Three candidate mechanisms the root-cause should distinguish with a witness, since a 6s-bounded connect cannot hang 10h: (1) the rendezvous-FILE poll wedges (e.g. host died before writing <worker>.port, or wrote to a different NUC_RENDEZVOUS_DIR, so the worker spins/sleeps past its nominal bound — verify the bound is enforced with a hard deadline, not an unbounded while-let); (2) connect SUCCEEDS but a subsequent BLOCKING read_exact on the stream blocks forever because the peer wedged mid-protocol (no set_read_timeout in wire_runtime.rs — grep showed read_exact present; a blocking read with no deadline is the classic 0%-CPU-no-progress signature and matches "no NEW connect attempt visible"); (3) host listener accept() blocks because the worker never connected (host side). The 0% CPU + the pair self-unwedging coincident with a read-only ss/proc probe points more at a blocked read/accept than a busy retry spin. RECOMMEND: confirm whether the rendered connect loop AND every post-connect read carry an enforced wall-clock deadline; a bounded-retry-with-deadline + loud failure is needed on BOTH the connect AND the read/accept, not just connect.
+
+(C) SCRATCH ROT (TASK-0461 AC#3) is INTRINSIC to the sweep design. test_common::unique_scratch_dir (and the inline e2e_example/task0341 idiom) CREATE-ONCE-NEVER-REMOVE by construction (that is how they kill the remove/create race). So per-run dirs accumulate forever under nucleus/target/<crate>-*-scratch/ and nucleus/target/e2e-scratch/ — I observed the same accumulation in nucleus/target/e2e-determinism/run-* as well. The ~812 pingpong dirs are the expected steady-state of this design, NOT a regression. AC#3 reclamation must be a SEPARATE on-success GC (like e2e diff_fuzz already does at nucleus/e2e/src/bin/diff_fuzz.rs:857-861 sweep_dead_scratch) — it cannot be folded back into unique_scratch_dir without reintroducing the remove/create race the helper exists to prevent. Keep the two concerns separate.
+<!-- SECTION:NOTES:END -->
