@@ -3,31 +3,36 @@
 //!
 //! # Why this exists
 //!
-//! The whole-array wire assumption used to be duplicated across five
+//! The whole-array wire assumption used to be duplicated across several
 //! structurally-independent SENDER emit sites plus one RECEIVER
-//! chokepoint:
+//! chokepoint (grep `WireShape::` for the current consumer census —
+//! hard site-counts in docs rot; the originals were):
 //!
 //! - shared walker Push: `super::event_walker` emitted `…push({name}.clone())`;
 //! - sync-TCP plan Push: `crate::tcp_plan::events` encoded the WHOLE
 //!   symbol via `crate::tcp_plan::encode::encode_expr(&name, ty)`;
 //! - MPI buffered-send sizing: `crate::mpi_plan::plan::Plan::bsend_bytes`
 //!   budgeted each channel's WHOLE-array byte footprint;
-//! - embedded Push: `backends/embedded-pattern/src/render` sized the
-//!   payload with `size_of_val(&{name})` (the whole `[T; N]`);
+//! - embedded Push AND Wait recv-length:
+//!   `backends/embedded-pattern/src/render` sized the payload with
+//!   `size_of_val(&{name})` (the whole `[T; N]`);
 //! - receiver `_tmp` basis: `super::wait::render_wait_assign` indexed
 //!   `_tmp` with DESTINATION offsets, i.e. assumed a full-shaped wire
 //!   payload.
 //!
-//! Five senders + one receiver each deciding the shape locally is the
+//! Many senders + one receiver each deciding the shape locally is the
 //! silent-sibling divergence hazard (memory `feedback-silent-sibling-
 //! defect`): when TASK-0453.22 flips the transmitted shape from
 //! whole-array to the inferred gather/scatter region, it would have to
-//! patch all six independently and any missed sibling would ship a
+//! patch every site independently and any missed sibling would ship a
 //! sender/receiver shape mismatch (a wire-protocol corruption, not a
-//! compile error).
+//! compile error). (Residual outside this chokepoint, flagged on
+//! TASK-0453.22: the two `max_payload_bytes` SO_*BUF sizings in
+//! `tcp_plan::relay` / `event_plan::plan`.)
 //!
 //! [`WireShape`] folds the decision into ONE derivation
-//! ([`WireShape::derive`]) computed once per `(DataId, SeqTag)` from the
+//! ([`WireShape::derive`]) — a cheap pure function each consuming site
+//! re-derives per `(DataId, SeqTag)` as needed — from the
 //! pair tiles + sidecar dims the walkers already hold — the same inputs
 //! [`super::wait::render_wait_assign`] already consumed. It exposes the
 //! sender-side payload expression, the sender-side wire-encode
@@ -126,8 +131,9 @@ pub enum RecvBasis {
 /// The single derived cross-worker payload shape for one `(DataId,
 /// SeqTag)` transfer edge (TASK-0455.07).
 ///
-/// Constructed once per edge by [`WireShape::derive`] from the pair
-/// tile + sidecar type. Carries everything the SENDER sites and the
+/// Constructed by [`WireShape::derive`] from the pair tile + sidecar
+/// type (a cheap pure function; consuming sites re-derive it per edge
+/// as needed). Carries everything the SENDER sites and the
 /// RECEIVER chokepoint need so neither computes the shape locally:
 ///
 /// - [`recv_basis`](Self::recv_basis) — the receiver `_tmp` offset

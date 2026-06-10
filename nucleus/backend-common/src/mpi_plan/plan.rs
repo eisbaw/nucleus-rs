@@ -841,10 +841,26 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
             // A datum with no ResolvedType is skipped (contributes 0),
             // matching the pre-TASK-0455.07 `if let Some(ty)` guard.
             if let Some(ty) = self.sidecar.data_type(*data) {
-                if let Ok(wire) =
-                    WireShape::derive(self.sidecar, &self.pair_tiles, *data, *seq)
-                {
-                    sum = sum.saturating_add(wire.extent_bytes(scalar_bytes(&ty.scalar)));
+                match WireShape::derive(self.sidecar, &self.pair_tiles, *data, *seq) {
+                    Ok(wire) => {
+                        sum = sum
+                            .saturating_add(wire.extent_bytes(scalar_bytes(&ty.scalar)));
+                    }
+                    Err(_) => {
+                        // Unreachable for any edge this emit ships: the same
+                        // edge's Wait render derives the same WireShape and
+                        // fails LOUD (render_wait_assign), aborting the emit
+                        // before an under-budgeted bsend could ever run.
+                        // Tripwire so a future decoupling of the two
+                        // derivations cannot silently shrink the bsend
+                        // budget (wave-4 review P2.2; Option/skip-arm class).
+                        debug_assert!(
+                            false,
+                            "bsend sizing: WireShape::derive failed for an \
+                             edge whose Wait render would also fail — \
+                             derivations diverged"
+                        );
+                    }
                 }
             }
         }

@@ -413,3 +413,31 @@ fn host_election_is_invariant_under_mediation_so_one_projection_suffices() {
          (expected >= 20) — did the corpus shrink or every pair start failing to lower?"
     );
 }
+
+/// Wave-4 review P2.4: the explicit `ALL_BACKENDS` universe must stay
+/// complete. A new `backends/<name>/` directory (with a
+/// `capabilities.toml`) missing from `ALL_BACKENDS` would be silently
+/// unswept — the silent-sibling mode this oracle family exists to
+/// retire, one level up. Set-equality against a directory scan gives
+/// BOTH properties: a deleted toml fails loud on a KNOWN backend (the
+/// list), and a NEW backend fails loud here (the scan).
+#[test]
+fn all_backends_list_matches_backends_directory() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backends");
+    let mut scanned: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read nucleus/backends")
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let p = e.path();
+            (p.is_dir() && p.join("capabilities.toml").is_file())
+                .then(|| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    scanned.sort();
+    let mut listed: Vec<String> = ALL_BACKENDS.iter().map(|s| s.to_string()).collect();
+    listed.sort();
+    assert_eq!(
+        listed, scanned,
+        "ALL_BACKENDS is out of sync with nucleus/backends/ — update the list"
+    );
+}

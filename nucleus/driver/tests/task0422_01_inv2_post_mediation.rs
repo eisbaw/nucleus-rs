@@ -585,7 +585,7 @@ fn derived_mediated_set_is_nonempty_and_matches_toml_truth() {
 fn derived_set_auto_covers_a_new_mediated_backend() {
     // (1) Loader path: write a fictional mediated backend's toml and load
     // it through the SAME loader production uses.
-    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("task0465_new_backend.toml");
+    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("task0465_new_backend-{}.toml", std::process::id()));
     std::fs::write(
         &tmp,
         r#"schema_version = 1
@@ -636,5 +636,31 @@ reorderable_push = true
         "TASK-0465: a new backend with star_topology_host_mediation=true must be \
          auto-included (carrying host_data_relay), and a non-mediated peer excluded — \
          this is the auto-coverage property that retires the deleted name list"
+    );
+}
+
+/// Wave-4 review P2.4: same completeness pin as the sibling
+/// `task0455_09_capability_pass_selection.rs` — `ALL_BACKENDS` must
+/// equal the `backends/` directory scan, so a NEW backend directory
+/// cannot be silently unswept while a deleted toml still fails loud on
+/// a known name.
+#[test]
+fn all_backends_list_matches_backends_directory() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backends");
+    let mut scanned: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read nucleus/backends")
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let p = e.path();
+            (p.is_dir() && p.join("capabilities.toml").is_file())
+                .then(|| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    scanned.sort();
+    let mut listed: Vec<String> = ALL_BACKENDS.iter().map(|s| s.to_string()).collect();
+    listed.sort();
+    assert_eq!(
+        listed, scanned,
+        "ALL_BACKENDS is out of sync with nucleus/backends/ — update the list"
     );
 }
