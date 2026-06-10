@@ -182,8 +182,11 @@ The embedded tier is no longer synchronous-only. On the DMA transport path a
 schedule may now ask for an asynchronous, double-buffered, event-notified transfer,
 and the backend lowers it to a producer-side depth-2 descriptor ring: the producer
 arms one transfer and runs ahead, deferring completion until the ring is full, so two
-descriptors are enqueued at the steady-state peak, and an \emph{event} notify completes
-each through an interrupt-driven wait rather than a busy-spin. This is the embedded
+descriptors are enqueued at the steady-state peak, and an \emph{event} notify routes
+completion through a distinct interrupt-completion hook on the
+hardware-abstraction trait (whose modelled default is itself a spin
+--- a true \texttt{wfi} wait is per-silicon work the simulator's
+synchronous DMA model cannot exercise). This is the embedded
 realisation of the IO-as-schedule-directive claim --- the same algorithm driven
 blocking on one edge and double-buffered-DMA on another by changing only the schedule.
 The honesty is in the depth and the model: the maximum buffer is two, so a deeper ring

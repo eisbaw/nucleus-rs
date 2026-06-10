@@ -19,9 +19,9 @@
 // frames, not one frame. We model that as a 32-frame strip stacked
 // vertically: H = 32 * 480 = 15360, W = 640. This is ~half a second of
 // 60fps VGA video processed as one batch — 9.83M px, 39MB per array.
-// Measured: 15360x640 runs in ~122ms wall = ~204x the 0.6ms floor
-// (single-worker naive), well past the >=100x target, and the runtime
-// now scales with problem size, not startup (sec:res-quant-time).
+// Measured: see docs/case-study.md sec 5 for the authoritative
+// numbers (the doc, not this header, is the single source of truth —
+// an earlier copy here drifted from the doc within one wave).
 //
 // Stacking frames into one tall image keeps the net LOOP-DEPTH-0 (a
 // single-shot blur over a bigger array) — which is exactly why the
@@ -47,7 +47,8 @@
 // deadlock-free FLAT IN N — the gate's peak-occupancy argument runs on
 // the rolled ACFG and never expands the net. So this workload compiles
 // at VGA size in milliseconds with a few MB of gate RSS, where the
-// expanded-replay gate would have demanded tens of GB.
+// expanded-replay gate would have demanded roughly 4-12GB (19.6M
+// nodes x ~190-930B/node; consistent with docs/case-study.md sec 4).
 //
 // What the landed machinery does NOT carry at realistic N, and which
 // is therefore deliberately NOT this case study:

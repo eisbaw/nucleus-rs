@@ -14,7 +14,9 @@
 // gate (TASK-0455.01) proves bounded + deadlock-free FLAT IN N (peak
 // occupancy = 1 <= cap, on the ROLLED ACFG, without expanding the net).
 // So this schedule gates at VGA size in a few MB of RSS, where the
-// expanded-replay gate projected ~125GB at production sizes.
+// expanded-replay gate projects roughly 4-12GB at THIS workload's
+// size (19.6M nodes; the ~125GB figure belongs to the N=512 matmul,
+// a different net — wave-8 review consistency fix).
 //
 // CAPABILITY SURFACE (which backends carry this cell)
 // ---------------------------------------------------

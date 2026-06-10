@@ -204,7 +204,7 @@ NUC_INPUT_PATH="$INPUT" NUC_OUTPUT_PATH="$DIST2_OUT" \
 cmp -s "$DIST2_OUT" "$REFERENCE" \
     || { echo "case-study: FAIL — distributed/mpi-nonblocking diverged from reference" >&2; exit 1; }
 DIST2_MS=$(NUC_INPUT_PATH="$INPUT" NUC_OUTPUT_PATH="$DIST2_OUT" \
-    time_run mpiexec --oversubscribe -n 5 "$DIST2/target/release/nuc-generated")
+    time_run timeout 180 mpiexec --oversubscribe -n 5 "$DIST2/target/release/nuc-generated")
 echo "case-study: distributed/mpi-nonblocking BYTE-EXACT, ${DIST2_MS} ms min."
 
 # --- 7. TRANSFER-VOLUME numbers (TASK-0453.22 wire narrowing) -------
@@ -227,6 +227,13 @@ def report(name, spans):
     print(f"    {name}: {len(spans)} edges  narrowed={narrowed} elems "
           f"({narrowed*4} B)  whole-array-baseline={whole} elems ({whole*4} B)  "
           f"reduction={pct:.1f}%")
+# Hard-fail on zero matches (TASK-0187 lineage: a perturbation/extract
+# step that finds nothing must fail loud, not report a vacuous 0%):
+# if the emitted slice shape ever changes, this regex must be updated,
+# not silently bypassed.
+if not img_in_spans or not img_out_spans:
+    sys.exit("case-study: FAIL - wire-span extraction matched zero edges; "
+             "the [lo..hi].to_vec() emit shape changed - update the regex")
 report('img_in  host->workers', img_in_spans)
 report('img_out workers->host', img_out_spans)
 tot_n = sum(img_in_spans)+sum(img_out_spans)

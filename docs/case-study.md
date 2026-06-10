@@ -5,7 +5,11 @@ This document is the **production witness** for the Nucleus v2 compiler
 toy-sized — 16×16 stencils, 16³ matmuls — and its runtime is dominated
 by process startup rather than computation. That makes the corpus a good
 *falsification rig* (it exercises the dataflow shapes) but a poor witness
-that the tool does *real work* at a size where compute dominates.
+that the tool does *real work* at a size where the per-run startup
+floor no longer dominates. (Precisely that: the measured claim is
+startup-floor insignificance; the 114 ms naive wall still includes
+~78 MB of file IO + decode/encode alongside the 9-integer-op-per-pixel
+blur, and the study does not decompose compute vs IO.)
 
 This case study fills that gap with **one** realistic workload carried
 end to end: it compiles, builds, runs, and is byte-identical to an
@@ -20,7 +24,10 @@ just case-study
 ```
 
 (runs `scripts/case-study-run.sh` inside the `.#mpi` Nix shell; prints
-every number this document records). The fixture lives under
+the cell timings, byte-diffs, gate RSS, and wire-span numbers — the
+height-sweep table in §1 and the single-frame row were measured by
+one-off runs of the same script at other heights, not by the default
+invocation). The fixture lives under
 `docs/case-study/`, **outside** `nuc-nucleus/examples/`, so the e2e
 matrix never enumerates it.
 
@@ -106,12 +113,16 @@ not the largest — see §5), while keeping the committed arrays at a size
 (≈ 37.5 MiB) that the generator can reproduce in well under a second.
 
 The startup floor is measured as the **minimum of 60 runs** of a trivial
-4×4-image program (spawn + nucleus runtime init + trivial I/O). Min, not
-median, because the tiny program's wall is dominated by scheduler jitter
-that only ever *adds* time; a smaller floor denominator makes the
-×-multiple *larger*, so reporting the smallest stable floor is the
-conservative (honest, not flattering) choice. The measured 0.68 ms is
-consistent with the thesis's stated ≈ 1 ms floor.
+4×4-image program (spawn + nucleus runtime init + trivial I/O). Min/min
+is the like-with-like pairing (jitter only ever *adds* time to both
+sides) — but note the direction honestly: a smaller floor denominator
+makes the ×-multiple *larger*, so min-floor is the **flattering**
+choice, not the conservative one (the wave-8 review corrected an
+inverted claim here). Under the noisier *median* floor observed on this
+machine (1.0–2.5 ms) the smallest cell's multiple drops to ≈ 46–110×,
+straddling the 100× bar; under the min floor (0.68 ms, consistent with
+the thesis's ≈ 1 ms figure) it is 168×. Both readings are reported so
+the margin's sensitivity to the denominator is visible.
 
 ---
 
@@ -192,11 +203,14 @@ increase for matmul.)
 For scale: the **expanded** net for this strip would carry roughly two
 Petri nodes per `blur3` firing over **9 798 404** interior pixels ≈ **19.6
 million nodes**; projecting the per-node cost the single-replay gate
-carried for the corpus matmul (TASK-0453 cycle 6) puts that on the order
-of **~100 GB** — prohibitive on commodity hardware, and exactly the wall
-the symbolic gate removes for this shape. (Order of magnitude, not a
-measurement: the projection extrapolates a per-node cost measured on a
-differently-structured net.)
+carried for the corpus matmul (TASK-0453 cycle 6, ~190–930 bytes per
+node depending on net structure) puts that at roughly **4–12 GB** —
+not prohibitive on a workstation, but three orders of magnitude more
+memory than the symbolic path uses, growing linearly with frame count
+where the symbolic gate stays flat. (Projection, not a measurement:
+it extrapolates per-node costs measured on differently-structured
+nets; the wave-8 review corrected an earlier ~100 GB figure here that
+over-extrapolated by >10x.)
 
 The compile is sub-second in all cases — a small fraction of the
 downstream Rust build of the emitted project (seconds), consistent with
@@ -206,7 +220,7 @@ the thesis (`sec:res-quant-time`).
 
 ## 5. Runtime — and an honest scaling result
 
-Median-of-min wall time (min of 9 timed runs after a warm-up), and its
+Min-of-9 wall time (after a warm-up), and its
 multiple of the 0.68 ms startup floor:
 
 | cell                          | runtime  | × floor |

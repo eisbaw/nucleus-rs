@@ -41,8 +41,9 @@ const N: usize = H * W;
 /// (truncating integer division). `wrapping_add` keeps overflow defined
 /// (deterministic two's-complement wraparound); the case study's
 /// generated `input.bin` stays inside a safe range so no wraparound
-/// actually happens. The reference oracle uses the SAME expression for
-/// the differential test (docs/reference-impl-policy.md §5).
+/// actually happens. The reference oracle computes the same FUNCTION
+/// via a deliberately re-derived expression (NOT a copy of this one —
+/// see reference/src/main.rs; the independence is the point).
 pub fn blur3(
     p0: i32,
     p1: i32,

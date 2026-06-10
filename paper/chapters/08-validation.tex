@@ -112,10 +112,12 @@ backends required for its family, run against generated input, and require mutua
 byte-identity, here additionally cross-checked against an in-process reference computed
 directly from the synthesised program. Generation is deterministic in the seed, so any
 divergence reproduces exactly and the harness prints the offending program and the
-divergent backend. One failure mode it does not catch is a hang: with no per-command
-timeout, a synthesised program that deadlocked would stall this arm rather than be
-reported, so the generative arm tests value-correctness, not liveness --- liveness
-remains the soundness gate's responsibility (\cref{sec:val-gate}). It is run on demand
+divergent backend. Every spawned build and run carries a wall-clock timeout that kills the
+whole process group on expiry and reports the offending program, so a
+synthesised deadlock surfaces as a reproducible failure rather than a
+stalled run; the timeout guarantees the arm terminates and reports ---
+it does not prove liveness, which remains the soundness gate's
+responsibility (\cref{sec:val-gate}). It is run on demand
 rather than on every build, because each synthesised program costs several independent
 backend builds; a representative seeded run synthesises over a hundred programs across
 all five families with no counterexample. The subclass it samples is still narrower

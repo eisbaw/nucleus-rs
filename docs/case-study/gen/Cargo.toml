@@ -2,8 +2,9 @@
 #
 # CODE-INDEPENDENT of Nucleus (same policy §2 rationale as the reference
 # oracle): `std` only, no Nucleus crate, no Nuc-generated source, no
-# `[workspace]` parent link. It generates the committed `input.bin` so
-# the fixture is reproducible from source — re-running it on any machine
+# `[workspace]` parent link. It generates `input.bin` at run time (the
+# ~37.5MiB fixtures are deliberately NOT committed — over the size
+# policy) so the fixture is reproducible from source on any machine
 # yields byte-identical bytes (deterministic by construction; no RNG, no
 # clock, no HashMap iteration).
 #

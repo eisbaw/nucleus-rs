@@ -130,13 +130,14 @@ axes), the compiler infers a precise tiled region for each worker --- the slice 
 worker will actually read; when it does not --- a sparse, multi-variable, or
 data-dependent index --- the pass conservatively degrades to the whole array, which
 is always a correct superset of what the worker might read. This inferred region
-governs how the receiving worker gathers its portion: in the current backends each
-cross-worker edge transmits the whole array and the worker copies its inferred slice
-into a full-shaped local buffer on receipt, so a precise region buys correct,
-non-overlapping gather --- each worker writes only its own band --- rather than a
-smaller message or a smaller buffer. Transmitting and allocating only the inferred
-region, to cut communication volume and footprint, is a backend optimisation the
-architecture admits but has not yet taken (\cref{sec:disc-shortcomings}). Data-dependent indices
+governs both how the receiving worker gathers its portion and, where the
+region is a contiguous span, what the wire carries: such edges transmit
+only the span (the sender slices, the receiver pastes from a
+zero-based payload), while non-contiguous, data-dependent, and
+accumulator edges still transmit the whole array as the sound
+envelope. The receiver's local buffer remains full-shaped in either
+case --- the narrowing cuts communication volume, not per-worker
+footprint, an asymmetry weighed in \cref{sec:disc-shortcomings}. Data-dependent indices
 (gather and scatter) take the whole-array path on the data-dependent dimension; a
 scatter whose target would have to be split along an affine partition axis is
 rejected as a typed error rather than silently mis-handled.
