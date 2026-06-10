@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-10 08:37'
-updated_date: '2026-06-10 10:07'
+updated_date: '2026-06-10 18:03'
 labels:
   - test-flake
   - mp-tcp-bufsync
@@ -54,4 +54,6 @@ FORWARD-NOTE from TASK-0426.01 scratch-dir sweep (read-only observation, NOT a f
 (C) SCRATCH ROT (TASK-0461 AC#3) is INTRINSIC to the sweep design. test_common::unique_scratch_dir (and the inline e2e_example/task0341 idiom) CREATE-ONCE-NEVER-REMOVE by construction (that is how they kill the remove/create race). So per-run dirs accumulate forever under nucleus/target/<crate>-*-scratch/ and nucleus/target/e2e-scratch/ — I observed the same accumulation in nucleus/target/e2e-determinism/run-* as well. The ~812 pingpong dirs are the expected steady-state of this design, NOT a regression. AC#3 reclamation must be a SEPARATE on-success GC (like e2e diff_fuzz already does at nucleus/e2e/src/bin/diff_fuzz.rs:857-861 sweep_dead_scratch) — it cannot be folded back into unique_scratch_dir without reintroducing the remove/create race the helper exists to prevent. Keep the two concerns separate.
 
 FORWARD-NOTE #2 from TASK-0426.01 re-audit (2026-06-10, wave-2; read-only, connect path is backend src not in my ownership): confirmed the harness-watchdog gap (AC#2) at the test call site. nucleus/backends/mp-tcp-bufsync/tests/pingpong.rs runs the generated pair via a BLOCKING Command::new("bash").arg(out_dir.join("run.sh")).arg(input_bin).arg(output_bin).output() at pingpong.rs:206-212 with NO timeout/watchdog wrapper and NO per-test cargo-test timeout. So if run.sh host/w0 wedge in the connect/accept phase, .output() blocks the test thread forever — exactly the 10.5h-at-0%-CPU signature. The pingpong_matches_pthreads_sync_bit_for_bit test is the one that ran 37713s. SCRATCH handling at pingpong.rs:42-49 is ALREADY clean (routes through test_common::unique_scratch_dir, no remove/create_dir_all) — AC#3 reclamation is unrelated to that helper and must be a separate on-success GC (per my earlier forward-note (C)). RECOMMENDED minimal harness fix for AC#2 independent of the root-cause connect fix: wrap the run.sh spawn in a spawn()+wait-with-deadline (or run under `timeout` / a watchdog thread that kills the child + captures ps/ss) so a wedged pair fails the test in minutes with diagnostics rather than stalling the gate overnight. The generated-side connect/read bounded-deadline fix (AC#1) is still the real root cause and lives in nucleus/backend-common/src/tcp_plan/worker_program.rs + nucleus/mp-tcp-common/src/wire_runtime.rs (per forward-note #1).
+
+Wave-6 ENOSPC addendum (2026-06-10): the gate-killing disk exhaustion recurred at campaign scale — target/debug grew to 70GB across a day of repeated full test builds, plus 6 retained e2e-matrix runs and ~9GB of accumulated create-once-never-remove test scratch. AC#3 (scratch GC) should cover the broader classes: e2e-matrix retained-run pruning policy, periodic scratch reclamation, and a note that long campaigns must budget target/debug churn (84GB reclaimed manually this time).
 <!-- SECTION:NOTES:END -->
