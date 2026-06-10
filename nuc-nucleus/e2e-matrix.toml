@@ -4996,3 +4996,61 @@ example  = "01-elementwise-add"
 schedule = "check_log"
 backend  = "mp-uds-event"
 stderr_contains = ["warning: check loop `i` violated latency_max=1 ns: iteration took "]
+
+# --- 09-producer-consumer/embedded_dma_buffered (TASK-0455.02) --------
+#
+# Tier-3 fixture: async + buffer=2 + notify=event + mode=dma, the
+# double-buffered DMA descriptor-ring schedule. Its LOAD-BEARING
+# validation is the 4th arm of `just renode-multimcu-gate` (3-MCU
+# STM32H7 co-sim, byte-exact 64B). On tier-1 it splits by capability:
+# the four sync backends correctly REJECT the async/buffer/notify
+# demands ([[skip]] below, the documented capability-mismatch class);
+# the three async tier-1 backends ACCEPT it (mode=dma is a tier-3
+# transport hint they ignore) and run byte-exact, so those cells are
+# [[required]] — locking in the hosted behaviour of the schedule.
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "pthreads-async"
+milestone = "M4"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "mp-tcp-event"
+milestone = "M4"
+
+[[required]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "mp-uds-event"
+milestone = "M4"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "pthreads-sync"
+reason   = "TASK-0455.02: capability mismatch by design — the schedule demands async + buffer=2 + notify=event; this sync backend correctly rejects all three (no silent downgrade). Tier-3 validation is the renode-multimcu-gate 4th arm."
+milestone = "M10"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "mp-tcp-bufsync"
+reason   = "TASK-0455.02: capability mismatch by design — async + buffer=2 + notify=event demanded; sync backend correctly rejects. Tier-3 validation is the renode-multimcu-gate 4th arm."
+milestone = "M10"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "openmp-rs"
+reason   = "TASK-0455.02: capability mismatch by design — async + buffer=2 + notify=event demanded; sync backend correctly rejects. Tier-3 validation is the renode-multimcu-gate 4th arm."
+milestone = "M10"
+
+[[skip]]
+example  = "09-producer-consumer"
+schedule = "embedded_dma_buffered"
+backend  = "mp-tcp-poll"
+reason   = "TASK-0455.02: capability mismatch by design — async + buffer=2 + notify=event demanded; sync backend correctly rejects (poll notify offered, event is not). Tier-3 validation is the renode-multimcu-gate 4th arm."
+milestone = "M10"
