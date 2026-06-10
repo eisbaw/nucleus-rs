@@ -51,10 +51,14 @@
 #     follow-up work, not a capability lie.
 #   * `notify = ["event", "poll", "barrier", "blocking"]` — `notify=event`
 #     and `notify=poll` (the two schedule-surface notify modes, PRD §6.3.4)
-#     now both accepted on the DMA path: the renderer honours `event` via
-#     IRQ-driven completion (`dma_link_irq_wait` — `wfi` until the modelled
-#     DMA-complete event) and `poll`/absent via the existing
-#     `dma_link_poll` busy-spin. Declaring BOTH keeps the cap surface
+#     now both accepted. The renderer honours `event` ONLY on the
+#     depth-2 RING path (`mode=dma` + `buffer>=2`): IRQ-driven completion
+#     via `dma_link_irq_wait` (a poll-spin default on the modelled
+#     DMA-complete event). On a single-buffer DMA edge a `notify=event`
+#     request passes the capability gate but renders the same
+#     `dma_link_poll` busy-spin (behaviourally identical today since the
+#     irq-wait default IS a spin — wave-6 review P3.7). `poll`/absent
+#     always uses `dma_link_poll`. Declaring BOTH keeps the cap surface
 #     consistent with what `render_completion_wait` actually emits (a
 #     `notify=poll` DMA edge must NOT reject when the backend genuinely
 #     supports the poll completion). The two legacy modes

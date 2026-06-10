@@ -286,11 +286,13 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// later consumer transition forward when one is firable, producing
 /// a legal interleaving.
 ///
-/// **Why this defensive layer is kept (TASK-0219).** With TASK-0213's
-/// path-2 elision in `acfg_to_petri`, every net the in-tree pipeline
-/// produces has source-order legal directly — so the marking-aware
-/// reorder above and the stuck-state fallback below are NOT exercised
-/// by any compiler-built fixture today. The function is `pub` and
+/// **Why this layer is load-bearing (updated wave-6 review P3.2;
+/// originally TASK-0219).** TASK-0213's path-2 TtoP elision was
+/// REVERTED by TASK-0218 (see the "Path-2 TtoP-arc elision — REVERTED"
+/// section of `acfg_to_petri`): every Push emits a real TtoP arc, and
+/// it is THIS marking-aware reorder (path 1) that resolves the
+/// example-13 pipelined net directly — the reorder IS exercised by an
+/// in-tree fixture now. The function is `pub` and
 /// accepts ANY [`Net`], including hand-built ones with soft
 /// constraints (legal interleaving exists but isn't source-order).
 /// Removing path-1 would punish those callers (incl. analysis-only
@@ -301,19 +303,15 @@ pub fn check_bounded(net: &Net, firing_order: &[TransitionId]) -> Result<(), Bou
 /// Defensive code WITH tests is acceptable; dead-code-with-no-test was
 /// the original TASK-0219 finding — closed.
 ///
-/// **Honest note on the example-13 fixture**: pipeline=D's *first*
-/// expression of "the buffer has D head-start credits" is the
-/// `pipeline_depth_for_seq` → `initial_marking = D` mapping
-/// (TASK-0134). The *second*, complementary expression — eliding the
-/// first D producer Push TtoP arcs in `acfg_to_petri::emit_xfer`
-/// (TASK-0213 path 2) — is what makes source-order legal on the
-/// example-13 net directly. Without path 2, sync_inject's barrier
-/// between Push and Wait creates a structural cycle that this
-/// path-1 reordering alone cannot resolve (the consumer Wait is
-/// blocked behind the barrier). Path 1 here is the general fallback
-/// for nets whose source-order isn't legal even after path-2
-/// elision — currently no in-tree fixture exercises it; see
-/// TASK-0218 for the underlying sync_inject limitation.
+/// **Honest note on the example-13 fixture** (rewritten, wave-6
+/// review P3.2): pipeline=D expresses "the buffer has D head-start
+/// credits" via the `pipeline_depth_for_seq` → `initial_marking = D`
+/// mapping (TASK-0134). The old second expression — eliding the first
+/// D producer TtoP arcs (TASK-0213 path 2) — was REVERTED by
+/// TASK-0218, which instead fixed sync_inject's over-syncing at the
+/// root (`push_wait_pair_covers` elides the redundant barrier). With
+/// the structural cycle gone, THIS path-1 marking-aware reorder is
+/// what makes the example-13 net replay legally.
 ///
 /// We accept any [`Net`] here, not only nets built by `acfg_to_net`.
 /// For other producers the function still returns a deterministic

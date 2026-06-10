@@ -16,9 +16,13 @@
 //! latency, so the double buffer IS the latency-hiding mechanism.
 //!
 //! When the schedule declares `transfer D : async, buffer=2, notify=event,
-//! mode=dma` and the matched Push/Wait land INSIDE a loop body (the
-//! canonical producer/consumer shape — verified by emit on example 09),
-//! this module emits a **depth-2 descriptor ring** instead:
+//! mode=dma`, this module emits a **depth-2 descriptor ring** instead.
+//! NOTE (wave-6 review P3.6): the dispatch keys SOLELY on `mode=dma` +
+//! `buffer>=2` — loop position is NOT consulted. The canonical (and only
+//! shipped) shape is the loop-nested producer/consumer of example 09; a
+//! TOP-LEVEL buffered DMA edge would also take the ring, with its lone
+//! descriptor never drained in-loop (byte-safe only under the modelled
+//! synchronous engine — same caveat-1 territory as the lazy final drain):
 //!
 //!   * a module-static OCCUPANCY counter + HIGH-WATER mark
 //!     (`NUC_DMA_RING_OCC_<seq>` / `NUC_DMA_RING_HWM_<seq>`), so the ring
@@ -213,7 +217,10 @@ pub(crate) fn render_ring_push(
 /// PRODUCER-side latency-hiding optimisation (the producer runs ahead of an
 /// in-flight transfer); the consumer must always have its current frame
 /// before computing. So the recv arm + completes per iteration (occupancy
-/// 0->1->0); it still bumps the SHARED occupancy/high-water statics so the
+/// 0->1->0); it bumps its OWN binary's occupancy/high-water statics (push
+/// and wait of a cross-worker seq live in different firmware binaries, so
+/// the consumer-side HWM only ever reaches 1; the depth-2 witness is the
+/// PRODUCER-side HWM — wave-6 review P3.5 corrected this claim) so the
 /// ring's depth-2 witness (driven by the producer side) is observable on
 /// the same `seq`, and it still honours `notify=event` via the IRQ-wait.
 pub(crate) fn render_ring_recv(

@@ -175,9 +175,17 @@ fn collect_seq_facts(node: &ACFGNode, depth: usize, facts: &mut BTreeMap<SeqTag,
     match node {
         ACFGNode::Xfer(x) => {
             let f = facts.entry(x.seq).or_default();
-            // Capacity is a per-pair policy field; both endpoints carry
-            // the same value, so recording it on either is fine.
-            f.capacity = Some(x.policy.buffer);
+            // Capacity is a per-pair policy field; both endpoints are
+            // built from one policy today (transfer_inject clones the
+            // Wait's policy into the Push), but the expanded gate sizes
+            // the place from the FIRST-seen endpoint — so take the MIN
+            // across endpoints rather than last-seen, making the
+            // theorem's C >= 1 hypothesis literal even if the endpoints
+            // ever diverged (wave-6 review P3.1).
+            f.capacity = Some(match f.capacity {
+                Some(prev) => prev.min(x.policy.buffer),
+                None => x.policy.buffer,
+            });
             match x.role {
                 XferRole::Push => {
                     f.push_count += 1;
@@ -252,8 +260,9 @@ fn classify_seq(f: &SeqFacts, pipeline_p: u64) -> Result<(), &'static str> {
     match f.capacity {
         Some(c) if c >= 1 => Ok(()),
         _ => Err(
-            "a buffer seq has capacity < 1 (upstream invariant violated); falling back to the \
-             expanded gate rather than trusting the bound",
+            "a buffer seq has capacity < 1 (upstream invariant violated); refusing the symbolic \
+             bound (note: net expansion asserts on a zero-capacity place, so this surfaces \
+             loudly either way)",
         ),
     }
 }

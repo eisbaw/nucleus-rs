@@ -3,7 +3,11 @@
 //!
 //! ## What it pins
 //!
-//! For EVERY net the symbolic gate could ever face, the COMBINED verdict
+//! For every PRE-MEDIATION corpus net plus the synthetic negatives, the
+//! COMBINED verdict (the driver additionally gates the POST-mediation
+//! ACFG on star-topology backends — corpus x mediation-variant A/B is
+//! the open extension, wave-6 review P2.1; soundness is unaffected
+//! because unknown shapes land in NeedsExpansion -> real expanded gate)
 //! the driver computes —
 //!
 //! ```text
@@ -207,6 +211,16 @@ fn corpus_combined_verdict_equals_expanded_verdict() {
     );
 
     assert!(mismatches.is_empty(), "A/B verdict mismatches:\n  {}", mismatches.join("\n  "));
+
+    // Wave-6 review P3.8: a gated-count floor beside the enumeration
+    // floor — a regression that converts gated cells into pre-gate
+    // errors would silently shrink the equivalence domain otherwise.
+    assert!(
+        gated >= 55,
+        "A/B equivalence domain shrank: only {gated} cells reached the gate \
+         (>= 55 expected); pre-gate errors grew — investigate before trusting \
+         the harness"
+    );
 
     // The pin must not be vacuous: both arms exercised, AND the keystone —
     // at least one BUFFERED (communicating) cell proven sound symbolically

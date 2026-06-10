@@ -50,7 +50,8 @@
 // (TASK-0048.12 / TASK-0438.03), the same boundary the single-buffer
 // `mode=dma` arm already carries.
 //
-// Renode gate: `just renode-embedded-dma-buffered` (a sibling of
+// Renode gate: the 4th arm of `just renode-multimcu-gate` (no
+// dedicated recipe — wave-6 review P2.2 fixed a dead pointer here;
 // `renode-multimcu-gate`, NOT in the merge-blocking `just ci` — same
 // tier-3-outside-default-ci rule, needs the `.#embedded` + `.#renode`
 // shells). Runs the 3-MCU co-sim and `cmp`s the host's saved `result`
