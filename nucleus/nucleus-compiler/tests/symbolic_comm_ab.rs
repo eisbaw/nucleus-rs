@@ -293,7 +293,8 @@ fn backends_dir() -> std::path::PathBuf {
 /// `backends/*/capabilities.toml`, loaded with the EXACT `load_capabilities`
 /// the driver uses (TASK-0455.09). NOT a hardcoded `{(true,false),(true,true)}`
 /// list: deriving from the real files is the same completeness discipline as
-/// `task0455_09`'s `ALL_BACKENDS` <-> backends/ dir set-equality pin — a new
+/// the `all_backends_list_matches_backends_directory` pin in
+/// driver/tests/task0455_09_capability_pass_selection.rs — a new
 /// backend declaring a new `(star, relay)` shape is then A/B-d automatically,
 /// and a backend whose flags change is picked up without a test edit.
 ///
