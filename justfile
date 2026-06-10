@@ -1511,16 +1511,16 @@ check-mpi-barrier-smoke:
         exit 1; \
     fi
 
-# Tier-2 (M7) mpi-blocking acceptance (TASK-0045). For each of the §9
-# examples 1-6, generates the SPMD MPI project from the example's NAIVE
-# schedule (all single-worker — the landed arm), cross-builds it under
-# the `.#mpi` shell (rsmpi + OpenMPI), runs it under a localhost
-# `mpiexec -n 1`, and `cmp`s the output BYTE-EXACT against the example's
-# committed reference.bin. This is STRONGER than the PRD §7.4 tier-2
-# ship bar (COMPILE): a simulator IS available (localhost MPI per §10.2),
-# so we assert value-correctness too (§7.4 "where simulators ... exist,
-# produce reference-matching output"). Self-contained: it enters `.#mpi`
-# itself, so it runs from the default shell:  just check-mpi
+# Tier-2 (M7) mpi-blocking acceptance (TASK-0045/.01). For each
+# mpi-blocking cell of the e2e-matrix (see SCOPE), generates the SPMD MPI
+# project from the example's schedule, cross-builds it under the `.#mpi`
+# shell (rsmpi + OpenMPI), runs it under a localhost `mpiexec -n N`, and
+# `cmp`s the output BYTE-EXACT against the example's committed
+# reference.bin. This is STRONGER than the PRD §7.4 tier-2 ship bar
+# (COMPILE): a simulator IS available (localhost MPI per §10.2), so we
+# assert value-correctness too (§7.4 "where simulators ... exist, produce
+# reference-matching output"). Self-contained: it enters `.#mpi` itself,
+# so it runs from the default shell:  just check-mpi
 #
 # DELIBERATELY NOT wired into `just ci` and EXCLUDED from
 # e2e-matrix.toml's `backends`: the generated project needs the `.#mpi`
@@ -1529,53 +1529,35 @@ check-mpi-barrier-smoke:
 # renode-* (TASK-0223). The mpi-blocking BACKEND crate itself IS built by
 # `just ci` (it is a normal std workspace member that only emits strings).
 #
-# SCOPE: two arms.
-#  (1) Examples 1-6 NAIVE (single-worker, TASK-0045): `mpiexec -n 1`.
-#  (2) The SYNC MULTI-WORKER schedules (TASK-0045.01): each run under
-#      `mpiexec -n N` where N = the schedule's USED-WORKER count — the
-#      WORST case, ALL ranks live (NOT -n 1, which hides Send/Recv
-#      ordering bugs; memory `16-jacobi`: deadlock-free != value-correct).
-#      02-split-add/split (n=2), 03-reduction/distributed (n=5),
-#      06-separable-filter/distributed + distributed2 (n=5). The
-#      ASYNC-only distributed schedules (05-stencil/distributed{,-2d})
-#      are NOT here: mpi-blocking is sync-only, so the driver's
-#      capability gate hard-rejects them (they belong to the async
-#      backends). Each multi-worker run is wrapped in `timeout` so a
-#      standard-mode-send deadlock fails LOUD instead of hanging.
+# SCOPE — DERIVED, not duplicated (TASK-0454): the (example, schedule)
+# set is the `[[required]]` mpi-blocking cells of e2e-matrix.toml, read
+# via `scripts/mpi-cells.py` (the SAME surface the counted `just e2e-mpi`
+# differential drives — the two MPI coverage surfaces can no longer
+# silently drift). The per-cell rank count N is derived from each
+# schedule's declared `workers = { ... }` set (host counts as a rank), so
+# there is no second hardcoded `n` table either. The script FAILS LOUD
+# (non-zero, before any build) if the matrix names a schedule with no
+# file on disk — the divergence-rot tripwire. Every run uses `mpiexec -n
+# N` with N = the used-worker count, the WORST case (ALL ranks live; NOT
+# -n 1, which hides Send/Recv ordering bugs — memory `16-jacobi`:
+# deadlock-free != value-correct), wrapped in `timeout` so a
+# standard-mode-send deadlock fails LOUD instead of hanging. (All
+# mpi-blocking cells are sync schedules; the ASYNC-only distributed
+# schedules belong to check-mpi-nonblocking — the driver's capability
+# gate hard-rejects them here.)
 # The driver release binary is built once up front so generation is cheap.
 check-mpi:
-    @echo "tier-2 M7 mpi-blocking acceptance (.#mpi, single + multi-worker, TASK-0045/.01)"
+    @echo "tier-2 M7 mpi-blocking acceptance (.#mpi, matrix-derived cells, all ranks live, TASK-0045/.01/.0454)"
     @set -eu; \
     nix develop .#mpi --command bash -c '\
         set -eu; \
         cd nucleus && cargo build --release --bin nucleus --quiet && cd ..; \
-        for ex in 01-elementwise-add 02-split-add 03-reduction 04-prefix-sum 05-stencil 06-separable-filter; do \
-            out="nucleus/target/mpi-m7/$ex"; \
-            rm -rf "$out"; \
-            echo "=== generating mpi-blocking SPMD project for $ex/naive ==="; \
-            ./nucleus/target/release/nucleus build \
-                --algo "nuc-nucleus/examples/$ex/prog.algo.nuc" \
-                --sched "nuc-nucleus/examples/$ex/schedules/naive.sched.nuc" \
-                --backend mpi-blocking --out "$out" >/dev/null; \
-            echo "=== cargo build --release ($ex) ==="; \
-            ( cd "$out" && cargo build --release --quiet ); \
-            echo "=== mpiexec -n 1 + byte-exact cmp vs reference.bin ($ex) ==="; \
-            o="$(mktemp)"; \
-            NUC_INPUT_PATH="nuc-nucleus/examples/$ex/input.bin" NUC_OUTPUT_PATH="$o" \
-                mpiexec --oversubscribe -n 1 "$out/target/release/nuc-generated"; \
-            if cmp -s "$o" "nuc-nucleus/examples/$ex/reference.bin"; then \
-                echo "OK: $ex SPMD output is byte-exact vs reference.bin"; \
-            else \
-                echo "FAIL: $ex SPMD output differs from reference.bin"; rm -f "$o"; exit 1; \
-            fi; \
-            rm -f "$o"; \
-        done; \
-        echo "--- multi-worker arm (TASK-0045.01): mpiexec -n N, all ranks live ---"; \
-        for spec in "02-split-add/split/2" "03-reduction/distributed/5" "06-separable-filter/distributed/5" "06-separable-filter/distributed2/5"; do \
-            ex="${spec%%/*}"; rest="${spec#*/}"; sc="${rest%/*}"; n="${rest##*/}"; \
+        cells="$(python3 scripts/mpi-cells.py nuc-nucleus/e2e-matrix.toml nuc-nucleus/examples mpi-blocking)"; \
+        echo "--- matrix-derived mpi-blocking cells (example schedule n) ---"; echo "$cells"; \
+        while IFS="$(printf "\t")" read -r ex sc n; do \
             out="nucleus/target/mpi-m7/$ex--$sc"; \
             rm -rf "$out"; \
-            echo "=== generating multi-worker SPMD project for $ex/$sc (n=$n) ==="; \
+            echo "=== generating mpi-blocking SPMD project for $ex/$sc (n=$n) ==="; \
             ./nucleus/target/release/nucleus build \
                 --algo "nuc-nucleus/examples/$ex/prog.algo.nuc" \
                 --sched "nuc-nucleus/examples/$ex/schedules/$sc.sched.nuc" \
@@ -1588,13 +1570,13 @@ check-mpi:
                 timeout 120 mpiexec --oversubscribe -n "$n" "$out/target/release/nuc-generated" \
                 || { echo "FAIL: $ex/$sc run failed/timed out under -n $n (deadlock?)"; rm -f "$o"; exit 1; }; \
             if cmp -s "$o" "nuc-nucleus/examples/$ex/reference.bin"; then \
-                echo "OK: $ex/$sc multi-worker output is byte-exact vs reference.bin (mpiexec -n $n)"; \
+                echo "OK: $ex/$sc SPMD output is byte-exact vs reference.bin (mpiexec -n $n)"; \
             else \
-                echo "FAIL: $ex/$sc multi-worker output differs from reference.bin"; rm -f "$o"; exit 1; \
+                echo "FAIL: $ex/$sc SPMD output differs from reference.bin"; rm -f "$o"; exit 1; \
             fi; \
             rm -f "$o"; \
-        done; \
-        echo "OK: mpi-blocking value-correct — examples 1-6 naive (-n 1) + 4 sync multi-worker schedules (-n N, all ranks live)."'
+        done < <(printf "%s\n" "$cells"); \
+        echo "OK: mpi-blocking value-correct — all matrix-derived cells byte-exact under mpiexec -n N (all ranks live)."'
 
 # Tier-2 (M8) mpi-nonblocking acceptance (TASK-0046). The mpi-nonblocking
 # backend widens the capability surface to async + buffer + notify=event
@@ -1629,28 +1611,39 @@ check-mpi:
 #      for standard MPI_Isend; see TASK-0046 notes).
 # Each run is wrapped in `timeout` so a deadlock fails LOUD, not hangs.
 #
-# TARGETS (the async schedules; N = used-worker count, all ranks live):
+# TARGETS — DERIVED, not duplicated (TASK-0454): the (example, schedule)
+# set is the `[[required]]` mpi-nonblocking cells of e2e-matrix.toml,
+# read via `scripts/mpi-cells.py` (the SAME surface the counted `just
+# e2e-mpi` differential drives — the two MPI coverage surfaces can no
+# longer silently drift). The per-cell rank count N is derived from each
+# schedule's declared `workers = { ... }` set (host counts as a rank), so
+# there is no second hardcoded `n` table; the script FAILS LOUD (non-zero,
+# before any build) if the matrix names a schedule with no file on disk —
+# the divergence-rot tripwire. The four async schedules, with N = the
+# used-worker count, all ranks live:
 #   05-stencil/distributed     (n=5, host + w0..w3; async img_in broadcast)
 #   05-stencil/distributed-2d  (n=5; 2x2 grid + real worker<->worker halo)
-#   11-game-of-life/pipelined  (n=2, host + compute; async grid)
 #   09-producer-consumer/pipelined (n=3, host + producer + consumer; carries
 #     a non-whole-world barrier {producer,consumer} EXCLUDING the host ->
 #     MPI_Comm_split + sub-communicator barrier landed in TASK-0045.02,
-#     wired here by TASK-0046.01; closes TASK-0046 AC#3 [examples 9 AND 11]).
+#     wired here by TASK-0046.01; closes TASK-0046 AC#3 [examples 9 AND 11])
+#   11-game-of-life/pipelined  (n=2, host + compute; async grid).
 #
-# DELIBERATELY NOT wired into `just ci` and EXCLUDED from e2e-matrix.toml:
-# the generated project needs the `.#mpi` shell (same tier-2-outside-
-# default-ci rule as check-mpi / check-embedded / renode-*). The BACKEND
-# crate itself IS built by `just ci` (a normal std member emitting strings).
+# DELIBERATELY NOT wired into `just ci` and EXCLUDED from e2e-matrix.toml's
+# `backends`: the generated project needs the `.#mpi` shell (same tier-2-
+# outside-default-ci rule as check-mpi / check-embedded / renode-*). The
+# BACKEND crate itself IS built by `just ci` (a normal std member emitting
+# strings).
 check-mpi-nonblocking:
-    @echo "tier-2 M8 mpi-nonblocking acceptance (.#mpi, async schedules, default + forced-rendezvous, TASK-0046)"
+    @echo "tier-2 M8 mpi-nonblocking acceptance (.#mpi, matrix-derived async cells, default + forced-rendezvous, TASK-0046/.0454)"
     @set -eu; \
     nix develop .#mpi --command bash -c '\
         set -eu; \
         cd nucleus && cargo build --release --bin nucleus --quiet && cd ..; \
         rndv="--mca btl_sm_eager_limit 128 --mca btl_self_eager_limit 128 --mca btl_vader_eager_limit 128 --mca btl_tcp_eager_limit 128"; \
-        for spec in "05-stencil/distributed/5" "05-stencil/distributed-2d/5" "11-game-of-life/pipelined/2" "09-producer-consumer/pipelined/3"; do \
-            ex="${spec%%/*}"; rest="${spec#*/}"; sc="${rest%/*}"; n="${rest##*/}"; \
+        cells="$(python3 scripts/mpi-cells.py nuc-nucleus/e2e-matrix.toml nuc-nucleus/examples mpi-nonblocking)"; \
+        echo "--- matrix-derived mpi-nonblocking cells (example schedule n) ---"; echo "$cells"; \
+        while IFS="$(printf "\t")" read -r ex sc n; do \
             out="nucleus/target/mpi-m8/$ex--$sc"; \
             rm -rf "$out"; \
             echo "=== generating mpi-nonblocking SPMD project for $ex/$sc (n=$n) ==="; \
@@ -1674,8 +1667,8 @@ check-mpi-nonblocking:
                 fi; \
                 rm -f "$o"; \
             done; \
-        done; \
-        echo "OK: mpi-nonblocking value-correct + deadlock-immune — 4 async schedules (-n N, all ranks live) x {default, forced-rendezvous}."'
+        done < <(printf "%s\n" "$cells"); \
+        echo "OK: mpi-nonblocking value-correct + deadlock-immune — matrix-derived async cells (-n N, all ranks live) x {default, forced-rendezvous}."'
 
 # Tier-3 M10 firmware -> Renode -> UART template (TASK-0048). Builds the
 # minimal STM32H7 (Cortex-M7) no_std UART firmware under tests/renode/
