@@ -22,3 +22,14 @@ supports_buffer = false
 max_buffer      = 1
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# One-CTRL-stream-per-(host,worker) TCP STAR topology: a host-EXCLUDING
+# barrier cannot lower without a worker-to-worker mesh, so host mediates
+# (apply_host_mediation_inject). Data is whole-array broadcast/gather
+# through host already (no in-Repeat w2w Push pairs lowered), and the
+# strict per-pair-FIFO stream makes safe-push-reorder UNSAFE — so only
+# the mediation flag is set.
+star_topology_host_mediation = true
+host_data_relay              = false
+reorderable_push             = false

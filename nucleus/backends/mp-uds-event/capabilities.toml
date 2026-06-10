@@ -19,3 +19,12 @@ supports_buffer = true
 max_buffer      = 64
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# UDS STAR topology, structurally identical to mp-tcp-event (one CTRL
+# stream per (host,worker) over UnixStream): mediation needed for host-
+# excluding barriers, no native w2w DATA channel (host relay), per-(seq)
+# DEMUX inbound queue (safe-push hoist sound). All three flags set.
+star_topology_host_mediation = true
+host_data_relay              = true
+reorderable_push             = true

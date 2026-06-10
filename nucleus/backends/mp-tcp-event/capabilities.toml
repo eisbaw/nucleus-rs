@@ -32,3 +32,13 @@ supports_buffer = true
 max_buffer      = 64
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# TCP STAR topology (mediation needed for host-excluding barriers) AND no
+# native worker-to-worker DATA channel: in-Repeat w2w Push/Wait pairs are
+# relayed through host (apply_host_data_relay_inject). The per-(seq) DEMUX
+# inbound queue (not a strict per-pair FIFO) makes the safe-push hoist
+# sound (apply_safe_push_reorder). All three flags set.
+star_topology_host_mediation = true
+host_data_relay              = true
+reorderable_push             = true

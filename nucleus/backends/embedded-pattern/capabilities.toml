@@ -58,3 +58,12 @@ supports_buffer = false
 max_buffer      = 1
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# Tier-3 stub shim, single-worker LIB/BIN emit: no host-mediated star
+# topology, no host relay, no per-seq-demux reorder. All three false.
+# (When the M10 reference shim adds real cross-MCU DMA + a host-
+# mediated transport, revisit alongside `supports_async` etc.)
+star_topology_host_mediation = false
+host_data_relay              = false
+reorderable_push             = false

@@ -25,3 +25,10 @@ supports_buffer = false
 max_buffer      = 1
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# rayon shared-memory: host-excluding barriers lower natively and w2w
+# data rides shared-memory Slots — no host mediation. All three false.
+star_topology_host_mediation = false
+host_data_relay              = false
+reorderable_push             = false

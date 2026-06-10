@@ -13,3 +13,11 @@ supports_buffer = false
 max_buffer      = 1
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# Shared-memory `std::sync::Barrier` on an Arc handles host-excluding
+# barriers natively, and worker-to-worker data rides direct shared-memory
+# channels — so NONE of the host-mediation passes apply. All three false.
+star_topology_host_mediation = false
+host_data_relay              = false
+reorderable_push             = false

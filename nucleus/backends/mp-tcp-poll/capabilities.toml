@@ -25,3 +25,12 @@ supports_buffer = false
 max_buffer      = 1
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# Same TCP STAR topology as mp-tcp-bufsync: host-excluding barriers need
+# host mediation (apply_host_mediation_inject). Nonblocking-poll over the
+# same per-pair-FIFO stream — safe-push-reorder is UNSAFE (host's own w2w
+# Waits would race a moved relay). Only the mediation flag is set.
+star_topology_host_mediation = true
+host_data_relay              = false
+reorderable_push             = false

@@ -51,3 +51,11 @@ supports_buffer = true
 max_buffer      = 64
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# MPI: host-excluding barriers lower natively via MPI_Comm_split +
+# sub-comm barrier (TASK-0045.02), and worker-to-worker data rides
+# direct rank-to-rank Ibsend/Imrecv — no host relay. All three false.
+star_topology_host_mediation = false
+host_data_relay              = false
+reorderable_push             = false

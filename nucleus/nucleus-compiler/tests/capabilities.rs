@@ -66,6 +66,16 @@ fn example_caps() -> Capabilities {
         max_buffer: 1024,
         worker_classes: vec!["default".to_string()],
         memory_regions: vec!["heap".to_string()],
+        // EXAMPLE_TOML omits the three topology/mediation flags
+        // (TASK-0455.09), so they deserialise to their `false` default.
+        // This synthetic fixture deliberately keeps them all `false` to
+        // match — it is NOT the real mp-tcp-event cap-file (note the
+        // synthetic `max_buffer = 1024`); the real per-backend flag
+        // values are pinned in
+        // `driver/tests/task0455_09_capability_pass_selection.rs`.
+        star_topology_host_mediation: false,
+        host_data_relay: false,
+        reorderable_push: false,
     }
 }
 
@@ -352,6 +362,80 @@ fn task_0120_negative_unsupported_schema_version() {
     assert!(
         matches!(err, CapError::UnsupportedSchemaVersion { found: 999, ref supported } if supported == &vec![1]),
         "expected UnsupportedSchemaVersion {{found: 999, supported: [1]}}, got {err:?}"
+    );
+}
+
+// --------------------------------------------------------------------
+// Topology / mediation flags (TASK-0455.09)
+// --------------------------------------------------------------------
+
+#[test]
+fn task_0455_09_topology_flags_default_to_false_when_missing() {
+    // EXAMPLE_TOML omits the three flags; they must default to false
+    // (back-compat: a pre-this-task or off-tree cap-file selects NO
+    // host-mediation passes).
+    assert!(
+        !EXAMPLE_TOML.contains("star_topology_host_mediation"),
+        "fixture drift: EXAMPLE_TOML must NOT declare the topology flags \
+         for this default test to be meaningful"
+    );
+    let caps = load_capabilities(write_tmp(EXAMPLE_TOML).path())
+        .expect("EXAMPLE_TOML without topology flags must parse (they default)");
+    assert!(!caps.star_topology_host_mediation);
+    assert!(!caps.host_data_relay);
+    assert!(!caps.reorderable_push);
+}
+
+#[test]
+fn task_0455_09_topology_flags_parse_from_toml() {
+    // The full per-seq-demux event-star shape: all three true.
+    let src = format!(
+        "{EXAMPLE_TOML}\n\
+         star_topology_host_mediation = true\n\
+         host_data_relay              = true\n\
+         reorderable_push             = true\n"
+    );
+    let caps =
+        load_capabilities(write_tmp(&src).path()).expect("all-true topology flags must parse");
+    assert!(caps.star_topology_host_mediation);
+    assert!(caps.host_data_relay);
+    assert!(caps.reorderable_push);
+}
+
+#[test]
+fn task_0455_09_data_relay_without_mediation_rejected() {
+    // host_data_relay = true with star_topology_host_mediation = false
+    // is logically impossible; the loader's validate() must reject it
+    // LOUDLY (not silently mis-mediate at codegen time).
+    let src = format!(
+        "{EXAMPLE_TOML}\n\
+         star_topology_host_mediation = false\n\
+         host_data_relay              = true\n"
+    );
+    let err = load_capabilities(write_tmp(&src).path())
+        .expect_err("relay-without-mediation must be rejected at load time");
+    assert!(
+        matches!(err, CapError::InconsistentTopologyFlags { ref detail }
+                 if detail.contains("host_data_relay")
+                 && detail.contains("star_topology_host_mediation")),
+        "expected InconsistentTopologyFlags naming both flags, got {err:?}"
+    );
+}
+
+#[test]
+fn task_0455_09_reorderable_push_without_mediation_rejected() {
+    let src = format!(
+        "{EXAMPLE_TOML}\n\
+         star_topology_host_mediation = false\n\
+         reorderable_push             = true\n"
+    );
+    let err = load_capabilities(write_tmp(&src).path())
+        .expect_err("reorder-without-mediation must be rejected at load time");
+    assert!(
+        matches!(err, CapError::InconsistentTopologyFlags { ref detail }
+                 if detail.contains("reorderable_push")
+                 && detail.contains("star_topology_host_mediation")),
+        "expected InconsistentTopologyFlags naming both flags, got {err:?}"
     );
 }
 

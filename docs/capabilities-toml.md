@@ -29,8 +29,13 @@ memory_regions  = ["heap"]
 
 ## Fields
 
-All fields are required. Unknown fields are rejected (`deny_unknown_fields`).
-Forward-compatible additions are flagged in §Limitations.
+All fields below (`name` … `memory_regions`) are required. The three
+topology/mediation flags in §"Topology / mediation flags" are OPTIONAL
+and default to `false` (so an off-tree or pre-TASK-0455.09 file parses
+unchanged and selects no host-mediation passes); every in-tree backend
+declares them explicitly. Unknown fields are rejected
+(`deny_unknown_fields`). Forward-compatible additions are flagged in
+§Limitations.
 
 ### `name`
 
@@ -140,6 +145,74 @@ Forward-compatible additions are flagged in §Limitations.
   `place_data` directive) must each be in this list. Otherwise
   `CapMismatch::MemoryRegionNotSupported`.
 
+## Topology / mediation flags
+
+Three booleans (TASK-0455.09) declare the backend's wire-topology facts
+that decide **which host-mediation compiler passes run**. They used to be
+hard-coded as three separate backend-NAME lists in the driver
+(`driver/src/main.rs`); a new platform had to remember up to three lists
+and a miss was a silent topology mismatch (the silent-sibling failure
+class). They are now declared once, here, per backend.
+
+Each flag selects exactly one pass. They are NOT a schedule-compat axis
+(`check_schedule_compat` never reads them) — they drive the driver's
+internal pass selection only.
+
+### `star_topology_host_mediation`
+
+- Type: bool. Optional, defaults to `false`.
+- Semantics: `true` iff the backend has a host-mediated **star**
+  topology with no native worker-to-worker barrier channel, so every
+  host-EXCLUDING barrier must be re-routed through the elected host. The
+  driver runs `apply_host_mediation_inject` for these backends. `false`
+  for backends whose barrier primitive handles host-excluding barriers
+  natively: shared-memory `std::sync::Barrier` (pthreads-*, openmp-rs),
+  MPI `Comm_split` sub-comm barrier (mpi-*), the embedded stub.
+
+### `host_data_relay`
+
+- Type: bool. Optional, defaults to `false`.
+- Semantics: `true` iff the backend has no native worker-to-worker DATA
+  channel, so every worker-to-worker `Push`/`Wait` pair is relayed
+  through the elected host. The driver runs
+  `apply_host_data_relay_inject`. **Implies `star_topology_host_mediation`**
+  — a transfer cannot be relayed through a host that is not a mediating
+  hub. `validate` rejects the contradiction loudly
+  (`CapError::InconsistentTopologyFlags`).
+
+### `reorderable_push`
+
+- Type: bool. Optional, defaults to `false`.
+- Semantics: `true` iff the backend's wait primitive is per-(seq)
+  DEMUXED (an inbound queue keyed by sequence, not a strict per-pair FIFO
+  stream), so a hoistable worker-to-worker `Push` can be safely moved
+  ahead of a preceding `Wait` to break the host-relay wait-before-push
+  deadlock. The driver runs `apply_safe_push_reorder`. The strict-FIFO
+  transports (mp-tcp-bufsync, mp-tcp-poll) MUST NOT set this — moving a
+  push ahead of a wait would race host's own w2w waits on the shared
+  stream. **Implies `star_topology_host_mediation`** (the reorder only
+  matters on the host-relay path); `validate` enforces it.
+
+### Per-backend declaration (the equivalence the driver test pins)
+
+The values below reproduce EXACTLY the old driver name-list selection.
+The exhaustive equivalence is asserted in
+`driver/tests/task0455_09_capability_pass_selection.rs` (each of the 10
+backends: capability-driven selection == old name-list selection).
+
+| backend            | `star_topology_host_mediation` | `host_data_relay` | `reorderable_push` |
+| ------------------ | ------------------------------ | ----------------- | ------------------ |
+| pthreads-sync      | false                          | false             | false              |
+| pthreads-async     | false                          | false             | false              |
+| openmp-rs          | false                          | false             | false              |
+| mpi-blocking       | false                          | false             | false              |
+| mpi-nonblocking    | false                          | false             | false              |
+| embedded-pattern   | false                          | false             | false              |
+| mp-tcp-bufsync     | true                           | false             | false              |
+| mp-tcp-poll        | true                           | false             | false              |
+| mp-tcp-event       | true                           | true              | true               |
+| mp-uds-event       | true                           | true              | true               |
+
 ## Compatibility check (`check_schedule_compat`)
 
 The compiler calls `check_schedule_compat(caps, sched)` to verify a
@@ -174,17 +247,26 @@ get `Result<(), Vec<CapMismatch>>`.
   surface can grow without recompiling the capability parser. If a
   backend wants a truly custom notify ("`my_proprietary_doorbell`"),
   add it to the enum.
-- **Conditional capabilities.** The schema cannot express things like
-  "async is supported, but only when `buffer >= 2`", or
-  "`notify=event` only when `transport=tcp`". The flat-flag shape
-  rejects this by design — the schedule × backend product is small
+- **Conditional capabilities.** The schedule-compat axes
+  (`supports_async`, `notify`, …) are flat flags: the schema cannot
+  express "async is supported, but only when `buffer >= 2`". That
+  flat-flag shape is by design — the schedule × backend product is small
   enough that a real conflict shows up as a CapMismatch elsewhere.
-  Future work could add a `restrictions = [ ... ]` array.
-- **Schema versioning.** No `schema_version` field today. When a
-  future field becomes mandatory in a back-incompatible way, a
-  version field would help the parser distinguish. For now, the
-  `deny_unknown_fields` policy plus the small field set keeps
-  evolution mechanically inspectable. Filed as a follow-up.
+  Future work could add a `restrictions = [ ... ]` array. The
+  topology/mediation flags (TASK-0455.09) DO carry the schema's first
+  CROSS-FIELD consistency rule (`host_data_relay` / `reorderable_push`
+  each imply `star_topology_host_mediation`), enforced in
+  `Capabilities::validate` at load time with
+  `CapError::InconsistentTopologyFlags`. That rule is a load-time
+  validity check on the cap-file itself, NOT a schedule-conditional
+  capability.
+- **Schema versioning.** The `schema_version` field (TASK-0120) gates
+  parsing rules per version; `SUPPORTED_SCHEMA_VERSIONS` is the accepted
+  set (currently `[1]`). When a future field becomes mandatory in a
+  back-incompatible way, the loader revs that list and per-version-gates
+  the changed parsing. The three topology/mediation flags were added
+  back-compatibly (optional, defaulting to `false`) so they did NOT need
+  a version bump — they stay on `schema_version = 1`.
 
 ## Limitations
 

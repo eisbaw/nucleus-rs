@@ -132,6 +132,18 @@ fn default_schema_version() -> u32 {
     1
 }
 
+/// Default for the three topology/mediation flags (TASK-0455.09). They
+/// default to `false` so a `capabilities.toml` written before this task
+/// (or for a future shared-memory / native-w2w backend) parses unchanged
+/// and selects NO host-mediation passes — the same behaviour the deleted
+/// driver name-lists gave for any backend not in them. Every CURRENT
+/// backend declares all three explicitly (the schema doc + the driver's
+/// equivalence test require it); the default exists only so the field
+/// addition is not a hard breaking change for off-tree files.
+fn default_false() -> bool {
+    false
+}
+
 /// The capability matrix declared by a single backend.
 ///
 /// One-to-one with `capabilities.toml`. The serde-derived
@@ -172,14 +184,64 @@ pub struct Capabilities {
     pub worker_classes: Vec<String>,
     /// Memory regions the backend supports.
     pub memory_regions: Vec<String>,
+
+    // --- Topology / mediation flags (TASK-0455.09) -------------------
+    //
+    // These three booleans encode the wire-topology facts that used to
+    // be hard-coded as three backend-NAME lists in the driver's pass
+    // selection (driver/src/main.rs). The driver now reads them off the
+    // loaded `Capabilities` instead of string-matching the backend name,
+    // so a new platform declares its topology HERE (one place, reviewed
+    // with the rest of the capability surface) and cannot silently miss
+    // a list — the silent-sibling failure mode the lists invited. Each
+    // selects exactly one compiler pass; see `docs/capabilities-toml.md`
+    // §"Topology / mediation flags" for the prose and the per-backend
+    // table. `Capabilities::validate` rejects a logically impossible
+    // combination (relay / push-reorder without host mediation).
+    /// `true` iff the backend has a host-mediated STAR topology with no
+    /// native worker-to-worker barrier channel: every host-EXCLUDING
+    /// barrier must be re-routed through the elected host to lower (the
+    /// driver runs `apply_host_mediation_inject`). `false` for backends
+    /// whose barrier primitive handles host-excluding barriers natively
+    /// (shared-memory `std::sync::Barrier`, MPI `Comm_split` sub-comm
+    /// barrier, embedded stub).
+    #[serde(default = "default_false")]
+    pub star_topology_host_mediation: bool,
+    /// `true` iff the backend has no native worker-to-worker DATA
+    /// channel, so every worker-to-worker `Push`/`Wait` pair must be
+    /// relayed through the elected host (the driver runs
+    /// `apply_host_data_relay_inject`). Implies
+    /// `star_topology_host_mediation` (you cannot relay through a host
+    /// that is not a mediating hub); `validate` enforces that.
+    #[serde(default = "default_false")]
+    pub host_data_relay: bool,
+    /// `true` iff the backend's wait primitive is per-(seq) DEMUXED (an
+    /// inbound queue keyed by sequence, not a strict per-pair FIFO
+    /// stream), so a hoistable worker-to-worker `Push` can be safely
+    /// moved ahead of a preceding `Wait` to break the host-relay
+    /// wait-before-push deadlock (the driver runs
+    /// `apply_safe_push_reorder`). Strict-FIFO transports (bufsync,
+    /// poll) must NOT set this — moving a push ahead of a wait would
+    /// race host's own w2w waits on the shared stream. Implies
+    /// `star_topology_host_mediation` (the reorder only matters on the
+    /// host-relay path, which only host-mediated backends have);
+    /// `validate` enforces that.
+    #[serde(default = "default_false")]
+    pub reorderable_push: bool,
 }
 
 impl Capabilities {
     /// Post-deserialise sanity check. Called by [`load_capabilities`]
     /// and the round-trip path. Catches things the serde schema can't
-    /// (tier range; duplicate elements in lists are NOT flagged, only
-    /// folded for membership testing).
-    fn validate(&self) -> Result<(), CapError> {
+    /// (tier range; the topology/mediation-flag cross-field implication
+    /// rule — TASK-0455.09; duplicate elements in lists are NOT flagged,
+    /// only folded for membership testing).
+    ///
+    /// `pub` so callers that construct a [`Capabilities`] in memory (the
+    /// TASK-0455.09 topology-flag negative tests) can exercise the same
+    /// validation path the loader runs, without going through a TOML
+    /// round-trip or the filesystem.
+    pub fn validate(&self) -> Result<(), CapError> {
         if !SUPPORTED_SCHEMA_VERSIONS.contains(&self.schema_version) {
             return Err(CapError::UnsupportedSchemaVersion {
                 found: self.schema_version,
@@ -188,6 +250,36 @@ impl Capabilities {
         }
         if !matches!(self.tier, 1..=3) {
             return Err(CapError::InvalidTier(self.tier));
+        }
+        // Topology/mediation flag consistency (TASK-0455.09). Both
+        // host-data-relay and push-reorder are operations performed ON
+        // the host-relay path, which only exists when the backend is
+        // host-mediated. Declaring either WITHOUT
+        // `star_topology_host_mediation` is a logically impossible
+        // surface: the driver would route a w2w transfer through a host
+        // that is not a mediating hub, mis-mediating silently. Reject it
+        // loudly here so a fat-fingered cap-file is caught at load time,
+        // not as a runtime topology mismatch (the failure class the
+        // deleted driver name-lists invited). This is the schema's first
+        // CROSS-FIELD consistency rule; the flat per-field checks above
+        // cannot express it.
+        if self.host_data_relay && !self.star_topology_host_mediation {
+            return Err(CapError::InconsistentTopologyFlags {
+                detail: "`host_data_relay = true` requires \
+                         `star_topology_host_mediation = true` (a worker-to-worker \
+                         transfer cannot be relayed through a host that is not a \
+                         mediating hub)"
+                    .to_string(),
+            });
+        }
+        if self.reorderable_push && !self.star_topology_host_mediation {
+            return Err(CapError::InconsistentTopologyFlags {
+                detail: "`reorderable_push = true` requires \
+                         `star_topology_host_mediation = true` (the safe-push reorder \
+                         only applies on the host-relay path, which only host-mediated \
+                         backends have)"
+                    .to_string(),
+            });
         }
         Ok(())
     }
@@ -478,6 +570,11 @@ pub enum CapError {
     /// nucleus-compiler. `found` is the value in the source;
     /// `supported` is the list this build accepts.
     UnsupportedSchemaVersion { found: u32, supported: Vec<u32> },
+    /// A logically impossible combination of the topology/mediation
+    /// flags (TASK-0455.09): `host_data_relay` or `reorderable_push`
+    /// set without `star_topology_host_mediation`. `detail` names the
+    /// specific offending pair.
+    InconsistentTopologyFlags { detail: String },
 }
 
 impl fmt::Display for CapError {
@@ -503,6 +600,10 @@ impl fmt::Display for CapError {
                 "`schema_version = {found}` is not supported by this nucleus-compiler \
                  build (supported: {supported:?}) — most likely a capabilities.toml \
                  written for a newer schema; upgrade nucleus-compiler or downgrade the file"
+            ),
+            CapError::InconsistentTopologyFlags { detail } => write!(
+                f,
+                "inconsistent topology/mediation flags in capabilities.toml: {detail}"
             ),
         }
     }

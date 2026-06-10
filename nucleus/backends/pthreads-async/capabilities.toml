@@ -34,3 +34,11 @@ supports_buffer = true
 max_buffer      = 64
 worker_classes  = ["default"]
 memory_regions  = ["heap"]
+
+# Topology/mediation flags (TASK-0455.09; docs/capabilities-toml.md).
+# Shared-memory + per-(DataId,SeqTag) ring buffer: host-excluding
+# barriers lower natively (std::sync::Barrier) and w2w data rides direct
+# shared-memory channels — no host mediation. All three false.
+star_topology_host_mediation = false
+host_data_relay              = false
+reorderable_push             = false

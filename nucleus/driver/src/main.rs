@@ -361,134 +361,24 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
         );
     }
 
-    // TASK-0329 cycle 160 — host-mediation injection (CTRL arm of the
-    // cycle-148/149 split of the original TASK-0175 combined filing).
-    // For `mp-tcp-bufsync` and `mp-tcp-event`, the
-    // one-CTRL-stream-per-(host,worker) star topology cannot lower a
-    // host-excluding barrier without a worker-to-worker mesh. Adding
-    // host as a mediating hub turns each host-excluding barrier into
-    // a star-shaped N+1-party rendezvous through host, which the
-    // existing barrier-shim emitter handles transparently. The pass
-    // is structurally idempotent and a no-op for ACFGs whose every
-    // barrier already includes host. pthreads-sync / pthreads-async
-    // do NOT apply this pass — their shared-memory barrier primitives
-    // handle host-excluding barriers natively (std::sync::Barrier on
-    // an Arc shared only among the listed participants).
+    // ---- Load backend capabilities (TASK-0455.09) ----
     //
-    // Applied AFTER inject_syncs / inject_transfers (the passes that
-    // emit barriers) and BEFORE acfg_to_events (so the projection
-    // naturally places host's Sync at the structurally correct
-    // position, preserving any enclosing Repeat / Sequence nesting).
+    // Loaded HERE — before the host-mediation passes below — because
+    // WHICH of those passes run is now CAPABILITY data, not a hard-coded
+    // backend-NAME list. Previously the driver string-matched the backend
+    // name in three separate places (`backend == "mp-tcp-event" || ...`);
+    // every new platform had to remember up to three lists and a miss was
+    // a silent topology mismatch (the silent-sibling failure class). The
+    // three topology/mediation flags
+    // (`star_topology_host_mediation` / `host_data_relay` /
+    // `reorderable_push`) now live in each backend's `capabilities.toml`
+    // and `Capabilities::validate` rejects an impossible combination at
+    // load time. See `docs/capabilities-toml.md` §"Topology / mediation
+    // flags".
     //
-    // **Cycle 195 (TASK-0044.02.02)**: gate widened to include
-    // `mp-tcp-poll` because the poll backend's multi-worker arm
-    // inherits the same one-CTRL-stream-per-(host,worker) star
-    // topology as mp-tcp-bufsync — its `Plan::build` carries the same
-    // defensive ContractGap on host-excluding barriers. The
-    // host-mediation pass is needed for any mp-tcp-poll schedule with
-    // a host-excluding barrier (e.g. 03-reduction/distributed) to
-    // lower correctly.
-    //
-    // **Cycle 197 (TASK-0044.03.01)**: gate widened to include
-    // `mp-uds-event` for the same reason — UDS-star topology is
-    // structurally identical to TCP-star (one-CTRL-stream-per-(host,
-    // worker) over UnixStream instead of TcpStream); capability
-    // surface mirrors mp-tcp-event. The mp-uds-event Plan::build
-    // carries the SAME defensive ContractGap on host-excluding
-    // barriers, so the pass is needed end-to-end for cells like
-    // 03-reduction/distributed × mp-uds-event.
-    let acfg = if backend == "mp-tcp-bufsync"
-        || backend == "mp-tcp-event"
-        || backend == "mp-tcp-poll"
-        || backend == "mp-uds-event"
-    {
-        // WHY this pass needs the SAME host the backend will elect:
-        // a schedule whose "host" worker is declared but has zero
-        // projected events (unusual but possible) would otherwise
-        // mediate against an ID the backend does not elect as host,
-        // and the backend's defensive rejection would re-fire
-        // against the BACKEND-elected host (cycle-160 architect
-        // P1.1). The rule itself lives in `backend_common::host_election`;
-        // here we only build the `used` set the rule consumes.
-        //
-        // We project ONCE here (preview) to elect, then mediate, then
-        // re-project later — the mediation may add Sync events to
-        // host's list, making the post-mediation projection the
-        // authoritative per_worker. Cost: one extra `acfg_to_events`
-        // call (O(ACFG nodes)) — cheap vs the cross-backend skew this
-        // would otherwise leak into the differential.
-        let preview = acfg_to_events(&acfg);
-        let used: std::collections::BTreeSet<_> = preview
-            .iter()
-            .filter(|(_, evs)| !evs.is_empty())
-            .map(|(w, _)| *w)
-            .collect();
-        // Host election: shared helper (TASK-0336 cycle 164). See
-        // `backend_common::host_election` for the canonical rule
-        // (memory feedback-driver-must-mirror-backend-election-exactly).
-        let host = elect_host_from_name_workers(&acfg.name_workers, &used);
-        match host {
-            Some(h) => apply_host_mediation_inject(acfg, h),
-            // No `used_workers` (every per_worker entry empty). The
-            // ACFG is degenerate (no barriers possible); pass through.
-            None => acfg,
-        }
-    } else {
-        acfg
-    };
-
-    // TASK-0329.01.02 slice 2 — host-mediated data-relay injection,
-    // mp-tcp-event ONLY at cycle 163; widened to ALSO include
-    // mp-uds-event cycle 197 (TASK-0044.03.01). AC#5 bufsync audit:
-    // bufsync 09/13 cells are capability-gated, so behavioral
-    // verification is impossible; applying the pass on bufsync would
-    // have no defensible gain today. For every Push/Wait pair whose
-    // endpoints are BOTH non-host, replaces the pair with four sibling
-    // Xfers routing the transfer through host. The new host endpoints
-    // project naturally onto host's per-worker event list including
-    // INSIDE Repeat bodies — this is what unblocks
-    // 09-producer-consumer/pipelined × mp-tcp-event (per-iter w2w
-    // Push inside `for n in 0..16`), which the TASK-0330 defensive
-    // guard at `collect_w2w_pushes` would otherwise reject. The same
-    // defensive guard lives in mp-uds-event's collect_w2w_pushes
-    // sibling (cycle 197 copy-of-mp-tcp-event); without this pass
-    // running on mp-uds-event, 09/pipelined × mp-uds-event would hit
-    // the SAME ContractGap.
-    //
-    // Applied AFTER `apply_host_mediation_inject` so the CTRL-arm and
-    // DATA-arm passes compose cleanly (Sync participants are already
-    // host-augmented when this pass runs; this pass only touches Xfer
-    // nodes). Applied BEFORE the capability check + `acfg_to_events`
-    // so the projection sees the rewritten ACFG.
-    //
-    // Host election: same shared helper as the cycle-160 wiring above
-    // (rule lives in `backend_common::host_election`; same mirroring
-    // requirement vs the backend's Plan::build).
-    let acfg = if backend == "mp-tcp-event" || backend == "mp-uds-event" {
-        // Re-derive `used_workers` from the post-mediation ACFG. The
-        // host_mediation pass may have added host to Sync participants
-        // but doesn't change which workers project events; nonetheless
-        // we re-project to get the authoritative view (cheap, matches
-        // the slice-1 safe_push_reorder host election pattern).
-        let preview = acfg_to_events(&acfg);
-        let used: std::collections::BTreeSet<_> = preview
-            .iter()
-            .filter(|(_, evs)| !evs.is_empty())
-            .map(|(w, _)| *w)
-            .collect();
-        // Host election: shared helper. See
-        // `backend_common::host_election` module docstring for the
-        // canonical rule (TASK-0336 cycle 164 lift).
-        let host = elect_host_from_name_workers(&acfg.name_workers, &used);
-        match host {
-            Some(h) => apply_host_data_relay_inject(acfg, h),
-            None => acfg,
-        }
-    } else {
-        acfg
-    };
-
-    // ---- Capability check ----
+    // The `check_schedule_compat` call stays AFTER the mediation passes
+    // (it needs only `linked.sched`, which is unchanged by them) so its
+    // user-facing error ordering is byte-preserved.
     let caps_path = match a.capabilities {
         Some(p) => p,
         None => find_default_capabilities(&backend).ok_or_else(|| {
@@ -501,6 +391,87 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     let caps = load_capabilities(&caps_path)
         .map_err(|e| format!("capabilities load error ({}): {e}", caps_path.display()))?;
 
+    // ---- Host-mediation pass chain (CAPABILITY-driven, TASK-0455.09) ----
+    //
+    // TASK-0329 cycle 160 — host-mediation injection (CTRL arm of the
+    // cycle-148/149 split of the original TASK-0175 combined filing).
+    // For a star-topology backend (`caps.star_topology_host_mediation`),
+    // the one-CTRL-stream-per-(host,worker) wire cannot lower a
+    // host-excluding barrier without a worker-to-worker mesh. Adding host
+    // as a mediating hub turns each host-excluding barrier into a
+    // star-shaped N+1-party rendezvous through host, which the existing
+    // barrier-shim emitter handles transparently. The pass is structurally
+    // idempotent and a no-op for ACFGs whose every barrier already
+    // includes host. Backends whose barrier primitive handles
+    // host-excluding barriers natively (shared-memory `std::sync::Barrier`,
+    // MPI `Comm_split` sub-comm barrier, the embedded stub) declare
+    // `star_topology_host_mediation = false` and skip it. Historically the
+    // gate was a name list grown across cycles 160 / 195 / 197 (bufsync,
+    // then mp-tcp-poll, then mp-uds-event); it is now the single
+    // capability flag, declared once per backend in `capabilities.toml`.
+    //
+    // host_data_relay (TASK-0329.01.02 slice 2, cycle 163; widened to
+    // mp-uds-event cycle 197): for backends with no native
+    // worker-to-worker DATA channel (`caps.host_data_relay`), every
+    // Push/Wait pair whose endpoints are BOTH non-host is replaced with
+    // four sibling Xfers routing the transfer through host. The new host
+    // endpoints project naturally onto host's per-worker event list
+    // including INSIDE Repeat bodies — this unblocks
+    // 09-producer-consumer/pipelined (per-iter w2w Push inside
+    // `for n in 0..16`), which the TASK-0330 defensive `collect_w2w_pushes`
+    // guard would otherwise reject. Applied AFTER `apply_host_mediation_inject`
+    // so the CTRL-arm and DATA-arm passes compose cleanly. `validate`
+    // guarantees `host_data_relay` implies `star_topology_host_mediation`,
+    // so the relay never runs without the mediation above.
+    //
+    // Both passes mediate against the SAME host the backend's
+    // `Plan::build` will elect (memory
+    // `feedback-driver-must-mirror-backend-election-exactly`). Host
+    // election uses the shared `backend_common::elect_host_from_name_workers`
+    // helper (TASK-0336 cycle 164) — the canonical rule, NOT an inline
+    // approximation. We project ONCE here to elect; the two passes only
+    // ADD events to the host already in `used` (a host that was empty
+    // could not have been elected), so the elected host is identical
+    // before and after mediation — re-projecting would yield the same
+    // `used` set (the equivalence is pinned in
+    // `driver/tests/task0455_09_capability_pass_selection.rs`). Collapsing
+    // the previously-two preview projections to one is the TASK-0455.09
+    // waste cleanup (AC#3).
+    let acfg = if caps.star_topology_host_mediation {
+        let preview = acfg_to_events(&acfg);
+        let used: std::collections::BTreeSet<_> = preview
+            .iter()
+            .filter(|(_, evs)| !evs.is_empty())
+            .map(|(w, _)| *w)
+            .collect();
+        // Host election: shared helper (TASK-0336 cycle 164). See
+        // `backend_common::host_election` for the canonical rule
+        // (memory feedback-driver-must-mirror-backend-election-exactly).
+        match elect_host_from_name_workers(&acfg.name_workers, &used) {
+            Some(h) => {
+                // Step 1 — host-mediation (every star-topology backend).
+                let acfg = apply_host_mediation_inject(acfg, h);
+                // Step 2 — host data-relay (only backends with no native
+                // w2w DATA channel). Same elected host `h`: mediation only
+                // added Sync events to `h`'s list, it cannot change which
+                // worker is elected (see the projection-collapse rationale
+                // above). `validate` ensures this branch implies the
+                // mediation above already ran.
+                if caps.host_data_relay {
+                    apply_host_data_relay_inject(acfg, h)
+                } else {
+                    acfg
+                }
+            }
+            // No `used_workers` (every per_worker entry empty). The ACFG
+            // is degenerate (no barriers possible); pass through.
+            None => acfg,
+        }
+    } else {
+        acfg
+    };
+
+    // ---- Capability check ----
     if let Err(mismatches) = check_schedule_compat(&caps, &linked.sched) {
         let mut s = format!("backend `{backend}` cannot satisfy this schedule:");
         for m in &mismatches {
@@ -616,27 +587,28 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // e2e baseline byte-identically (no tier-1 cell uses `check loop`).
     let per_worker = inject_check_frames(per_worker, &linked.sched.checks, &acfg.name_iter_vars);
     // TASK-0329.01.01 slice 1 — safe push-before-wait reordering for
-    // mp-tcp-event (cycle 162) and mp-uds-event (cycle 197 widening
-    // for TASK-0044.03.01). Hoists hoistable worker-to-worker `Push`
+    // backends with a per-(seq) DEMUXED wait primitive
+    // (`caps.reorderable_push`; historically mp-tcp-event cycle 162 +
+    // mp-uds-event cycle 197). Hoists hoistable worker-to-worker `Push`
     // events above preceding w2w `Wait` events within each non-host
     // worker's top-level boundaries, breaking the wait-before-push
     // deadlock cycle on the synchronous host-relay (cycle-149) for
-    // schedules like 05-stencil/distributed-2d. mp-uds-event inherits
-    // the SAME per-seq-demux wait primitive + synchronous host-relay
-    // shape from its mp-tcp-event sibling (cycle 197 multi_worker/
-    // copy), so the same hoist is needed. Per AC#3 of TASK-0329.01.01:
-    // only the per-seq-demux event backends (mp-tcp-event +
-    // mp-uds-event) can safely move ahead of the first wait-bearing
-    // Sync; mp-tcp-bufsync's / mp-tcp-poll's constraint 3 (per-pair
-    // FIFO stream + host's own w2w Waits would race the moved relay)
-    // makes the analogous lift unsafe on those backends. Other
-    // backends do NOT have the host-relay deadlock surface
-    // (pthreads-* use direct w↔w channels; openmp-rs uses rayon
-    // shared-memory Slots). Pass is observationally a no-op for
-    // schedules that have no wait-before-push shape — preserves
-    // bit-identity for every currently-passing mp-tcp-event /
-    // mp-uds-event cell.
-    let per_worker = if backend == "mp-tcp-event" || backend == "mp-uds-event" {
+    // schedules like 05-stencil/distributed-2d. Per AC#3 of
+    // TASK-0329.01.01: only a per-seq-demux event backend can safely move
+    // a push ahead of the first wait-bearing Sync; the strict per-pair
+    // FIFO transports (mp-tcp-bufsync / mp-tcp-poll, constraint 3: host's
+    // own w2w Waits would race the moved relay) declare
+    // `reorderable_push = false`. Other backends do NOT have the
+    // host-relay deadlock surface at all (pthreads-* use direct w↔w
+    // channels; openmp-rs uses rayon shared-memory Slots) and likewise
+    // declare it false. `validate` guarantees `reorderable_push` implies
+    // `star_topology_host_mediation` (the hoist only matters on the
+    // host-relay path). The pass is observationally a no-op for schedules
+    // with no wait-before-push shape — preserving bit-identity for every
+    // currently-passing reorderable-push cell. Historically this gate was
+    // a `backend == "mp-tcp-event" || backend == "mp-uds-event"` name
+    // list; it is now the single capability flag.
+    let per_worker = if caps.reorderable_push {
         // Host election: shared helper. See
         // `backend_common::host_election` module docstring for the
         // canonical rule (TASK-0336 cycle 164 lift). `used` here =
