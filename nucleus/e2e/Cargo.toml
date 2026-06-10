@@ -40,6 +40,16 @@ path = "src/bin/diff_fuzz/main.rs"
 # pulling in two different versions and bloating build times.
 serde = { version = "=1.0.219", default-features = false, features = ["derive", "alloc"] }
 
+# Shared per-command wall-clock timeout with process-group teardown
+# (`test_common::proc_timeout`). ONE implementation of the hang→FAIL
+# kill-group machinery, consumed by BOTH this curated harness
+# (run.rs / determinism.rs) and the generative diff-fuzz binary
+# (TASK-0466). The dep arrow e2e → test-common → nucleus-compiler is
+# acyclic (test-common has no backend deps). Pure process-control
+# infrastructure: it carries no system-under-test semantics, so
+# sharing it does not couple the differential oracle to the SUT.
+test-common = { path = "../test-common" }
+
 # TOML parser for the matrix manifest and capabilities files. Pinned
 # to the version compatible with the MSRV declared in flake.nix — see
 # `nucleus/nucleus-compiler/Cargo.toml` for the version-rationale

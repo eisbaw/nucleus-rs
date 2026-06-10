@@ -734,8 +734,15 @@ pub(crate) fn run_nucleus_build(
     kernels: &std::path::Path,
     out_dir: &std::path::Path,
 ) -> Result<(), String> {
-    let out = Command::new("cargo")
-        .arg("run")
+    use test_common::proc_timeout::{run_timed, Timed};
+    // Same per-phase wall-clock budget as the curated cell-run path
+    // (`run::e2e_phase_budget`), driven through the SHARED group-kill
+    // machinery so a wedged determinism re-build fails loud instead of
+    // stalling `just e2e` (TASK-0466). A malformed env value is rejected
+    // by the shared resolver before any spawn.
+    let budget = crate::run::e2e_phase_budget()?;
+    let mut cmd = Command::new("cargo");
+    cmd.arg("run")
         .arg("--quiet")
         .arg("--bin")
         .arg("nucleus")
@@ -751,9 +758,25 @@ pub(crate) fn run_nucleus_build(
         .arg(&cell.backend)
         .arg("--out")
         .arg(out_dir)
-        .current_dir(paths.nucleus_ws())
-        .output()
-        .map_err(|e| format!("spawn cargo: {e}"))?;
+        .current_dir(paths.nucleus_ws());
+    let out = match run_timed(cmd, budget).map_err(|e| format!("spawn cargo: {e}"))? {
+        Timed::Completed(out) => out,
+        Timed::Timeout {
+            elapsed,
+            budget,
+            partial_stdout,
+            partial_stderr,
+        } => {
+            return Err(format!(
+                "nucleus build (determinism re-build) TIMED OUT after {:.1}s (budget {:.0}s, \
+                 set {} to adjust) — treated as a HANG/FAIL. Last output: {}",
+                elapsed.as_secs_f64(),
+                budget.as_secs_f64(),
+                crate::run::E2E_TIMEOUT_ENV,
+                short_tail(&partial_stderr, &partial_stdout, 4),
+            ));
+        }
+    };
     if !out.status.success() {
         return Err(short_tail(&out.stderr, &out.stdout, 4));
     }

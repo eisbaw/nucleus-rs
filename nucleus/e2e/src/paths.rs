@@ -221,6 +221,16 @@ impl Paths {
     /// or run-only invocation never created the other), and a removal
     /// error is reported loudly (never silently swallowed) but does
     /// not itself fail the run.
+    ///
+    /// Retained-run PRUNING (TASK-0461 AC#3, wave-6 ENOSPC addendum):
+    /// on a FAILED run, after retaining THIS run's tree, prune the OLDEST
+    /// previously-retained `<run-id>` dirs under the same parent, keeping
+    /// only the [`RETAINED_RUNS_KEEP`] most recent. Without this a long
+    /// series of failed `just e2e` invocations accumulated `<run-id>`
+    /// trees unbounded (a contributor to the 70-84GB target/ blowups);
+    /// keeping the last K preserves recent post-mortems while bounding
+    /// the steady state. The CURRENT run is always among the kept K (it
+    /// is the newest by mtime).
     pub(crate) fn finalize_run_scratch(&self, success: bool) {
         for root in [self.run_scratch_root(), self.run_determinism_root()] {
             if !root.exists() {
@@ -239,8 +249,120 @@ impl Paths {
                     "nucleus-e2e: retained per-run scratch for debugging: {}",
                     root.display()
                 );
+                // Bound the retained-failure series (keep last K).
+                if let Some(parent) = root.parent() {
+                    prune_retained_runs(parent, RETAINED_RUNS_KEEP);
+                }
             }
         }
+    }
+}
+
+/// How many retained (failed-run) `<run-id>` trees to keep per scratch
+/// parent before pruning the oldest. 4 keeps the last few post-mortems —
+/// enough to compare a flaky regression across runs — while bounding the
+/// disk a long failure series can hold. Documented as a deliberate
+/// choice (the prior policy was unbounded retention).
+pub(crate) const RETAINED_RUNS_KEEP: usize = 4;
+
+/// Keep the `keep` most-recently-modified immediate child dirs of
+/// `parent`, removing the rest. Used to bound retained failed-run scratch
+/// (TASK-0461 AC#3). Best-effort: any IO error is reported but never
+/// fails the run. Sort key is mtime (newest kept); the current run's tree
+/// is the newest, so it is never pruned.
+pub(crate) fn prune_retained_runs(parent: &std::path::Path, keep: usize) {
+    let entries = match fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return, // parent vanished / unreadable — nothing to do
+    };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // mtime; fall back to UNIX_EPOCH so an unreadable mtime sorts as
+        // oldest (gets pruned first), never as newest (never retained
+        // over a real recent run).
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        dirs.push((mtime, path));
+    }
+    if dirs.len() <= keep {
+        return;
+    }
+    // Newest first; drop the first `keep`, remove the tail.
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in dirs.into_iter().skip(keep) {
+        if let Err(e) = fs::remove_dir_all(&path) {
+            eprintln!(
+                "nucleus-e2e: WARNING: could not prune old retained scratch \
+                 `{}`: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::prune_retained_runs;
+    use std::fs;
+    use std::time::Duration;
+
+    /// `prune_retained_runs` keeps exactly the `keep` newest dirs and
+    /// removes the older ones; a `keep`-or-fewer set is left untouched.
+    /// Distinct mtimes are forced by a tiny sleep between creates so the
+    /// "newest kept" ordering is deterministic on a coarse-mtime FS.
+    #[test]
+    fn keeps_last_k_by_mtime() {
+        let parent = std::env::temp_dir().join(format!(
+            "nuc-prune-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&parent).unwrap();
+
+        // Create 6 run dirs oldest-to-newest with a stub file each.
+        let mut names = Vec::new();
+        for i in 0..6 {
+            let d = parent.join(format!("run-{i}"));
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("marker"), b"x").unwrap();
+            names.push(d);
+            // Coarse mtime granularity: nudge each create apart.
+            std::thread::sleep(Duration::from_millis(15));
+        }
+
+        prune_retained_runs(&parent, 4);
+
+        // The 4 newest (run-2..run-5) survive; run-0, run-1 are pruned.
+        assert!(!names[0].exists(), "oldest run-0 should be pruned");
+        assert!(!names[1].exists(), "run-1 should be pruned");
+        for d in &names[2..] {
+            assert!(d.exists(), "newest 4 must survive: {}", d.display());
+        }
+
+        // A second prune with keep >= remaining count is a no-op.
+        prune_retained_runs(&parent, 4);
+        for d in &names[2..] {
+            assert!(d.exists(), "no-op prune must not remove survivors");
+        }
+
+        fs::remove_dir_all(&parent).ok();
+    }
+
+    /// A nonexistent / unreadable parent is a silent no-op (never panics).
+    #[test]
+    fn missing_parent_is_noop() {
+        let nope = std::env::temp_dir().join("nuc-prune-does-not-exist-zzz-xyz");
+        let _ = fs::remove_dir_all(&nope);
+        prune_retained_runs(&nope, 4); // must not panic
     }
 }
 

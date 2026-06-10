@@ -55,6 +55,13 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 use nucleus_compiler::NameTables;
 
+/// Shared per-command wall-clock timeout with process-group teardown.
+/// One implementation consumed by the diff-fuzz harness, the curated
+/// `just e2e` harness, and the backend pingpong unit-test runners
+/// (TASK-0466 / TASK-0461). See the module docs for why a hung child
+/// must become a reported FAILURE, not a silent stall.
+pub mod proc_timeout;
+
 /// Create a process-and-call-unique scratch directory under `parent`.
 ///
 /// Returns `parent/{leaf}-{pid}-{counter}`, where `pid` is this

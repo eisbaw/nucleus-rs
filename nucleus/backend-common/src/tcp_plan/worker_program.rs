@@ -70,9 +70,11 @@ impl<W: WirePrimitives> Plan<'_, W> {
         writeln!(out).ok();
         // Role-specific imports so the generated file is
         // warning-clean. BOTH roles need PathBuf + fs for the
-        // rendezvous-file handshake; host adds TcpListener +
-        // io::Write (file write); non-host adds TcpStream + Duration
-        // (connect retry + poll sleep).
+        // rendezvous-file handshake; host adds TcpListener (it binds the
+        // listeners; the bounded-accept helper `wire::accept_with_deadline`
+        // lives in wire.rs and returns the stream, so host `main` never
+        // names `TcpStream`/`Duration` itself) + io::Write (file write);
+        // non-host adds TcpStream + Duration (connect retry + poll sleep).
         writeln!(out, "use std::fs;").ok();
         writeln!(out, "use std::path::PathBuf;").ok();
         if is_host {
@@ -204,16 +206,24 @@ impl<W: WirePrimitives> Plan<'_, W> {
                      \x20\x20\x20\x20}}"
                 )
                 .ok();
+                // Bounded accept (TASK-0461): the prior bare
+                // `listener.accept()` was an UNBOUNDED blocking call — a
+                // worker that never connected left host wedged here
+                // forever at 0% CPU with no established socket (the
+                // 10.5h-night-eater signature). `accept_with_deadline`
+                // polls with a wall-clock deadline and fails LOUD naming
+                // the worker, the mirror of the worker's bounded
+                // `connect_retry`. It restores the listener + stream to
+                // BLOCKING before returning, so the subsequent sync wire
+                // protocol is byte-for-byte unchanged.
                 writeln!(
                     out,
-                    "    let (mut data_{nwn}, _) = listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept DATA from {nwn} failed: {{e}}\"));"
+                    "    let mut data_{nwn} = wire::accept_with_deadline(&listener_{nwn}, \"DATA\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(
                     out,
-                    "    let (mut ctrl_{nwn}, _) = listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept CTRL from {nwn} failed: {{e}}\"));"
+                    "    let mut ctrl_{nwn} = wire::accept_with_deadline(&listener_{nwn}, \"CTRL\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(out, "    data_{nwn}.set_nodelay(true).ok();").ok();

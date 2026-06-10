@@ -48,6 +48,28 @@ fn scratch_dir(name: &str) -> PathBuf {
     test_common::unique_scratch_dir(&target, name)
 }
 
+/// Per-`run.sh`-invocation wall-clock watchdog budget (TASK-0461 AC#2).
+/// Shares the curated harness's env knob name + 600s generous default;
+/// a healthy pair finishes in well under a second, so this only bites a
+/// genuine connect/accept-phase hang.
+fn run_sh_watchdog_budget() -> std::time::Duration {
+    test_common::proc_timeout::resolve_timeout("NUC_E2E_TIMEOUT_SECS", 600)
+        .expect("watchdog budget resolves")
+}
+
+/// Reclaim a per-run scratch dir on SUCCESS (TASK-0461 AC#3). The
+/// `unique_scratch_dir` helper is create-once-never-remove BY DESIGN
+/// (that is how it kills the remove/create race), so the steady state is
+/// unbounded accumulation (~812 dirs were observed). This on-success GC
+/// is the SEPARATE reclamation the forward-note prescribes: it runs only
+/// after the assertions pass (a FAILED run keeps its scratch for
+/// post-mortem), and it never touches a path another caller might share
+/// (each scratch is process-and-call-unique). Best-effort: a removal
+/// error is ignored (disk hygiene, not correctness).
+fn reclaim_scratch_on_success(scratch: &Path) {
+    let _ = fs::remove_dir_all(scratch);
+}
+
 const ALGO_SRC: &str = r#"
 const N : usize = 16;
 
@@ -203,13 +225,26 @@ fn run_mp_tcp(scratch: &Path) -> Vec<u8> {
     let input_bin = scratch.join("input.bin"); // unused by these kernels
     let _ = fs::write(&input_bin, []);
     let output_bin = scratch.join("output.bin");
-    let run = Command::new("bash")
+    // TASK-0461 AC#2: wrap the `run.sh` spawn in the SHARED group-kill
+    // watchdog. The prior bare `.output()` was UNBOUNDED — when the
+    // generated host/w0 pair wedged in the connect/accept handshake the
+    // test thread blocked forever (the 10.5h-at-0%-CPU night-eater).
+    // `run_or_timeout` kills the whole `bash run.sh` process group on the
+    // deadline and PANICS with a tail, so a wedged pair fails this test in
+    // minutes with diagnostics. Budget overridable via the shared env
+    // (default 600s — generous; a healthy pair finishes in well under a
+    // second).
+    let mut run_cmd = Command::new("bash");
+    run_cmd
         .arg(out_dir.join("run.sh"))
         .arg(&input_bin)
         .arg(&output_bin)
-        .current_dir(&out_dir)
-        .output()
-        .expect("run.sh");
+        .current_dir(&out_dir);
+    let run = test_common::proc_timeout::run_or_timeout(
+        run_cmd,
+        run_sh_watchdog_budget(),
+        "mp-tcp-bufsync pingpong run.sh",
+    );
     assert!(
         run.status.success(),
         "run.sh exited non-zero:\nstdout={}\nstderr={}",
@@ -269,6 +304,11 @@ fn pingpong_matches_pthreads_sync_bit_for_bit() {
          on the identical (algorithm, schedule) — the cross-backend \
          bit-identity contract is violated"
     );
+
+    // All assertions passed — reclaim this run's scratch (TASK-0461 AC#3).
+    // A FAILED run returns before this point, keeping its tree for
+    // post-mortem.
+    reclaim_scratch_on_success(&scratch);
 }
 
 // --------------------------------------------------------------------
@@ -365,4 +405,8 @@ fn const_in_indexexpr_mp_tcp_bufsync_resolves_to_literal_value() {
          reaching this backend's code path. worker_bins: {:?}",
         result.worker_bins
     );
+
+    // Emit-only test, but it still materialises a scratch dir; reclaim it
+    // on success (TASK-0461 AC#3).
+    reclaim_scratch_on_success(&scratch);
 }

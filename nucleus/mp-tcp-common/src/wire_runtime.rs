@@ -9,10 +9,86 @@
 // (fail loud: a framing mismatch is a codegen bug, never recoverable).
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 
 /// Header: 8-byte LE length + 8-byte LE seq tag, then `length` bytes.
 const HEADER_LEN: usize = 16;
+
+/// Resolve the host-side handshake (accept + first-read) wall-clock
+/// deadline in milliseconds. Default 30_000 ms (30 s); override via
+/// `NUC_HANDSHAKE_DEADLINE_MS`. Values <= 0 / unparsable fall back to the
+/// default (a typo never silently disables the bound).
+///
+/// # Why this exists (TASK-0461)
+///
+/// The generated host's `TcpListener::accept()` was an UNBOUNDED blocking
+/// call: a non-host worker that never connected (it died, raced on a
+/// stale rendezvous port, or wedged before its second connect) left the
+/// host blocked in `accept()` FOREVER at 0% CPU with no established
+/// socket — the exact 10.5h-night-eater signature. The non-host worker's
+/// connect retry was already bounded (6 s, fail-loud), but the host's
+/// accept was not. This deadline closes that asymmetry: a host that does
+/// not see the expected connection within the budget fails LOUD naming
+/// the worker, instead of hanging the whole run.
+pub fn handshake_deadline_ms() -> u128 {
+    match std::env::var("NUC_HANDSHAKE_DEADLINE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u128>().ok())
+    {
+        Some(v) if v > 0 => v,
+        _ => 30_000,
+    }
+}
+
+/// `accept()` one connection from `listener`, bounded by the
+/// [`handshake_deadline_ms`] wall-clock deadline. The listener is put in
+/// nonblocking mode for the poll loop and restored to blocking before the
+/// accepted stream is returned, so the caller's subsequent BLOCKING wire
+/// protocol (mp-tcp-bufsync) is unchanged. `role` and `who` name the
+/// channel + peer for the loud-failure message.
+///
+/// On a never-arriving connection this panics with a clear diagnostic
+/// rather than blocking forever (TASK-0461 AC#1: bounded, loud failure on
+/// the host accept path — the mirror of the worker's bounded
+/// `connect_retry`).
+pub fn accept_with_deadline(listener: &TcpListener, role: &str, who: &str) -> TcpStream {
+    let deadline_ms = handshake_deadline_ms();
+    let start = std::time::Instant::now();
+    listener
+        .set_nonblocking(true)
+        .unwrap_or_else(|e| panic!("host: set_nonblocking(true) on {who} listener failed: {e}"));
+    let stream = loop {
+        match listener.accept() {
+            Ok((s, _)) => break s,
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                let elapsed = start.elapsed().as_millis();
+                if elapsed >= deadline_ms {
+                    panic!(
+                        "host: accept {role} from {who} timed out after {elapsed} ms \
+                         >= NUC_HANDSHAKE_DEADLINE_MS={deadline_ms} ms — the worker never \
+                         connected (it died, raced on a stale rendezvous port, or wedged \
+                         before connect). Bounded-accept fail-loud (TASK-0461)."
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => panic!("host: accept {role} from {who} failed: {e}"),
+        }
+    };
+    // Restore blocking on the listener (defensive: a later accept on the
+    // same listener — e.g. the CTRL accept after DATA — must see a clean
+    // mode if it does not itself go through this helper) and ALSO make the
+    // accepted stream blocking, since it inherits the listener's
+    // nonblocking flag on some platforms.
+    listener
+        .set_nonblocking(false)
+        .unwrap_or_else(|e| panic!("host: restore blocking on {who} listener failed: {e}"));
+    stream
+        .set_nonblocking(false)
+        .unwrap_or_else(|e| panic!("host: set accepted {role} stream from {who} blocking: {e}"));
+    stream
+}
 
 /// Decide whether the kernel-granted socket buffer is large enough,
 /// returning the EXACT clear-error string (naming the OS cap) when it

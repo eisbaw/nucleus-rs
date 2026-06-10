@@ -3390,3 +3390,69 @@ fn fault_assert_on_skipped_cell_is_flagged() {
         "a fault_assert on a skipped cell can never fire and must be flagged"
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0466 AC#1: a curated-harness spawn that HANGS must FAIL with a
+// phase tag (and a tail), not stall the gate. This drives the shared
+// per-phase timeout wrapper `run::run_phase_timed` directly with a
+// deliberately-hung command (`sleep`) under a sub-second budget — the
+// "deliberately-hung cell" negative test the AC asks for, isolated from
+// the full matrix so it runs in <1s.
+// --------------------------------------------------------------------
+
+#[test]
+fn curated_phase_timeout_fails_with_phase_tag_not_stall() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let mut hang = Command::new("sleep");
+    hang.arg("1000"); // stands in for a deadlocked generated program.
+
+    let start = Instant::now();
+    let result = crate::run::run_phase_timed(hang, Phase::Run, Duration::from_millis(250));
+
+    // It must have returned PROMPTLY (the group-kill fired), not waited
+    // for the full 1000s sleep.
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "run_phase_timed must kill+return promptly on a hang, took {:?}",
+        start.elapsed()
+    );
+
+    match result {
+        Ok(_) => panic!("a `sleep 1000` cell must NOT complete under a 250ms budget"),
+        Err((phase, detail)) => {
+            // Phase-tagged failure (the AC's "FAILs with phase tag").
+            assert!(
+                matches!(phase, Phase::Run),
+                "timeout must carry the originating phase, got {phase:?}"
+            );
+            assert!(
+                detail.contains("TIMED OUT")
+                    && detail.contains("run phase")
+                    && detail.contains(crate::run::E2E_TIMEOUT_ENV),
+                "timeout detail must name the phase + budget env knob; got: {detail:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn curated_phase_budget_rejects_zero_loudly() {
+    // A malformed budget must be a loud error, never a silent "no
+    // timeout" — the same fail-fast contract diff-fuzz uses. We drive the
+    // SHARED resolver directly with a DEDICATED env name (not the real
+    // `NUC_E2E_TIMEOUT_SECS`) so this test never races the matrix-driving
+    // tests that read the real var under cargo-test parallelism.
+    const PROBE_ENV: &str = "NUC_E2E_TIMEOUT_SECS_PROBE_ZERO_REJECT";
+    std::env::set_var(PROBE_ENV, "0");
+    let r = test_common::proc_timeout::resolve_timeout(PROBE_ENV, 600);
+    std::env::remove_var(PROBE_ENV);
+    assert!(
+        r.is_err(),
+        "a `=0` budget must be rejected (would disable the timeout); \
+         `e2e_phase_budget` delegates to this same resolver with the real \
+         var {}",
+        crate::run::E2E_TIMEOUT_ENV
+    );
+}

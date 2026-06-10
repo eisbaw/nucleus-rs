@@ -233,8 +233,13 @@ fn mp_tcp_bufsync_emit_uses_rendezvous_file_handshake_not_env_port() {
     let rename_pos = host_src
         .find("fs::rename(")
         .expect("rename site already asserted present above");
+    // TASK-0461: the host's bare `listener.accept()` was replaced by the
+    // bounded-deadline helper `wire::accept_with_deadline(&listener, ..)`
+    // (the prior unbounded blocking accept was the connect-phase
+    // night-eater). The ordering invariant below is unchanged — the
+    // accept site is now this helper call.
     let accept_pos = host_src
-        .find(".accept()")
+        .find("wire::accept_with_deadline(")
         .expect("host always accepts at least one connection (multi-process is multi-worker)");
     assert!(
         bind_pos < rename_pos && rename_pos < accept_pos,

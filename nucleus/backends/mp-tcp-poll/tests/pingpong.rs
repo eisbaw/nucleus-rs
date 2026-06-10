@@ -47,6 +47,21 @@ fn scratch_dir(name: &str) -> PathBuf {
     test_common::unique_scratch_dir(&target, name)
 }
 
+/// Per-`run.sh`-invocation wall-clock watchdog budget (TASK-0461 AC#2).
+/// Shares the curated harness's env knob + 600s generous default; only a
+/// genuine connect/accept-phase hang trips it.
+fn run_sh_watchdog_budget() -> std::time::Duration {
+    test_common::proc_timeout::resolve_timeout("NUC_E2E_TIMEOUT_SECS", 600)
+        .expect("watchdog budget resolves")
+}
+
+/// Reclaim a per-run scratch dir on SUCCESS (TASK-0461 AC#3) — the
+/// create-once-never-remove helper accumulates otherwise. Runs only after
+/// assertions pass (failed runs keep their tree for post-mortem).
+fn reclaim_scratch_on_success(scratch: &Path) {
+    let _ = fs::remove_dir_all(scratch);
+}
+
 const ALGO_SRC: &str = r#"
 const N : usize = 16;
 
@@ -201,13 +216,20 @@ fn run_mp_tcp_poll(scratch: &Path) -> Vec<u8> {
     let input_bin = scratch.join("input.bin");
     let _ = fs::write(&input_bin, []);
     let output_bin = scratch.join("output-poll.bin");
-    let run = Command::new("bash")
+    // TASK-0461 AC#2: shared group-kill watchdog on the `run.sh` spawn —
+    // a wedged generated pair fails this test in minutes with a tail,
+    // instead of the prior unbounded `.output()` blocking forever.
+    let mut run_cmd = Command::new("bash");
+    run_cmd
         .arg(out_dir.join("run.sh"))
         .arg(&input_bin)
         .arg(&output_bin)
-        .current_dir(&out_dir)
-        .output()
-        .expect("run.sh");
+        .current_dir(&out_dir);
+    let run = test_common::proc_timeout::run_or_timeout(
+        run_cmd,
+        run_sh_watchdog_budget(),
+        "mp-tcp-poll pingpong run.sh",
+    );
     assert!(
         run.status.success(),
         "mp-tcp-poll run.sh exited non-zero:\nstdout={}\nstderr={}",
@@ -265,6 +287,9 @@ fn pingpong_matches_pthreads_sync_bit_for_bit() {
          on the identical (algorithm, schedule) — the cross-backend \
          bit-identity contract is violated"
     );
+
+    // Assertions passed — reclaim this run's scratch (TASK-0461 AC#3).
+    reclaim_scratch_on_success(&scratch);
 }
 
 // --------------------------------------------------------------------
@@ -329,4 +354,8 @@ fn const_in_indexexpr_mp_tcp_poll_resolves_to_literal_value() {
          mp-tcp-poll's multi-worker codegen. worker_bins: {:?}",
         result.worker_bins
     );
+
+    // Emit-only test, but it still materialises scratch; reclaim on
+    // success (TASK-0461 AC#3).
+    reclaim_scratch_on_success(&scratch);
 }

@@ -181,6 +181,72 @@ pub(crate) fn missing_fault_substring<'a>(stderr: &str, needles: &'a [String]) -
         .find(|needle| !stderr.contains(needle))
 }
 
+/// Env knob for the curated-harness per-phase wall-clock budget.
+/// Documented alongside the diff-fuzz `DIFF_FUZZ_TIMEOUT_SECS` knob;
+/// distinct name so the two harnesses can be tuned independently.
+pub(crate) const E2E_TIMEOUT_ENV: &str = "NUC_E2E_TIMEOUT_SECS";
+
+/// Default per-phase budget. Curated cells normally finish in SECONDS
+/// (compile + a cold `cargo build --release` + a sub-second run); a
+/// deadlocked generated program is the night-eater this catches. The
+/// 600s default matches diff-fuzz: generous enough that a cold,
+/// build-lock-contended `cargo build` never trips it, tight enough that
+/// a genuine hang fails the cell in minutes rather than overnight
+/// (TASK-0466 / TASK-0461 class).
+pub(crate) const E2E_TIMEOUT_DEFAULT_SECS: u64 = 600;
+
+/// Resolve the curated-harness phase budget, falling back to the default.
+/// A malformed / zero value is rejected loudly by the shared resolver —
+/// the same fail-fast contract the diff-fuzz harness uses, so a typo'd
+/// budget can never silently re-open the hang hole.
+pub(crate) fn e2e_phase_budget() -> Result<std::time::Duration, String> {
+    test_common::proc_timeout::resolve_timeout(E2E_TIMEOUT_ENV, E2E_TIMEOUT_DEFAULT_SECS)
+}
+
+/// Run `cmd` for `phase` under the shared per-phase wall-clock `budget`,
+/// using the same process-group kill machinery as diff-fuzz so a
+/// `bash run.sh` that forks workers is torn down as a GROUP on timeout
+/// (no orphaned workers holding ports/scratch). Maps the three outcomes:
+///
+///   - completed (any exit status) -> `Ok(Output)`; the caller keeps its
+///     existing `status.success()` / tail handling, so a non-hang
+///     failure path is byte-for-byte unchanged from the bare `.output()`.
+///   - timed out -> `Err((phase, detail))` with a phase-tagged,
+///     tail-bearing message naming the budget and the env knob.
+///   - spawn fault -> `Err((phase, detail))`.
+///
+/// Returning the same `(Phase, String)` shape the callers already build
+/// keeps every early-return `CellResult` constructor identical apart from
+/// the new timeout arm (TASK-0466 AC#1).
+pub(crate) fn run_phase_timed(
+    cmd: Command,
+    phase: Phase,
+    budget: std::time::Duration,
+) -> Result<std::process::Output, (Phase, String)> {
+    use test_common::proc_timeout::{run_timed, Timed};
+    match run_timed(cmd, budget) {
+        Ok(Timed::Completed(out)) => Ok(out),
+        Ok(Timed::Timeout {
+            elapsed,
+            budget,
+            partial_stdout,
+            partial_stderr,
+        }) => Err((
+            phase,
+            format!(
+                "{phase} phase TIMED OUT after {:.1}s (budget {:.0}s, set {} to adjust) — \
+                 treated as a HANG/FAIL (deadlocked generated program; TASK-0461/0466 class). \
+                 Last output: {}",
+                elapsed.as_secs_f64(),
+                budget.as_secs_f64(),
+                E2E_TIMEOUT_ENV,
+                short_tail(&partial_stderr, &partial_stdout, 4),
+            ),
+        )),
+        Err(e) => Err((phase, format!("spawn ({phase} phase): {e}"))),
+    }
+}
+
 pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     let cell = planned.cell.clone();
     // Set true only by the harness-side NUC_XBACKEND_NEGATIVE
@@ -330,9 +396,31 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
 
     let mut timings = Timings::default();
 
+    // Per-phase wall-clock budget, shared with diff-fuzz's kill-group
+    // machinery (TASK-0466). Resolved ONCE per cell. A malformed env
+    // value fails the cell loudly in the Compile phase rather than
+    // silently running unbounded — the same fail-fast contract diff-fuzz
+    // applies at startup.
+    let budget = match e2e_phase_budget() {
+        Ok(b) => b,
+        Err(e) => {
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Compile,
+                    detail: e,
+                },
+                timings,
+                corrupted,
+            }
+        }
+    };
+
     // ---- Phase 1: nucleus build ----------------------------------------
     let t0 = Instant::now();
-    let compile = Command::new("cargo")
+    let mut compile_cmd = Command::new("cargo");
+    compile_cmd
         .arg("run")
         .arg("--quiet")
         .arg("--bin")
@@ -349,19 +437,16 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         .arg(&cell.backend)
         .arg("--out")
         .arg(&scratch)
-        .current_dir(paths.nucleus_ws())
-        .output();
+        .current_dir(paths.nucleus_ws());
+    let compile = run_phase_timed(compile_cmd, Phase::Compile, budget);
     timings.compile = Some(t0.elapsed());
     let compile = match compile {
         Ok(o) => o,
-        Err(e) => {
+        Err((phase, detail)) => {
             return CellResult {
                 cell,
                 required: planned.required,
-                status: Status::Failed {
-                    phase: Phase::Compile,
-                    detail: format!("spawn cargo run: {e}"),
-                },
+                status: Status::Failed { phase, detail },
                 timings,
                 corrupted,
             }
@@ -422,23 +507,21 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
 
     // ---- Phase 2: cargo build the emitted project ----------------------
     let t1 = Instant::now();
-    let build = Command::new("cargo")
+    let mut build_cmd = Command::new("cargo");
+    build_cmd
         .arg("build")
         .arg("--release")
         .arg("--quiet")
-        .current_dir(&scratch)
-        .output();
+        .current_dir(&scratch);
+    let build = run_phase_timed(build_cmd, Phase::Build, budget);
     timings.build = Some(t1.elapsed());
     let build = match build {
         Ok(o) => o,
-        Err(e) => {
+        Err((phase, detail)) => {
             return CellResult {
                 cell,
                 required: planned.required,
-                status: Status::Failed {
-                    phase: Phase::Build,
-                    detail: format!("spawn cargo build: {e}"),
-                },
+                status: Status::Failed { phase, detail },
                 timings,
                 corrupted,
             }
@@ -473,7 +556,14 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     // comparison (same reference oracle, same diff).
     let output_bin = scratch.join("output.bin");
     let t2 = Instant::now();
-    let run = if caps.is_single_binary() {
+    // Build the run `Command` (single-binary direct exec, OR the
+    // multi-process `bash run.sh` launcher) then drive it through the
+    // SHARED group-kill timeout. This is the phase that ate a night when
+    // an mp-tcp `run.sh` pair wedged in the connect/accept handshake
+    // (TASK-0461): `run.sh` forks one worker process per worker, and the
+    // process-group teardown reaches every forked worker, not just the
+    // bash leader.
+    let run_cmd = if caps.is_single_binary() {
         let exe = scratch.join("target/release/nuc-generated");
         if !exe.exists() {
             return CellResult {
@@ -487,10 +577,10 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 corrupted,
             };
         }
-        Command::new(&exe)
-            .env("NUC_INPUT_PATH", &input_bin)
-            .env("NUC_OUTPUT_PATH", &output_bin)
-            .output()
+        let mut c = Command::new(&exe);
+        c.env("NUC_INPUT_PATH", &input_bin)
+            .env("NUC_OUTPUT_PATH", &output_bin);
+        c
     } else {
         let run_sh = scratch.join("run.sh");
         if !run_sh.exists() {
@@ -510,26 +600,24 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
                 corrupted,
             };
         }
-        Command::new("bash")
-            .arg(&run_sh)
+        let mut c = Command::new("bash");
+        c.arg(&run_sh)
             .arg(&input_bin)
             .arg(&output_bin)
             .current_dir(&scratch)
             .env("NUC_INPUT_PATH", &input_bin)
-            .env("NUC_OUTPUT_PATH", &output_bin)
-            .output()
+            .env("NUC_OUTPUT_PATH", &output_bin);
+        c
     };
+    let run = run_phase_timed(run_cmd, Phase::Run, budget);
     timings.run = Some(t2.elapsed());
     let run = match run {
         Ok(o) => o,
-        Err(e) => {
+        Err((phase, detail)) => {
             return CellResult {
                 cell,
                 required: planned.required,
-                status: Status::Failed {
-                    phase: Phase::Run,
-                    detail: format!("spawn run artefact: {e}"),
-                },
+                status: Status::Failed { phase, detail },
                 timings,
                 corrupted,
             }

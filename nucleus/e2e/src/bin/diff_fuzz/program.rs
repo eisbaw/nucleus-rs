@@ -55,9 +55,13 @@ pub(crate) const ALL_BACKENDS: [(&str, bool); 7] = [
     ("mp-uds-event", false),
 ];
 
-/// The single backend the `for..until` family is checked on. pthreads-sync
-/// is the only tier-1 backend whose `for..until` break emit exists today
-/// (the other six are `[[skip]]`'d in `e2e-matrix.toml`).
+/// The single backend the `for..until` family is checked on. Since S7
+/// (TASK-0341.02.01.08) the curated matrix runs single-worker
+/// `for..until` on ALL SEVEN tier-1 backends — the shared
+/// single_worker_main emitter carries it — but this GENERATIVE family
+/// deliberately stays narrower (one backend) until the generator
+/// composes the same shapes the curated cells pin; widening it is part
+/// of the family's own growth plan, not a matrix mirror.
 pub(crate) const UNTIL_BACKENDS: [(&str, bool); 1] = [("pthreads-sync", true)];
 
 /// The synthesised family of a generated program. Each variant carries the

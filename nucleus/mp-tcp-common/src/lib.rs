@@ -389,4 +389,79 @@ mod tests {
         barrier_cross_poll(&mut c, 1);
         server.join().expect("server");
     }
+
+    // ---- TASK-0461: bounded host accept --------------------------------
+
+    /// Happy path: a client connects within the deadline; the returned
+    /// stream is BLOCKING (the helper restores blocking mode) so the
+    /// subsequent sync wire protocol works unchanged. We prove blocking
+    /// mode by round-tripping a framed message with the BLOCKING
+    /// `write_msg`/`read_msg_expect` helpers over the accepted stream.
+    #[test]
+    fn accept_with_deadline_returns_blocking_stream() {
+        // Generous deadline (default) — the client connects immediately.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let client = thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            // Blocking read on the client side; the server (main thread)
+            // sends frame seq=3 after accepting.
+            let got = read_msg_expect(&mut c, 3);
+            assert_eq!(got, b"pong");
+        });
+        let mut accepted = accept_with_deadline(&listener, "DATA", "w0");
+        // A blocking write on the accepted (now-blocking) stream.
+        write_msg(&mut accepted, 3, b"pong");
+        client.join().expect("client");
+    }
+
+    /// Deadline path: NO client ever connects, so the bounded accept must
+    /// PANIC loud naming the worker + the deadline env var, instead of
+    /// blocking forever (the TASK-0461 10.5h-night-eater signature).
+    /// A tiny `NUC_HANDSHAKE_DEADLINE_MS` override keeps the test fast.
+    #[test]
+    fn accept_with_deadline_panics_loud_when_no_peer() {
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        // Drop any client side: nothing connects, so accept must time out.
+        std::env::set_var("NUC_HANDSHAKE_DEADLINE_MS", "50");
+        let probe = thread::spawn(move || {
+            let _ = accept_with_deadline(&listener, "DATA", "w0");
+        });
+        let err = probe
+            .join()
+            .expect_err("accept_with_deadline must panic when no peer connects");
+        std::env::remove_var("NUC_HANDSHAKE_DEADLINE_MS");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("accept DATA from w0")
+                && msg.contains("NUC_HANDSHAKE_DEADLINE_MS=50")
+                && msg.contains("timed out"),
+            "expected a bounded-accept timeout panic naming the worker + deadline; got: {msg:?}"
+        );
+    }
+
+    /// `handshake_deadline_ms` honours the env override and falls back to
+    /// the 30s default for an unset / bogus value (typo never silently
+    /// disables the bound). Serialised against the other env-mutating
+    /// tests via `POLL_ENV_SERIAL`.
+    #[test]
+    fn handshake_deadline_ms_env_and_default() {
+        let _serial = POLL_ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("NUC_HANDSHAKE_DEADLINE_MS");
+        assert_eq!(handshake_deadline_ms(), 30_000, "default must be 30s");
+        std::env::set_var("NUC_HANDSHAKE_DEADLINE_MS", "1234");
+        assert_eq!(handshake_deadline_ms(), 1234, "env override must win");
+        std::env::set_var("NUC_HANDSHAKE_DEADLINE_MS", "not-a-number");
+        assert_eq!(
+            handshake_deadline_ms(),
+            30_000,
+            "bogus value must fall back to default, never 0/unbounded"
+        );
+        std::env::remove_var("NUC_HANDSHAKE_DEADLINE_MS");
+    }
 }
