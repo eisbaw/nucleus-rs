@@ -36,7 +36,13 @@
 //! here — so the lift introduces no `mp-tcp-common` dependency and no
 //! backend dependency (a reverse arrow would cycle).
 
-mod encode;
+// `encode` is `pub(crate)` (was `mod encode;`) so the shared
+// `multi_worker_walker::wire_shape::WireShape::sender_encode_expr`
+// (TASK-0455.07) can delegate to `encode::encode_expr` — the
+// whole-symbol wire-encode is the sync-TCP arm of the ONE WireShape
+// sender derivation. No external (out-of-crate) surface is added; the
+// re-exports below stay unchanged.
+pub(crate) mod encode;
 mod events;
 mod plan;
 mod relay;
@@ -47,8 +53,10 @@ mod worker_program;
 // TASK-0044.03.02.01 (silent-sibling pair with event_plan): only the Plan API
 // is re-exported `pub` for the backend shims. The walker/encode helpers are
 // crate-internal substrate (reached by the sibling tcp_plan submodules via the
-// `walkers::`/`encode::` module paths directly) and the `walkers` module is
-// `pub(crate)`. The earlier top-level walker/encode re-exports here were a dead
-// external surface (no in-crate consumer) — removed rather than kept unused.
+// `walkers::`/`encode::` module paths directly, and `encode` additionally by
+// `multi_worker_walker::wire_shape` for the shared WireShape sender encode) and
+// the `walkers`/`encode` modules are `pub(crate)`. The earlier top-level
+// walker/encode re-exports here were a dead external surface (no in-crate
+// consumer) — removed rather than kept unused.
 pub use plan::Plan;
 pub use wire_primitives::WirePrimitives;

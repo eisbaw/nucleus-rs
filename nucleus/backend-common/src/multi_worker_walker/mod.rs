@@ -98,6 +98,7 @@ pub(crate) mod collect;
 pub(crate) mod ctx;
 pub(crate) mod event_walker;
 pub(crate) mod wait;
+pub(crate) mod wire_shape;
 
 pub use block_tag::{compute_block_tag_abs_exprs, render_block_tag_loop_header};
 pub use collect::{
@@ -108,3 +109,4 @@ pub use collect::{
 pub use ctx::{RendezvousId, WalkerCtx};
 pub use event_walker::render_worker_events;
 pub use wait::render_wait_assign;
+pub use wire_shape::{RecvBasis, WireShape};

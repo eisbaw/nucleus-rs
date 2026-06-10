@@ -93,7 +93,7 @@ use nucleus_compiler::sidecar::NameSidecar;
 
 use crate::elect_host_from_worker_names;
 use crate::mpi_plan::MpiRendezvous;
-use crate::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx};
+use crate::multi_worker_walker::{self as walker, RendezvousId, WalkerCtx, WireShape};
 use crate::render::{render_array_init_for_combine, rust_scalar_type, EmitError};
 use nucleus_compiler::NameTables;
 
@@ -832,14 +832,20 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         const MAX_BYTES: usize = i32::MAX as usize;
 
         let mut sum: usize = 0;
-        for (data, _seq) in self.chan_ids.keys() {
+        for (data, seq) in self.chan_ids.keys() {
+            // TASK-0455.07: the per-channel payload byte footprint is the
+            // ONE WireShape extent (whole-array elems × scalar bytes
+            // today; TASK-0453.22 narrows it to the recv_basis span, so
+            // the buffered-send budget tracks the transmitted shape from
+            // one place). `scalar_bytes` stays the MPI-local width table.
+            // A datum with no ResolvedType is skipped (contributes 0),
+            // matching the pre-TASK-0455.07 `if let Some(ty)` guard.
             if let Some(ty) = self.sidecar.data_type(*data) {
-                let elems: usize = if ty.is_scalar() {
-                    1
-                } else {
-                    ty.dims.iter().copied().product()
-                };
-                sum = sum.saturating_add(elems.saturating_mul(scalar_bytes(&ty.scalar)));
+                if let Ok(wire) =
+                    WireShape::derive(self.sidecar, &self.pair_tiles, *data, *seq)
+                {
+                    sum = sum.saturating_add(wire.extent_bytes(scalar_bytes(&ty.scalar)));
+                }
             }
         }
         let est = sum

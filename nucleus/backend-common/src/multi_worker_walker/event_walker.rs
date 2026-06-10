@@ -23,6 +23,7 @@ use super::block_tag::compute_block_tag_abs_exprs;
 use super::collect::check_let_at_wait_scope_safety;
 use super::ctx::WalkerCtx;
 use super::wait::render_wait_assign;
+use super::wire_shape::WireShape;
 
 /// Walk one worker's EventList, emitting Rust statements into `out`.
 ///
@@ -476,9 +477,17 @@ fn render_worker_events_inner(
                 })?;
                 let name = ctx.data_name(*data)?;
                 let to = ctx.worker_name(*dst);
+                // TASK-0455.07: the in-process push payload is the ONE
+                // WireShape sender expression (whole-symbol clone today;
+                // TASK-0453.22 narrows it to the recv_basis slice). Same
+                // derivation the paired Wait's `render_wait_assign`
+                // consumes for its `_tmp` basis, so sender + receiver
+                // shape live in one place.
+                let wire = WireShape::derive(ctx.sidecar, ctx.pair_tiles, *data, *seq)?;
+                let payload = wire.sender_value_expr(&name);
                 writeln!(
                     out,
-                    "{pad}{prefix}{rendezvous_prefix}_{rid}.push({name}.clone()); // send `{name}` to {to}",
+                    "{pad}{prefix}{rendezvous_prefix}_{rid}.push({payload}); // send `{name}` to {to}",
                 )
                 .ok();
             }

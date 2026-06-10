@@ -21,13 +21,15 @@
 use std::fmt::Write as _;
 
 use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
-use crate::multi_worker_walker::{compute_block_tag_abs_exprs, render_wait_assign, WalkerCtx};
+use crate::multi_worker_walker::{
+    compute_block_tag_abs_exprs, render_wait_assign, WalkerCtx, WireShape,
+};
 use crate::render::{
     render_const_expr_pub, render_fire_args_pub, render_fire_output_assign_pub,
     render_reuse_buf_decls_pub, render_reuse_marker_comment, render_reuse_per_iter_update_pub,
     RenderCtxPub,
 };
-use crate::tcp_plan::encode::{decode_expr, encode_expr};
+use crate::tcp_plan::encode::decode_expr;
 use crate::tcp_plan::{Plan, WirePrimitives};
 use crate::EmitError;
 use nucleus_compiler::event::{Event, IterVar, WorkerId};
@@ -413,7 +415,13 @@ impl<W: WirePrimitives> Plan<'_, W> {
                             "cross-worker data `{name}` ({data:?}) has no ResolvedType"
                         ))
                     })?;
-                    let enc = encode_expr(&name, ty)?;
+                    // TASK-0455.07: the wire-encode payload is the ONE
+                    // WireShape sender expression (whole-symbol encode
+                    // today; TASK-0453.22 narrows it to the recv_basis
+                    // slice). Same derivation the paired Wait below
+                    // consumes via `render_wait_assign`.
+                    let wire = WireShape::derive(self.sidecar, &self.pair_tiles, *data, *seq)?;
+                    let enc = wire.sender_encode_expr(&name, ty)?;
                     // The connection to the *destination* worker. The
                     // dst must be a peer of this worker on the
                     // (data,ctrl)-pair-per-(host,worker) topology.

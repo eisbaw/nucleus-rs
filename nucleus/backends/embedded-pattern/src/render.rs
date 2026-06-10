@@ -15,6 +15,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use backend_common::multi_worker_walker::WireShape;
 use backend_common::render::{
     data_name, render_fire_args_nostd, render_indexed_subarray_place, render_loop_bounds,
     RenderCtx,
@@ -357,6 +358,15 @@ fn render_event(
             // Push/Wait data so the symbol is in scope).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
+            // TASK-0455.07: the transport byte-length is the ONE
+            // WireShape sender extent expression (whole-array
+            // `size_of_val` today; TASK-0453.22 narrows it to the
+            // recv_basis span). The embedded backend has no `pair_tiles`
+            // substrate (it lays data out as `[T; N]` locals, single-
+            // worker / multi-MCU naive only), so it derives the
+            // whole-array shape via `from_tile(.., None)`.
+            let wire = WireShape::from_tile(ctx.sidecar, *data, None)?;
+            let byte_len = wire.sender_byte_len_expr(&name);
             // Per-seq transport mode (TASK-0438.02). Threaded from the
             // schedule's `transfer DATA : mode=pio|dma` directive through
             // `TransferPolicy.transport` into the unified
@@ -379,7 +389,7 @@ fn render_event(
                     writeln!(
                         out,
                         "{pad}shim.link_push({chan}, {name}.as_ptr() as *const u8, \
-                         core::mem::size_of_val(&{name}));"
+                         {byte_len});"
                     )
                     .ok();
                 }
@@ -406,7 +416,7 @@ fn render_event(
                     writeln!(
                         out,
                         "{pad}shim.dma_link_arm({chan}, {name}.as_ptr() as *const u8, \
-                         core::mem::size_of_val(&{name}));"
+                         {byte_len});"
                     )
                     .ok();
                     writeln!(
@@ -430,6 +440,16 @@ fn render_event(
             // (loads, computes, and Waits).
             let name = data_name(*data, ctx)?;
             let chan = seq.0;
+            // TASK-0455.07: the receive byte-length is the ONE WireShape
+            // extent expression — the embedded receiver `_tmp` basis.
+            // Whole-array `size_of_val` today (the embedded backend has
+            // no slice-paste receive; data is a `[T; N]` local filled
+            // whole); on the whole-array path the receive length equals
+            // the matching Push's send length by construction, so it
+            // reuses `sender_byte_len_expr`. TASK-0453.22 narrows both to
+            // the recv_basis span together.
+            let wire = WireShape::from_tile(ctx.sidecar, *data, None)?;
+            let byte_len = wire.sender_byte_len_expr(&name);
             // Per-seq transport mode (TASK-0438.02) — symmetric to the Push
             // arm. PIO/absent: the existing blocking byte-loop receive; DMA:
             // a descriptor-arm + completion-spin. See the Push arm for the
@@ -445,7 +465,7 @@ fn render_event(
                     writeln!(
                         out,
                         "{pad}shim.link_recv({chan}, {name}.as_mut_ptr() as *mut u8, \
-                         core::mem::size_of_val(&{name}));"
+                         {byte_len});"
                     )
                     .ok();
                 }
@@ -458,7 +478,7 @@ fn render_event(
                     writeln!(
                         out,
                         "{pad}shim.dma_link_recv_arm({chan}, {name}.as_mut_ptr() as *mut u8, \
-                         core::mem::size_of_val(&{name}));"
+                         {byte_len});"
                     )
                     .ok();
                     writeln!(
