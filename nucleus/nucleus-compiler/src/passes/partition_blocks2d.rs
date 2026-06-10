@@ -220,7 +220,7 @@ impl std::fmt::Display for PartitionBlocks2dError {
                 f,
                 "loop `{var}` has `partition=blocks2d` over {workers} worker(s); the \
                  closest-to-square 2D factorisation of {workers} is (1, {workers}) which is a \
-                 degenerate 1D row-band, not a 2D grid (TASK-0259: prime / 1-factor worker \
+                 degenerate 1D row-band, not a 2D grid (prime / 1-factor worker \
                  counts have no non-degenerate 2D decomposition). Choose a worker count whose \
                  factorisation matches the intended grid (e.g. 4 → 2x2, 6 → 2x3, 9 → 3x3, \
                  12 → 3x4), or use `partition=rows` for a 1D row-band."
@@ -235,8 +235,8 @@ impl std::fmt::Display for PartitionBlocks2dError {
                 f,
                 "loop `{var}` `partition=blocks2d`: {axis}-axis range {lo}..{hi} (length \
                  {len}) is not evenly divisible across {cells} grid cells on that axis \
-                 (TASK-0259 first cut: exact-divisible only on BOTH axes; remainder policy \
-                 is a shared follow-up with partition_rows / partition_workers — TASK-0262)",
+                 (first cut: exact-divisible only on BOTH axes; a remainder \
+                 policy shared with partition_rows / partition_workers is future work)",
                 len = hi - lo
             ),
             PartitionBlocks2dError::InnerRepeatNotFound { outer_var } => write!(

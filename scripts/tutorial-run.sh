@@ -16,8 +16,10 @@
 # stops compiling, or the two backends diverge, this script exits
 # non-zero and `just tutorial` fails.
 #
-# Run from the repo root (the `just` recipe does `cd nucleus` itself for
-# the `cargo run` invocations, mirroring the e2e recipe convention).
+# Run from the repo root. (The per-phase `build()` subshell below does
+# its own `cd` into the workspace for the `cargo run` invocations; the
+# `just` recipe just runs this script — wave-7 review P3 corrected an
+# earlier comment that claimed the recipe did the cd.)
 set -euo pipefail
 
 # Repo root = parent of this script's dir.
@@ -30,7 +32,10 @@ SCRATCH="$WS/target/tutorial/run-$$"
 OUT_NAIVE="$SCRATCH/naive-pthreads-sync"
 OUT_SPLIT="$SCRATCH/split-mp-tcp-bufsync"
 mkdir -p "$OUT_NAIVE" "$OUT_SPLIT"
-trap 'rm -rf "$SCRATCH"' EXIT
+# Retain-on-failure (repo harness convention): reclaim scratch only on
+# success so a failing run leaves its artefacts for inspection.
+cleanup() { if [ "${TUTORIAL_OK:-0}" = "1" ]; then rm -rf "$SCRATCH"; else echo "tutorial: FAILED — scratch retained at $SCRATCH" >&2; fi; }
+trap cleanup EXIT
 
 build() {
     # build <sched> <backend> <out>
@@ -63,6 +68,7 @@ echo "tutorial: running mp-tcp-bufsync (run.sh, two processes) ..."
 
 echo "tutorial: diffing the two backend outputs ..."
 if cmp -s "$OUT1" "$OUT2"; then
+    TUTORIAL_OK=1
     echo "tutorial: PASS — pthreads-sync and mp-tcp-bufsync byte-identical ($(wc -c <"$OUT1") bytes)"
 else
     echo "tutorial: FAIL — backend outputs DIVERGED" >&2

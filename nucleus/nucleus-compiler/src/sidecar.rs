@@ -589,7 +589,7 @@ impl std::fmt::Display for SidecarError {
                  loops map to a single iteration-variable identity, \
                  which cannot carry two distinct bound pairs. Rename \
                  one loop's variable, or give them matching bounds. \
-                 (Distinct-identity support for this case is TASK-0171.)",
+                 (Distinct-identity support for this case is tracked as future work.)",
                 first.lo, first.hi, second.lo, second.hi
             ),
         }

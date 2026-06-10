@@ -38,6 +38,7 @@ link paths in `cmd_build` (`nucleus/driver/src/main.rs`).
 | `PartitionError` (workers) | post-link pass | **yes** (loop var, worker set) | **no span** | partial | no |
 | `PartitionRowsError` | post-link pass | yes | **no span** | partial | no |
 | `PartitionBlocks2dError` | post-link pass | yes | **no span** | partial | no |
+| `SidecarError` | sidecar build | yes | **no span** | partial | no |
 | `HaloInferenceError` | post-link pass | **yes** (kernel / loop var) | **no span** | partial | no |
 | `ReuseInferenceError` | post-link pass | yes (loop var, slot range) | **no span** | partial | no |
 | `SyncInjectError` | post-link pass | yes (worker sets) | **no span** | yes (now actionable) | **fixed** (was `TASK-0268`/`0365`/`0281`) |
@@ -82,6 +83,19 @@ concrete `Fix:`) was preserved or improved:
 - `EmitError::UnsupportedFeature` (MPI multi-worker check-loop) — dropped
   `Forward-linked to TASK-0045.03`
   (`nucleus/backend-common/src/mpi_plan/plan.rs`).
+
+Wave-7 review fold-in (the architect found the de-ID sweep had missed
+sibling arms of the SAME Display impls it edited — the recurring
+silent-sibling class, plus this table's own rows were wrong until the
+fold-in made them true):
+
+- `SchedLowerErrorKind::{BlockPipelineConflict, UnrollNotDivisibleByBlock,
+  CheckOnStripMinedLoop}` — dropped `TASK-0215`/`TASK-0144`/`TASK-0220`
+  from the message strings (IDs kept in adjacent code comments).
+- `PartitionBlocks2dError` (both arms) — dropped `TASK-0259`/`TASK-0262`.
+- `SidecarError` (duplicate-loop-var arm) — dropped `TASK-0171`; row
+  added to the table above (it was missing entirely — the documented
+  coverage-undercount pattern, caught by the review).
 
 `EmitError`'s own `Display` (in `backend-common/src/render/error.rs`) was
 already clean — the leaks were all in the `String` payloads built at the

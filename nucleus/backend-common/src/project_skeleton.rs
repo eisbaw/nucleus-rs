@@ -100,8 +100,11 @@
 /// target-specific dependency tables, or multiple sections. The
 /// original `Option<&str>` parameter — named "dependencies" but in
 /// fact a free-form TOML passthrough — silently let a caller jam any
-/// of those through; the whole point of this type is that the type
-/// system now rejects that. No real caller needs a second section
+/// of those through; the whole point of this type is to close that
+/// hole (the constructor names the contract, and `render_into`
+/// asserts no body line opens a `[section]` header — the type alone
+/// could not reject a smuggled header in a &str body). No real
+/// caller needs a second section
 /// today (verified across all nine call sites: mpi-blocking /
 /// mpi-nonblocking pass `mpi = "0.8"`, openmp-rs passes `rayon =
 /// "1"`, mp-tcp-event / mp-uds-event pass a commented `mio` block,
@@ -168,6 +171,18 @@ impl<'a> CargoDependencies<'a> {
         let Some(body) = self.section_body else {
             return;
         };
+        // Enforcement for the type's whole point (wave-7 review P2):
+        // the body must be entries-only — a smuggled `[section]` header
+        // would silently re-open the free-form passthrough this type
+        // exists to close. Same assert-defended-passthrough pattern as
+        // `render_run_sh_multi`'s so_buf_comment_block.
+        for line in body.lines() {
+            assert!(
+                !line.trim_start().starts_with('['),
+                "CargoDependencies::section_body must contain dependency \
+                 entries only, not a TOML section header; got line: {line:?}"
+            );
+        }
         s.push_str("[dependencies]\n");
         s.push_str(body);
         if !s.ends_with("\n\n") {

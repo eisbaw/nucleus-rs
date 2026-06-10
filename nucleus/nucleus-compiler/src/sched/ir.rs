@@ -818,24 +818,27 @@ impl std::fmt::Display for SchedLowerErrorKind {
                  (`on_violation` alone is meaningless — it is the action \
                  when an assertion fails)"
             ),
+            // Tracker: TASK-0215 (block+pipeline conflict decision).
             SchedLowerErrorKind::BlockPipelineConflict { var } => write!(
                 f,
                 "loop `{var}` has both `block=N` and `pipeline=D`; the combination has \
                  ambiguous semantics (per-tile vs per-iteration pipelining) and is not \
                  yet supported. Pick ONE: drop `block=N` to pipeline the full loop, or \
-                 drop `pipeline=D` to tile without pipelining. PRD §6.3.3 (TASK-0215)."
+                 drop `pipeline=D` to tile without pipelining. PRD §6.3.3."
             ),
+            // Tracker: TASK-0144 Stage 2 (divisibility rule).
             SchedLowerErrorKind::UnrollNotDivisibleByBlock { var, unroll, block } => write!(
                 f,
                 "loop `{var}` has `unroll={unroll}, block={block}` but `unroll` must divide \
                  `block` (got {unroll}\u{2224}{block}); pick an unroll factor that divides the \
-                 tile size or drop one of the options. PRD §6.3.3 (TASK-0144)."
+                 tile size or drop one of the options. PRD §6.3.3."
             ),
             SchedLowerErrorKind::CheckOnStripMinedLoop { var } => write!(
                 f,
+                // Tracker: TASK-0220 (check-on-strip-mined decision).
                 "`check loop {var}` cannot apply when `loop {var}` is strip-mined by `block=N`; \
                  after strip-mining, one source iteration is no longer one Event::Loop boundary, \
-                 so the latency assertion's semantic is unclear (TASK-0220). \
+                 so the latency assertion's semantic is unclear. \
                  Either remove the `block=N` option on `loop {var}` or remove the `check loop {var}` directive."
             ),
             SchedLowerErrorKind::DuplicateWorkersDecl => write!(
