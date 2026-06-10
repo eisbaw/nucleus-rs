@@ -4,10 +4,20 @@
 //! typed-`Result` side — it returns
 //! `Result<_, BlockTransformError>` (a `pub enum` whose variants
 //! carry diagnostic context) rather than `panic!`ing, so any failure
-//! is surfaced by the driver as a clean `nucleus: error:` line. (Its
-//! one live variant, `UnknownLoopVar`, is a fail-closed guard the
-//! linker normally pre-rejects; `NotDivisible` is retired per
-//! TASK-0142 — see those variants' docs.)
+//! is surfaced by the driver as a clean `nucleus: error:` line. Live
+//! (constructed) variants:
+//!   - `UnknownLoopVar` — a fail-closed guard the linker normally
+//!     pre-rejects.
+//!   - `BlockOnUntilLoop` — `block=` on a `for..until` early-exit loop
+//!     (epic S4); rejected loud rather than dropping the break
+//!     predicate.
+//!   - `SyntheticTileVarCollision` — the synthetic `<var>__tile`
+//!     outer-loop name collides with a user-declared iter var
+//!     (TASK-0456); rejected loud rather than aliasing two loops onto
+//!     one id.
+//!
+//! `NotDivisible` is retired per TASK-0142 (no longer constructed) —
+//! see those variants' docs.
 //!
 //! Rewrites each `Repeat` whose loop variable carries a schedule
 //! `block=N` directive (PRD §6.3.3) into a two-level nest:
@@ -171,6 +181,28 @@ pub enum BlockTransformError {
     /// the combination loudly with a typed error. `block=` on a plain
     /// fixed-iteration loop is unaffected.
     BlockOnUntilLoop { var: String },
+    /// `block=N` on loop `tiled_var` requires synthesising an outer
+    /// tile-loop named `<tiled_var>__tile`, but the algorithm already
+    /// declares an iteration variable with that exact name. The
+    /// algorithm grammar's identifier rule permits a user variable
+    /// literally named `<var>__tile`, so this is a valid (if obscure)
+    /// program (TASK-0456).
+    ///
+    /// The pass does NOT mangle the synthetic name uniquely: silently
+    /// reusing the colliding id would alias two distinct loops onto one
+    /// `IterVar`, corrupting every downstream pass that keys on it. Per
+    /// the pass's typed-`Result` convention (decision-0003) we reject
+    /// loudly instead, naming both the schedule's `block=` target loop
+    /// (`tiled_var`) and the pre-existing user variable (`tile_var`)
+    /// whose name collides, so the user can rename one of them.
+    SyntheticTileVarCollision {
+        /// The `block=N` target loop variable that triggered the
+        /// `<var>__tile` synthesis.
+        tiled_var: String,
+        /// The pre-existing user iter var whose name is exactly
+        /// `<tiled_var>__tile`.
+        tile_var: String,
+    },
 }
 
 impl std::fmt::Display for BlockTransformError {
@@ -198,6 +230,14 @@ impl std::fmt::Display for BlockTransformError {
                  tiling rebinds). Remove the `block=` directive on `{var}`, or use a plain \
                  fixed-iteration loop. (Tracked under the data-dependent loop-termination \
                  epic, TASK-0341.02.01.)"
+            ),
+            BlockTransformError::SyntheticTileVarCollision { tiled_var, tile_var } => write!(
+                f,
+                "schedule has `loop {tiled_var} : block=...`, whose strip-mine synthesises an \
+                 outer tile-loop named `{tile_var}` (`{tiled_var}__tile`), but the algorithm \
+                 already declares an iteration variable named `{tile_var}`. Rename the user \
+                 iteration variable `{tile_var}` (or the `block=` target loop `{tiled_var}`) so \
+                 the synthetic `{tiled_var}__tile` name is free. (TASK-0456.)"
             ),
         }
     }
@@ -290,12 +330,13 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
     //         (tile) iter vars. ----
     //
     // Names: `<var>__tile`. Collision with an existing iter var name
-    // is theoretically possible if the user happened to declare such
-    // a variable in the algorithm; the algorithm grammar's identifier
-    // rule allows it. We don't try to mangle uniquely — if a
-    // collision occurs, the existing iter var keeps its id and we
-    // reuse it (which would be wrong). To avoid silent wrongness,
-    // panic loudly. Filed as a follow-up if a real example collides.
+    // is possible if the user happened to declare such a variable in
+    // the algorithm; the algorithm grammar's identifier rule allows
+    // it (TASK-0456). We don't try to mangle uniquely — silently
+    // reusing the colliding id would alias two distinct loops onto one
+    // `IterVar` (wrong). Per decision-0003 the pass fails loud with a
+    // typed `SyntheticTileVarCollision` naming both variables, so the
+    // user can rename one. See the collision guard inside the loop.
     let ACFG {
         root,
         name_kernels,
@@ -344,13 +385,23 @@ pub fn apply_block_transforms(linked: &LinkedIR, acfg: ACFG) -> Result<ACFG, Blo
 
     let mut tile_var_for: BTreeMap<IterVar, (String, IterVar, u64)> = BTreeMap::new();
     for (var, n) in &block_by_var {
+        // Genuinely unreachable: step 2 validated `name_iter_vars` has
+        // an entry for every `var` in `block_by_var`, and the map has
+        // not been mutated (only the local `next_id` cursor has) between
+        // that validation and here. A `panic!` here would be a true
+        // invariant violation, not user-reachable input.
         let inner_id = name_iter_vars.get(var).copied().expect("validated above");
         let tile_name = format!("{var}__tile");
         if name_iter_vars.contains_key(&tile_name) {
-            panic!(
-                "block_transform: synthetic outer iter var name `{tile_name}` collides with an \
-                 existing iter var; rename the user variable or extend the pass to mangle"
-            );
+            // The user declared an iter var literally named
+            // `<var>__tile`, colliding with the synthetic outer
+            // tile-loop name. Fail loud with a typed diagnostic naming
+            // both variables instead of aliasing two loops onto one id
+            // (TASK-0456).
+            return Err(BlockTransformError::SyntheticTileVarCollision {
+                tiled_var: var.clone(),
+                tile_var: tile_name,
+            });
         }
         let tile_id = IterVar(next_id);
         next_id += 1;

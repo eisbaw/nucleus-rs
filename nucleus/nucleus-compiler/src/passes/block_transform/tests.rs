@@ -376,3 +376,132 @@ fn rewrite_node_prefix_sum_nondiv_j_block6() {
         },
     );
 }
+
+// --------------------------------------------------------------------
+// TASK-0456: synthetic `<var>__tile` name collides with a user-declared
+// iter var — typed error, not a panic, on this valid (if obscure)
+// program. Driven END-TO-END through the real pass entry point
+// (parse -> lower -> link -> run_pre_mediation_passes, which calls
+// `apply_block_transforms`) via the shared `test_support` helper, so
+// the diagnostic that is pinned is the one a real `nucleus build` would
+// emit.
+// --------------------------------------------------------------------
+
+/// A complete, valid algorithm whose iteration variables are LITERALLY
+/// `y` and `y__tile` (the latter is a legal identifier — `_` is allowed
+/// anywhere after the first char). Tiling `y` with `block=` synthesises
+/// an outer loop named `y__tile`, which the user already declared.
+const COLLISION_ALGO: &str = r#"
+const N : usize = 256;
+
+data a : i32[N];
+data c : i32[N];
+data d : i32[N];
+
+kernel inc        : (i32)    -> i32    pure;
+kernel load_input : ()       -> i32[N] effectful;
+kernel save_output: (i32[N]) -> ()     effectful;
+
+a <-- load_input();
+
+for y : 0 .. N {
+    c[y] <-- inc(a[y]);
+}
+
+for y__tile : 0 .. N {
+    d[y__tile] <-- inc(c[y__tile]);
+}
+
+save_output(d);
+"#;
+
+/// Schedule that puts `block=64` on loop `y`. Single worker so there
+/// are no cross-worker transfer concerns to satisfy — the only thing
+/// under test is the `block=` strip-mine on `y`, whose synthetic
+/// `y__tile` name collides with the user's `y__tile` loop.
+const COLLISION_SCHED: &str = r#"
+schedule for "prog.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place inc         on host;
+
+    loop y : block=64;
+}
+"#;
+
+/// The same algorithm with the `block=` directive REMOVED. Proves the
+/// program is GENUINELY VALID — only the `block=`-induced synthetic
+/// name collision is the failure, not some unrelated parse/link defect.
+const COLLISION_SCHED_NO_BLOCK: &str = r#"
+schedule for "prog.algo.nuc" {
+    workers = { host };
+
+    place load_input  on host;
+    place save_output on host;
+    place inc         on host;
+}
+"#;
+
+#[test]
+fn block_synthetic_tile_var_collision_is_typed_error_not_panic() {
+    // First: prove the program is VALID (the architecture-review claim
+    // is "a valid, if obscure, program"). The IDENTICAL algorithm,
+    // with the `block=` directive removed, compiles end-to-end clean —
+    // so the only thing the collision test exercises is the strip-mine
+    // name clash, not an unrelated parse/link error.
+    crate::test_support::build_pre_mediation_acfg(COLLISION_ALGO, COLLISION_SCHED_NO_BLOCK)
+        .expect("the y/y__tile program is valid without the block= directive");
+
+    // End-to-end: the helper parses/lowers/links the source and runs
+    // the pre-mediation chain, which includes `apply_block_transforms`.
+    // It maps any `PreMediationError` via `{e:?}` (derived Debug), so
+    // the returned Err string is the Debug form of
+    // `PreMediationError::BlockTransform(SyntheticTileVarCollision{..})`.
+    let err = crate::test_support::build_pre_mediation_acfg(COLLISION_ALGO, COLLISION_SCHED)
+        .expect_err("y__tile collision must be a typed error, never a panic");
+
+    // Pin BOTH variable names appear in the diagnostic so the user can
+    // act on it: the `block=` target loop `y` and the colliding
+    // synthetic/user name `y__tile`.
+    assert!(
+        err.contains("SyntheticTileVarCollision"),
+        "expected the typed collision variant, got: {err}"
+    );
+    assert!(
+        err.contains("tiled_var: \"y\""),
+        "diagnostic must name the block= target loop `y`, got: {err}"
+    );
+    assert!(
+        err.contains("tile_var: \"y__tile\""),
+        "diagnostic must name the colliding synthetic var `y__tile`, got: {err}"
+    );
+}
+
+/// Pin the user-facing `Display` string (what the driver prints as
+/// `block-transform error: {e}`) for the collision — independent of the
+/// `{e:?}` Debug form the test helper happens to surface. Constructs
+/// the variant directly (the pass entry point is exercised end-to-end
+/// by the test above; here we only assert the wording contract).
+#[test]
+fn synthetic_tile_var_collision_display_names_both_vars() {
+    let e = BlockTransformError::SyntheticTileVarCollision {
+        tiled_var: "y".to_string(),
+        tile_var: "y__tile".to_string(),
+    };
+    let msg = e.to_string();
+    assert!(msg.contains('`'), "diagnostic should quote the names");
+    assert!(
+        msg.contains("loop y : block="),
+        "must name the block= target loop: {msg}"
+    );
+    assert!(
+        msg.contains("y__tile"),
+        "must name the colliding synthetic var: {msg}"
+    );
+    assert!(
+        msg.contains("Rename"),
+        "diagnostic must tell the user how to fix it: {msg}"
+    );
+}
