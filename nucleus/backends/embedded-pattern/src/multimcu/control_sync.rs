@@ -64,6 +64,9 @@ fn flatten_salients(
             Event::Wait { seq, .. } => out.push(Salient::Wait { seq: seq.0 }),
             Event::Sync { sync, .. } => out.push(Salient::Sync { tag: sync.0 }),
             Event::Loop { body, .. } => flatten_salients(body, sidecar, out)?,
+            // Alloc/Free are a deliberately-reserved contract surface
+            // emitted by no pass (TASK-0455.16; see nucleus_compiler::
+            // event module-doc "DELIBERATELY RESERVED") — not salient.
             Event::Alloc { .. } | Event::Free { .. } => {}
         }
     }

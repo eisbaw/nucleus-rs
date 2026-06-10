@@ -25,13 +25,19 @@
 //!    is a no-op and almost certainly a bug. Per-event.
 //! 4. **No overlapping `Alloc`** for the same `(data, tile)` on a
 //!    worker — two live regions for the same datum slice = aliasing
-//!    bug. Per-worker. **LATENT today**: `Event::Alloc` is not emitted
-//!    by `passes::petri_to_events` (see `petri_to_events.rs:113`).
-//!    This check is in place but cannot fire on any current live
-//!    schedule. It will fire the moment Alloc codegen lands.
+//!    bug. Per-worker. **DORMANT BY DESIGN**: `Event::Alloc` is a
+//!    deliberately-reserved contract variant that `passes::petri_to_events`
+//!    emits on no current schedule (see `crate::event`'s module-doc
+//!    section "DELIBERATELY RESERVED: `Alloc` / `Free` / `Region`",
+//!    TASK-0455.16, and the `petri_to_events` skip rationale). This check
+//!    is written and tested against synthetic `Alloc` events so the
+//!    invariant is *documented in code and ready*, not so it guards a
+//!    live schedule. It activates only if a future tier (the GPU tier of
+//!    the thesis `sec:fw-tiers`) makes `Alloc` load-bearing — it is not a
+//!    promised "next cycle" event.
 //! 5. **`Event::Free` is preceded by `Event::Alloc`** on the same
-//!    worker for the same `(data, tile)`. Per-worker. **LATENT today**
-//!    (same reason as (4): Alloc / Free are not emitted).
+//!    worker for the same `(data, tile)`. Per-worker. **DORMANT BY
+//!    DESIGN** (same reserved-variant reason as (4)).
 //! 6. **Cross-worker `Sync` participant-set agreement** — two or more
 //!    [`Event::Sync`] events that share a [`SyncTag`] (the cross-worker
 //!    barrier join key, TASK-0172) MUST carry identical `participants`
@@ -202,8 +208,9 @@ pub enum EventValidationError {
     },
     /// Invariant (4): two [`Event::Alloc`] events for the same
     /// `(data, tile)` on the same worker without an intervening
-    /// [`Event::Free`]. **LATENT today** (Alloc not emitted by
-    /// `petri_to_events`).
+    /// [`Event::Free`]. **DORMANT BY DESIGN** — `Alloc` is a
+    /// deliberately-reserved variant emitted by no pass (see
+    /// `crate::event` module-doc "DELIBERATELY RESERVED", TASK-0455.16).
     OverlappingAlloc {
         worker: WorkerId,
         data: DataId,
@@ -211,8 +218,8 @@ pub enum EventValidationError {
     },
     /// Invariant (5): an [`Event::Free`] with no preceding matching
     /// [`Event::Alloc`] on the same worker for the same `(data,
-    /// tile)`. **LATENT today** (Free not emitted by
-    /// `petri_to_events`).
+    /// tile)`. **DORMANT BY DESIGN** (same reserved-variant reason as
+    /// [`Self::OverlappingAlloc`]).
     FreeWithoutAlloc {
         worker: WorkerId,
         data: DataId,
@@ -313,12 +320,16 @@ impl std::error::Error for EventValidationError {}
 /// `BTreeMap` index; cross-worker Sync participant-disagreement errors
 /// (invariant (6)) are emitted last, in ascending `SyncTag` order).
 ///
-/// **Latent invariants**: (4) `OverlappingAlloc` and (5)
+/// **Dormant-by-design invariants**: (4) `OverlappingAlloc` and (5)
 /// `FreeWithoutAlloc` are checked but cannot fire on any current
-/// schedule because `passes::petri_to_events` does not emit `Alloc`
-/// or `Free` (see `petri_to_events.rs:113`). They are in place so the
-/// contract is documented in code, and so that future Alloc / Free
-/// codegen lands against a green gate.
+/// schedule because `passes::petri_to_events` emits no `Alloc` / `Free`
+/// — those are deliberately-reserved contract variants (see
+/// `crate::event` module-doc "DELIBERATELY RESERVED: `Alloc` / `Free` /
+/// `Region`", TASK-0455.16). They are written + tested against synthetic
+/// events so the invariant is documented in code and ready, and so that
+/// a future tier making `Alloc`/`Free` load-bearing (the GPU tier of the
+/// thesis `sec:fw-tiers`) lands against a green gate. This is a reserved
+/// surface, not a promised-next-cycle one.
 ///
 /// Pure function; never panics on user-reachable input.
 pub fn validate_event_lists(

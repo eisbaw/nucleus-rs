@@ -489,7 +489,10 @@ impl<W: WirePrimitives> Plan<'_, W> {
                 }
                 Event::Alloc { .. } | Event::Free { .. } => {
                     // RAII Vec storage; no explicit reservation (same
-                    // as pthreads-sync).
+                    // as pthreads-sync). Alloc/Free are a deliberately-
+                    // reserved contract surface emitted by no pass
+                    // (TASK-0455.16; see nucleus_compiler::event
+                    // module-doc "DELIBERATELY RESERVED").
                 }
             }
         }

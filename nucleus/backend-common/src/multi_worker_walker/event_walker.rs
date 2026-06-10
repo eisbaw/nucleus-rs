@@ -519,7 +519,10 @@ fn render_worker_events_inner(
                 writeln!(out, "{pad}{assign} // recv `{name}` from {from}",).ok();
             }
             Event::Alloc { .. } | Event::Free { .. } => {
-                // RAII Vec storage; no explicit reservation.
+                // RAII Vec storage; no explicit reservation. Alloc/Free
+                // are a deliberately-reserved contract surface emitted by
+                // no pass (TASK-0455.16; see nucleus_compiler::event
+                // module-doc "DELIBERATELY RESERVED").
             }
         }
     }

@@ -39,6 +39,58 @@
 //!   `MEMORY_REGION` to an integer index into the backend's region
 //!   table.
 //!
+//! ## DELIBERATELY RESERVED: `Alloc` / `Free` / `Region` (TASK-0455.16)
+//!
+//! [`Event::Alloc`], [`Event::Free`], and the [`Region`] tag they carry
+//! are part of the contract surface but are **emitted by no pass and
+//! consumed by no backend today**. This is a *deliberate reservation*,
+//! decided in TASK-0455.16 after weighing make-load-bearing vs sidecar
+//! vs delete — NOT an accidental gap or a half-finished feature. The
+//! three reasons the variants stay in the contract rather than being
+//! deleted:
+//!
+//! 1. **The thesis reserves them.** `paper/chapters/06-architecture.tex`
+//!    (`sec:arch-petri`) states the event contract reserves `Alloc` /
+//!    `Free`, and `paper/chapters/11-future-work.tex` (`sec:fw-tiers`)
+//!    states they "would have to become load-bearing" for a future
+//!    GPU / NPU tier to place data across its memory hierarchy. The
+//!    contract surface backs a live, load-bearing thesis claim; deleting
+//!    it would falsify that claim.
+//! 2. **No accepted schedule needs them yet.** Physical memory placement
+//!    is requested by `place_data D in REGION` (lowered to
+//!    [`crate::sched::ResolvedPlaceData`]). The ONLY `place_data`
+//!    directives in the entire example corpus live in
+//!    `14-hearing-aid/schedules/embedded_multimcu.sched.nuc`, which is
+//!    **correctly rejected** at `check_schedule_compat`
+//!    ([`crate::capabilities`]) because it requests region `sram_shared`
+//!    that the embedded backend's `capabilities.toml` does not declare
+//!    (it declares only `heap`). The schedule actually gated in Renode,
+//!    `embedded_multimcu_sync.sched.nuc`, carries **no** `place_data`.
+//!    So there is zero accepted producer of region placement, hence
+//!    nothing for projection to emit `Alloc`/`Free` from and nothing for
+//!    a backend to consume. Synthesising "first use = `Alloc`, last use =
+//!    `Free`" would be guessing semantics no consumer relies on (see
+//!    `passes::petri_to_events`).
+//! 3. **The reserved shape is cheap and additive.** Keeping the variants
+//!    costs two `match` arms per `Event` consumer (all currently a
+//!    no-op / fail-loud reject — see the silent-sibling sweep in
+//!    TASK-0455.16) and one serde discriminant; it pays for itself the
+//!    first time real region placement lands (the `SyncKind`-enum
+//!    rationale above, applied to events).
+//!
+//! **Forward path** (recorded, not promised): when an *accepted*
+//! `place_data` lands — e.g. TASK-0455.13's banded receive with real TCM
+//! placement — the right lowering is a per-`DataId` region **sidecar
+//! fact** threaded from `place_data` (the [`crate::sidecar::NameSidecar`]
+//! / `XferFacts` precedent, TASK-0455.08), which the embedded render
+//! reads to pick the `alloc_in_region(region, …)` index (today hardcoded
+//! to the peripheral-input region `0`). `Alloc`/`Free` *events* become
+//! the right shape only for a tier whose execution model needs explicit
+//! per-tile lifetime (the GPU tier of `sec:fw-tiers`), not for the
+//! fixed-`[T; N]`-locals embedded tier. Until such a producer exists,
+//! building either consumer is speculative; this reservation is the
+//! honest state.
+//!
 //! - **`SyncKind` is an `enum` with a single `Barrier` variant**, not
 //!   a unit struct. PRD §8.3 explicitly forecasts other variants
 //!   (`Rendezvous`, `Quorum`) under specific evidence; keeping the
@@ -209,6 +261,11 @@ pub struct SyncTag(pub u64);
 /// assigns this index when lowering `place_data D in MEMORY_REGION`;
 /// the backend's `capabilities.toml` decides what physical memory each
 /// index corresponds to.
+///
+/// **Reserved, not yet assigned by any pass** — see the
+/// "DELIBERATELY RESERVED: `Alloc` / `Free` / `Region`" module-doc
+/// section (TASK-0455.16) for why this rides the contract with no live
+/// producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -695,6 +752,13 @@ pub enum Event {
     /// Reserve backing storage for `data` over the iteration slice
     /// `tile` in memory region `region`. The backend interprets
     /// `region`; the compiler treats it as opaque.
+    ///
+    /// **DELIBERATELY RESERVED — emitted by no pass, consumed by no
+    /// backend today.** See the module-doc section "DELIBERATELY
+    /// RESERVED: `Alloc` / `Free` / `Region`" (TASK-0455.16) for the
+    /// decision rationale (thesis `sec:fw-tiers` reserves this for a
+    /// future GPU tier; no accepted schedule needs region placement yet;
+    /// the embedded forward path is a sidecar fact, not an event).
     Alloc {
         data: DataId,
         tile: IterTile,
@@ -738,6 +802,10 @@ pub enum Event {
 
     /// Release backing storage for `(data, tile)`. The region was
     /// fixed by the matching `Alloc`; the backend looks it up.
+    ///
+    /// **DELIBERATELY RESERVED — see [`Event::Alloc`] and the module-doc
+    /// section "DELIBERATELY RESERVED: `Alloc` / `Free` / `Region`"
+    /// (TASK-0455.16).**
     Free { data: DataId, tile: IterTile },
 
     /// A rolled loop: execute `body` once per value of `iter_var` in

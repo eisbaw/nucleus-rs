@@ -532,10 +532,17 @@ fn render_event(
             Ok(())
         }
         Event::Alloc { .. } | Event::Free { .. } => Err(EmitError::UnsupportedFeature(
-            "embedded-pattern (M9) lays data out as fixed `[T; N]` locals; \
-             explicit Alloc/Free region events do not occur in the naive \
-             single-worker event list. Region-placed data (`place_data D in \
-             tcm_per_core`) is M10 shim work (TASK-0048)."
+            "embedded-pattern lays data out as fixed `[T; N]` locals; \
+             explicit Alloc/Free region events do not occur in any event \
+             list this backend receives. Alloc/Free are a deliberately- \
+             reserved contract surface emitted by no pass (TASK-0455.16; see \
+             nucleus_compiler::event module-doc \"DELIBERATELY RESERVED\"). A \
+             `place_data D in REGION` schedule never reaches codegen as an \
+             event: it is consumed as a capability-admission gate, and the \
+             only corpus schedule using it (14-hearing-aid embedded_multimcu) \
+             is rejected for requesting `sram_shared` on this heap-only \
+             backend. This arm fails loud only if a future tier starts \
+             emitting Alloc/Free."
                 .to_string(),
         )),
     }

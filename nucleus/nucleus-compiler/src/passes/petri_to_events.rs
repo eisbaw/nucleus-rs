@@ -102,15 +102,25 @@
 //!
 //! ## What this pass deliberately does NOT do at M2
 //!
-//! - **`Event::Alloc` / `Event::Free` are NOT emitted.** PRD §8.3
-//!   maps Region resolution to `place_data D in MEMORY_REGION`
-//!   schedule directives. v2 M2 does not yet thread `Region`
-//!   assignments through the IR; the pthreads-sync backend lowers
-//!   each data symbol to a stack/heap allocation owned by the
-//!   generated worker function and has no need for explicit Alloc /
-//!   Free events. Synthesising "first use = Alloc, last use = Free"
-//!   here would be guessing at semantics no consumer relies on.
-//!   Filed as a follow-up.
+//! - **`Event::Alloc` / `Event::Free` are NOT emitted — DELIBERATELY
+//!   RESERVED, not a follow-up.** PRD §8.3 maps Region resolution to
+//!   `place_data D in MEMORY_REGION` schedule directives. The
+//!   pthreads-sync backend lowers each data symbol to a stack/heap
+//!   allocation owned by the generated worker function and has no need
+//!   for explicit Alloc / Free events; the embedded backend lays data
+//!   out as fixed `[T; N]` locals (same — no explicit lifetime events).
+//!   Synthesising "first use = Alloc, last use = Free" here would be
+//!   guessing at semantics no consumer relies on. Crucially, the ONLY
+//!   `place_data` directives in the example corpus
+//!   (`14-hearing-aid/embedded_multimcu.sched.nuc`) are
+//!   **capability-rejected** (region `sram_shared` on a heap-only
+//!   embedded backend), so no *accepted* schedule even requests region
+//!   placement. The decision to keep the variants reserved rather than
+//!   emit or delete them is TASK-0455.16; see the `crate::event`
+//!   module-doc section "DELIBERATELY RESERVED: `Alloc` / `Free` /
+//!   `Region`" for the full rationale (thesis `sec:fw-tiers` reserves
+//!   them for a future GPU tier; the embedded forward path is a sidecar
+//!   region fact, not an event).
 //!
 //! - **Iteration tile per-iteration is empty.** Each enclosed `Fire`
 //!   still carries `tile: IterTile::empty()`. Structure preservation

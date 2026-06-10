@@ -461,12 +461,13 @@ pub(crate) fn render_event(
              transfer is possible with one worker"
                 .to_string(),
         )),
-        // Alloc/Free are not emitted by the current projection for
-        // tier-1 examples; a backend that needs explicit
-        // allocation lifetime would handle them here. Ignoring an
-        // Alloc/Free is faithful: storage is `Vec`-managed in the
-        // straight-line emitter (RAII), so an explicit region
-        // reservation has no Rust counterpart.
+        // Alloc/Free are a deliberately-reserved contract surface emitted
+        // by no pass (TASK-0455.16; see nucleus_compiler::event module-doc
+        // "DELIBERATELY RESERVED"). Ignoring them is faithful here:
+        // storage is `Vec`-managed in the straight-line emitter (RAII),
+        // so an explicit region reservation has no Rust counterpart. A
+        // backend that needs explicit allocation lifetime (a future GPU
+        // tier) would handle them here.
         Event::Alloc { .. } | Event::Free { .. } => Ok(()),
     }
 }

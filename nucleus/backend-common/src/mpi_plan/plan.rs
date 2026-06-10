@@ -671,6 +671,10 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
                     self.record_peer(out, id, peer, Dir::Wait)?;
                 }
                 Event::Loop { body, .. } => self.collect_chan_peers(body, out)?,
+                // Fire/Sync carry no channel peer here. Alloc/Free are a
+                // deliberately-reserved contract surface emitted by no
+                // pass (TASK-0455.16; see nucleus_compiler::event
+                // module-doc "DELIBERATELY RESERVED").
                 Event::Fire { .. }
                 | Event::Sync { .. }
                 | Event::Alloc { .. }

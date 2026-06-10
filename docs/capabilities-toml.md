@@ -167,6 +167,24 @@ declares them explicitly. Unknown fields are rejected
   `place_data` directive) must each be in this list. Otherwise
   `CapMismatch::MemoryRegionNotSupported`.
 
+> **What `memory_regions` does and does NOT do today (TASK-0455.16).**
+> This list is a backend **admission gate**, not a codegen input. The
+> resolved region of a `place_data D in R` directive is checked against
+> this list (reject if absent) and then **not threaded any further** —
+> no backend yet consumes a region placement. That is deliberate, not a
+> dropped fact: the `Event::Alloc` / `Event::Free` / `Region` contract
+> surface in `nucleus-compiler` is a **reserved** surface emitted by no
+> pass (the thesis reserves it for a future GPU/NPU tier), and the only
+> `place_data`-using schedule in the example corpus
+> (`14-hearing-aid/embedded_multimcu.sched.nuc`) is *rejected* by this
+> gate precisely because the embedded backend declares only `["heap"]`,
+> not `sram_shared`. The gate's whole job today is to reject placements a
+> backend cannot honour. When an *accepted* `place_data` first lands, the
+> intended lowering is a per-`DataId` region sidecar fact the backend
+> render reads (the `XferFacts` precedent), NOT `Alloc`/`Free` events —
+> see the `nucleus_compiler::event` module-doc section "DELIBERATELY
+> RESERVED: `Alloc` / `Free` / `Region`".
+
 ## Topology / mediation flags
 
 Three booleans (TASK-0455.09) declare the backend's wire-topology facts

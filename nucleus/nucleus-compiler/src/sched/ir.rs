@@ -186,6 +186,16 @@ pub enum ResolvedPlaceTarget {
 /// [`ResolvedMemoryRegion`]. The `data` field is a textual symbol
 /// kept for the link step to cross-check against `AlgoIR::data`.
 ///
+/// **Downstream consumption (TASK-0455.16):** `region` is consumed by
+/// `capabilities::check_schedule_compat` as a backend-admission gate
+/// (reject a placement a backend cannot honour) and is **not** yet
+/// threaded into any codegen — no backend consumes a region placement
+/// today (the `crate::event::Region` / `Event::Alloc` surface is
+/// deliberately reserved). The forward path, when an *accepted*
+/// `place_data` lands, is a per-`DataId` region sidecar fact the
+/// embedded render reads; see `crate::event`'s module-doc section
+/// "DELIBERATELY RESERVED: `Alloc` / `Free` / `Region`".
+///
 /// # `data_span` (TASK-0099)
 ///
 /// Byte range of the schedule's `place_data D in R` *data identifier*

@@ -81,12 +81,20 @@
 # onto (a DMA descriptor enqueue), per the §7.4 table.
 #
 # Physical memory regions (`tcm_per_core`, `shared_sram`, external SDRAM)
-# are STILL not declared (`memory_regions = ["heap"]`): TCM/SRAM placement
-# is a compiler-pass (`place_data` lowering / `Event::Alloc` emission)
-# concern in `nucleus-compiler`, NOT backend codegen, so it is honest-
-# deferred here (TASK-0455.02 finding 2 — the embedded backend's
-# `Event::Alloc`/`Event::Free` arm stays a fail-loud reject; the variants
-# are kept, not deleted, because the compiler still owns their fate).
+# are deliberately NOT declared (`memory_regions = ["heap"]`). This is the
+# load-bearing half of the `place_data` admission gate: declaring only
+# `heap` is exactly why `14-hearing-aid/embedded_multimcu.sched.nuc` (which
+# places four data symbols `in sram_shared`) is correctly REJECTED on this
+# backend, while its sibling `embedded_multimcu_sync.sched.nuc` (no
+# `place_data`) is the variant the Renode gate compiles. TCM/SRAM
+# placement is a compiler concern, NOT backend codegen here, and the
+# decision (TASK-0455.16) is to KEEP `Event::Alloc`/`Event::Free`/`Region`
+# as a deliberately-reserved contract surface (the thesis `sec:fw-tiers`
+# reserves them for a future GPU tier) rather than emit or delete them —
+# so the backend's `Event::Alloc`/`Event::Free` arm stays a fail-loud
+# reject. The forward path, when an *accepted* `place_data` lands, is a
+# per-`DataId` region sidecar fact (see nucleus_compiler::event module-doc
+# "DELIBERATELY RESERVED").
 
 schema_version  = 1
 name            = "embedded-pattern"

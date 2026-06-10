@@ -521,6 +521,23 @@ pub fn check_schedule_compat(caps: &Capabilities, sched: &SchedIR) -> Result<(),
 
     // Memory regions: every place_data target must be a region the
     // backend supports.
+    //
+    // This check is LOAD-BEARING, not check-then-discard-dead. The
+    // resolved region string is consumed *here* as an admission gate and
+    // then not threaded further into codegen — but that is by design, not
+    // a dropped fact: no backend yet consumes a region placement (the
+    // `Event::Alloc`/`Region` contract surface is deliberately reserved,
+    // see `crate::event` module-doc "DELIBERATELY RESERVED", TASK-0455.16).
+    // The gate's job is to REJECT a schedule that requests physical
+    // placement a backend cannot honour. Concretely it is exactly why
+    // `14-hearing-aid/embedded_multimcu.sched.nuc` (which places four data
+    // symbols `in sram_shared`) is rejected on the embedded backend
+    // (`memory_regions = ["heap"]`), and why its sibling
+    // `embedded_multimcu_sync.sched.nuc` — which carries no `place_data` —
+    // is the variant the Renode gate compiles. When an accepted
+    // `place_data` lands (the forward path in the `crate::event` note),
+    // the resolved region becomes a sidecar fact the embedded render
+    // reads; until then, gating admission is the whole job.
     for (data, pd) in &sched.place_data {
         if !region_set.contains(pd.region.as_str()) {
             mismatches.push(CapMismatch::MemoryRegionNotSupported {
