@@ -1,10 +1,14 @@
 //! Shared multi-worker event-walker. Originating consumers were the
 //! pthreads-sync and pthreads-async backends (TASK-0239 cycle 31);
-//! mp-tcp-event joined as the third consumer at cycle 79 with
-//! `rendezvous_prefix = "chan"`. mp-tcp-bufsync is the fourth tier-1
-//! backend but bypasses this walker entirely — it calls
-//! `render_wait_assign` directly without going through
-//! `render_worker_events`.
+//! mp-tcp-event joined at cycle 79 with `rendezvous_prefix = "chan"`.
+//! The consumer set has since grown well past that originating pair —
+//! every tier-1/tier-2 backend except mp-tcp-bufsync now routes
+//! through `render_worker_events`, either directly or via the
+//! `event_plan` / `mpi_plan` substrates; grep `render_worker_events(`
+//! call sites for the current census rather than trusting a count
+//! here (TASK-0457 review: hard counts in these docs rotted three
+//! separate times). mp-tcp-bufsync bypasses this walker entirely —
+//! it calls `render_wait_assign` directly.
 //!
 //! # Why this module exists
 //!
@@ -71,13 +75,14 @@
 //!
 //! # SlotId == RingId == usize
 //!
-//! Confirmed by all three prefix-using backends' type aliases:
-//! `type SlotId = RendezvousId` (pthreads-sync), `type RingId =
-//! RendezvousId` (pthreads-async), `type ChanId = RendezvousId`
-//! (mp-tcp-event). The shared map shape is `BTreeMap<(DataId,
-//! SeqTag), usize>` and is reused verbatim. mp-tcp-bufsync does
-//! not need a rendezvous-id alias because it bypasses
-//! `render_worker_events`.
+//! The prefix-using consumers alias their rendezvous-id types to the
+//! shared `RendezvousId` — e.g. `type SlotId = RendezvousId`
+//! (pthreads-sync), `type RingId = RendezvousId` (pthreads-async),
+//! `type ChanId = RendezvousId` (mp-tcp-event); later consumers follow
+//! the same pattern (grep `RendezvousId` for the census). The shared
+//! map shape is `BTreeMap<(DataId, SeqTag), usize>` and is reused
+//! verbatim. mp-tcp-bufsync does not need a rendezvous-id alias
+//! because it bypasses `render_worker_events`.
 
 // TASK-0044.03.02.03 (silent-sibling visibility sweep, matching event_plan /
 // tcp_plan from TASK-0044.03.02.01): the submodules are crate-internal

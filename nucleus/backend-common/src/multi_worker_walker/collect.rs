@@ -55,7 +55,10 @@ pub fn collect_xfer_pairs(events: &[Event], out: &mut BTreeMap<(DataId, SeqTag),
 ///
 /// # Current-caller convention (informational, not part of the contract)
 ///
-/// All four tier-1 backends pass `per_worker.values()` where
+/// The production callers — the direct backends plus the
+/// `event_plan` / `tcp_plan` / `mpi_plan` substrates (grep the call
+/// sites for the census; hard counts here rotted, TASK-0457 review) —
+/// pass `per_worker.values()` where
 /// `per_worker: BTreeMap<WorkerId, Vec<Event>>`. `BTreeMap::values()`
 /// iterates in key-ascending order, so for those callers "first
 /// sighting" = the lowest-`WorkerId` worker whose event list names

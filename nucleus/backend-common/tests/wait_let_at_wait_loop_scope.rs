@@ -62,7 +62,8 @@
 //! `classifier_includes_in_loop_whole_array_wait_for_at_risk_shape`).
 //!
 //! Enforcement site (verified against code, cycle 222, NOT just the
-//! docstring claim): `nucleus-compiler/src/passes/transfer_inject.rs`,
+//! docstring claim; paths updated after the TASK-0340.13 file split):
+//! `nucleus-compiler/src/passes/transfer_inject/sequence.rs`,
 //! `inject_in_sequence` — the consumer-side Wait is pushed via
 //! `out.push(ACFGNode::Xfer(w))` into the SAME `out` Vec the consumer
 //! `Operation` is appended to (the `ACFGNode::Operation(op)` arm:
@@ -73,7 +74,7 @@
 //! gets its Wait inside THAT nested sequence — never a Wait in a
 //! nested loop with its consumer in the enclosing scope. The module
 //! docstring states the same: "Insert the Wait immediately before O
-//! in O's enclosing sequence" (transfer_inject.rs line ~58).
+//! in O's enclosing sequence" (transfer_inject/mod.rs line ~58).
 //!
 //! ## Why this is a worthwhile pin despite being defensive
 //!

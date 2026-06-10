@@ -707,11 +707,15 @@ schedule for \"../prog.algo.nuc\" {
 
 #[test]
 fn negative_duplicate_loop_for_same_var() {
+    // (`reuse` rather than `unroll=8` in the second decl: the
+    // DuplicateLoop check fires first either way today, but unroll is
+    // loud-rejected since TASK-0458 and pinning this test to a
+    // check-ordering accident would be fragile — review P3 fold-in.)
     let src = "\
 schedule for \"../prog.algo.nuc\" {
     workers = { host };
     loop y : block=64;
-    loop y : unroll=8;
+    loop y : reuse;
 }
 ";
     let err = lower_str(src)
