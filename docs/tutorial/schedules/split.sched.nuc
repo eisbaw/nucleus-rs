@@ -1,0 +1,37 @@
+// Tutorial schedule #2: split — two workers, one cross-worker edge.
+//
+// Same algorithm as naive.sched.nuc, decomposed across two workers:
+//   host -- runs the effectful I/O kernels (owns the file system).
+//   w0   -- runs the pure `scale_bias` kernel (the loop body).
+//
+// Every data symbol that crosses the host<->w0 boundary needs exactly
+// one `transfer` directive (PRD §6.3.4: omitting a required transfer
+// is a HARD error, not a silent default). Three symbols cross:
+//   a (host -> w0)  produced by load_a     on host, read by scale_bias on w0
+//   b (host -> w0)  produced by load_b     on host, read by scale_bias on w0
+//   c (w0 -> host)  produced by scale_bias on w0,   read by save_c     on host
+//
+// All three are `sync`: the producer blocks until the consumer has
+// received — the minimum semantic every tier-1 backend offers.
+//
+// The tutorial runs this on the `mp-tcp-bufsync` backend (OS processes
+// over TCP loopback). The output MUST be byte-identical to the naive /
+// pthreads-sync run above: that byte-identity across two radically
+// different decompositions is the project's headline correctness gate.
+
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0 };
+
+    // I/O on host (owns the file system).
+    place load_a on host;
+    place load_b on host;
+    place save_c on host;
+
+    // Compute on w0.
+    place scale_bias on w0;
+
+    // One transfer per data symbol that crosses a worker boundary.
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}

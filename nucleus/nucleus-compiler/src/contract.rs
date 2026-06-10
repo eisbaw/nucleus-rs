@@ -543,8 +543,10 @@ fn compare_scalar(
             kernel: kernel.to_string(),
             position,
             expected: nuc_type_display(declared),
+            // User-facing string is tracker-ID-free (TASK-0455.06); the
+            // internal follow-up is TASK-0012 (aggregate type matching).
             actual: format!(
-                "{rust_ty} (aggregate type matching is not yet implemented; see TASK-0012 follow-ups)"
+                "{rust_ty} (aggregate type matching is not yet implemented)"
             ),
         });
     }

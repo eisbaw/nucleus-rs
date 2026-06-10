@@ -232,11 +232,14 @@ impl<'a, W: MpiRendezvous> Plan<'a, W> {
         // design — TASK-0045.03). See module docstring.
         for w in &used_workers {
             if has_check_frame(&per_worker[w]) {
+                // User-facing string is tracker-ID-free (TASK-0455.06);
+                // internal forward-link is TASK-0045.03 (multi-worker
+                // check-loop reporter semantics).
                 return Err(EmitError::UnsupportedFeature(format!(
                     "{backend}: a `check loop` frame on a multi-worker schedule is not yet \
                      supported — under MPI the latency tally has per-rank-vs-aggregate semantics \
                      (no shared memory across processes; an aggregate would need MPI_Reduce). \
-                     Forward-linked to TASK-0045.03. This is a loud reject, not a silent mis-emit."
+                     This is a loud reject, not a silent mis-emit."
                 )));
             }
         }

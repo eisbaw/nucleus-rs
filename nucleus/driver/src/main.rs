@@ -380,13 +380,30 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
     // (it needs only `linked.sched`, which is unchanged by them) so its
     // user-facing error ordering is byte-preserved.
     let caps_path = match a.capabilities {
+        // Explicit flag always wins (the documented, reproducible path
+        // for external users — TASK-0455.06).
         Some(p) => p,
-        None => find_default_capabilities(&backend).ok_or_else(|| {
-            format!(
-                "could not find capabilities.toml for backend `{backend}`; \
-                 pass --capabilities to specify"
-            )
-        })?,
+        // No flag: walk up from the CWD for the in-repo canonical layout.
+        // This convenience is in-repo-only; emit a trace line so the
+        // resolved path is observable under `NUC_TRACE=1`, and fail with
+        // a message that names the CWD-walk so an external user knows to
+        // pass `--capabilities` explicitly.
+        None => {
+            let p = find_default_capabilities(&backend).ok_or_else(|| {
+                format!(
+                    "could not find a capabilities.toml for backend `{backend}` by walking up \
+                     from the current directory for `nucleus/backends/{backend}/capabilities.toml` \
+                     (the in-repo layout). Outside the Nucleus repo this lookup does not apply — \
+                     pass `--capabilities PATH/capabilities.toml` explicitly."
+                )
+            })?;
+            nucleus_compiler::nuc_trace!(
+                "find_default_capabilities: resolved backend `{}` capabilities by CWD-walk to {}",
+                backend,
+                p.display()
+            );
+            p
+        }
     };
     let caps = load_capabilities(&caps_path)
         .map_err(|e| format!("capabilities load error ({}): {e}", caps_path.display()))?;

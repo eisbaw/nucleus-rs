@@ -1,0 +1,21 @@
+// Tutorial schedule #1: naive — single worker, no decomposition.
+//
+// Everything runs on one worker (`host`). No cross-worker dataflow,
+// so no `transfer` directives are needed (PRD §6.3.4: a transfer is
+// required ONLY for a data symbol that crosses a worker boundary).
+//
+// This is the smoke-test schedule: if the algorithm parses, lowers,
+// and links under one worker, the algorithm IR is healthy independent
+// of any decomposition. The tutorial runs this on the `pthreads-sync`
+// backend (shared-memory threads, single binary).
+
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+
+    place load_a     on host;
+    place load_b     on host;
+    place save_c     on host;
+    place scale_bias on host;
+
+    // No loop transforms, no transfers — single worker.
+}

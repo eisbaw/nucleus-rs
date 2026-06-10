@@ -1,0 +1,58 @@
+// Tutorial algorithm: scale-and-bias (integer saxpy).
+//
+//   c[i] = K * a[i] + b[i]
+//
+// This file is written FROM SCRATCH for the getting-started tutorial
+// (docs/tutorial.md); it is deliberately NOT one of the worked
+// examples under nuc-nucleus/examples/. It lives under docs/ so the
+// e2e matrix (which enumerates only nuc-nucleus/examples/<NN-name>/)
+// does not pick it up — the tutorial is exercised by its own `just
+// tutorial` recipe instead.
+//
+// What it demonstrates, in the smallest non-trivial shape:
+//   - The algorithm states WHAT to compute (a scaled add); it names no
+//     worker, no transfer, no backend. That is the algorithm/schedule
+//     split (PRD §2).
+//   - One pure scalar kernel (`scale_bias`) fired once per index.
+//   - Three effectful I/O kernels (two loads, one save).
+//
+// Numeric choice: i32. Integer arithmetic is bit-deterministic by
+// language definition, which is what the cross-backend bit-identical
+// differential needs (PRD §10.1). `scale_bias` uses wrapping
+// arithmetic in kernels.rs for the same reason.
+
+const N : usize = 64;          // array length; 64 * 4 bytes = 256 B/array
+
+// The integer scale factor K = 3 lives in kernels.rs (the kernel body),
+// not here: it is a property of the kernel's arithmetic, not of the
+// dataflow. Keeping magic numbers in the Rust kernel matches the
+// worked examples and avoids an unused-const declaration in the algo.
+
+// Whole-program input/output arrays. Single-assignment per PRD §6.2.1:
+// the for-loop assigns each c[i] exactly once.
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+
+// Pure scalar kernel: one element of a and b in, one element of c out.
+// `pure` => reorderable / deduplicable / eliminable. The signature is
+// explicitly scalar so the contract pass matches it against
+// `pub fn scale_bias(a: i32, b: i32) -> i32` without aggregate
+// machinery.
+kernel scale_bias : (i32, i32) -> i32 pure;
+
+// Effectful I/O kernels: ordering preserved, never duplicated.
+// Aggregate-typed in Nuc; on the Rust side they use `Vec<i32>`.
+kernel load_a : ()       -> i32[N] effectful;
+kernel load_b : ()       -> i32[N] effectful;
+kernel save_c : (i32[N]) -> ()     effectful;
+
+// Dataflow: load both inputs, fire the scalar kernel per element, save.
+a <-- load_a();
+b <-- load_b();
+
+for i : 0 .. N {
+    c[i] <-- scale_bias(a[i], b[i]);
+}
+
+save_c(c);

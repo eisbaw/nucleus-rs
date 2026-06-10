@@ -851,12 +851,14 @@ fn stmt_parser() -> impl Parser<char, SpStmt, Error = Simple<char>> + Clone {
                     // otherwise wins and mislocates the diagnostic at `{`).
                     .or(
                         take_until(just('{').ignored().or(end())).try_map(move |_, _outer_span| {
+                            // User-facing string is tracker-ID-free
+                            // (TASK-0455.06); the internal forward-link is
+                            // TASK-0341.02.01.03 / epic S1.
                             Err(Simple::custom(
                                 recover_span.clone(),
                                 "`until` must be followed by a boolean halt \
                                  condition before the loop body `{` (e.g. \
-                                 `until diff <= tol`) — epic S1 / \
-                                 TASK-0341.02.01.03"
+                                 `until diff <= tol`)"
                                     .to_string(),
                             ))
                         }),

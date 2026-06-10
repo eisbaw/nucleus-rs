@@ -323,6 +323,12 @@ pub(super) fn check_op_no_silent_elision_risk(
                     .iter()
                     .find_map(|(n, id)| (*id == data_id).then_some(n.as_str()))
                     .unwrap_or("<unknown>");
+                // The user-facing `message` is tracker-ID-free
+                // (TASK-0455.06). The internal forward-links are TASK-0324
+                // (set-equality elision, lifted by its AC#3) and TASK-0325
+                // (per-element fan-out elision, still defended) — kept here
+                // in the comment and on the `SameSetSilentElisionRisk`
+                // variant doc, NOT in the surfaced diagnostic.
                 let message = format!(
                     "data `{data_name}` (id {data_id:?}, edge.data_in index {i}): \
                      producer worker set ({producer_workers:?}) and consumer \
@@ -330,13 +336,11 @@ pub(super) fn check_op_no_silent_elision_risk(
                      same-worker pairs {same_worker_set:?}, which the \
                      cartesian-product fan-out skips per-element, AND \
                      {reason}. Without a cross-worker transfer this elides \
-                     into a silent miscompile — see TASK-0324 (set-equality \
-                     elision; lifted cycle 147 by AC#3) and TASK-0325 (per-\
-                     element fan-out elision; still defended). The AC#3 \
-                     extension that lifts this partial-overlap rejection is \
-                     not yet scoped — no in-tree schedule exercises it. \
-                     Remove the overlap, switch to a different partition iv, \
-                     or extend AC#3 to per-element fan-out."
+                     into a silent miscompile (the consumer reads outside \
+                     the local producer's partition slice). Fix: remove the \
+                     producer/consumer worker-set overlap, or switch the \
+                     consumer to a different partition loop variable so it \
+                     reads only its own slice."
                 );
                 return Err(TransferInjectError::SameSetSilentElisionRisk {
                     data: data_id,
@@ -469,16 +473,18 @@ pub(super) fn same_set_elision_unsafe_reason(
             // producer's. This is the minimum sound discriminator;
             // see the comment block above for the safety rationale.
             if prod_access.indices[k] != access.indices[k] {
+                // The reason string is tracker-ID-free (TASK-0455.06);
+                // the internal forward-link for the tightened structural
+                // rule is TASK-0326 (cycle-156) — kept here in the
+                // comment, not surfaced.
                 return Some(format!(
                     "axis {k} is partition-sliced at the producer (writes \
                      at {:?}); consumer reads at {:?} which does not match \
                      structurally — worker reads a slice it does not own. \
-                     This is the TASK-0326 cycle-156 tightened rule: the \
-                     consumer's axis-k expression must be structurally \
-                     equal to the producer's. A halo-aware escape valve \
-                     (accept reads provably within the halo-extended tile) \
-                     is deferred (option B); file a follow-up if an in-tree \
-                     schedule needs it.",
+                     The consumer's axis-k read expression must be \
+                     structurally equal to the producer's write expression \
+                     (a halo-aware escape valve accepting reads provably \
+                     within the halo-extended tile is not yet implemented).",
                     prod_access.indices[k], access.indices[k]
                 ));
             }

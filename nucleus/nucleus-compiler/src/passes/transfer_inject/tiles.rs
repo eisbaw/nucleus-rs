@@ -140,23 +140,27 @@ pub(super) fn rewrite_cumulative_band_tiles(
                         //       case "short-circuits to a no-op"; it does not
                         //       short-circuit — it reaches here and the
                         //       whole-array tile is simply correct.)
+                        // The user-facing `message` is tracker-ID-free
+                        // (TASK-0455.06: tracker IDs stay in code comments
+                        // and the variant docstring, not in surfaced
+                        // diagnostics). The internal forward-link is
+                        // TASK-0366 — see the `CumulativeWholeArrayFallback`
+                        // variant doc on `TransferInjectError`.
                         return Err(TransferInjectError::CumulativeWholeArrayFallback {
                             data: x.data,
                             src: x.src,
                             message: format!(
-                                "cumulative data {:?} (src {:?}) is in cumulative_data and a \
-                                 partition is active (partition_ranges non-empty) but \
-                                 cumulative_band_bounds returned None (no partitioned iv covers \
-                                 any data dim on this src). For every shipped schedule today this \
-                                 is the replicated-across-workers shape, where keeping the \
-                                 whole-array tile would silently re-introduce the xN double-count \
-                                 the cumulative-band rewrite removes (host gather / w2w exchange \
-                                 of N identical full slices). This guard is a CONSERVATIVE \
-                                 tripwire — it does not itself prove this array is replicated, so \
-                                 a single-worker cumulative array alongside an unrelated \
-                                 partitioned array is over-rejected on purpose. TASK-0366: a new \
-                                 partitioned-cumulative shape reached this branch; extend the \
-                                 write-band derivation (or narrow this guard) for it.",
+                                "cumulative data {:?} (src {:?}) is accumulated across iterations \
+                                 and a partition is active, but no partitioned loop variable \
+                                 covers any of its dimensions on this worker. Keeping the \
+                                 whole-array transfer here would silently re-introduce an xN \
+                                 double-count (host gather / worker-to-worker exchange of N \
+                                 identical full slices). This is a conservative guard: a \
+                                 single-worker cumulative array sitting alongside an unrelated \
+                                 partitioned array is over-rejected on purpose. Fix: give this \
+                                 array a partitioned loop variable on one of its dimensions, or \
+                                 (if it is genuinely replicated) extend the write-band derivation \
+                                 so the per-worker band is recoverable.",
                                 x.data, x.src
                             ),
                         });

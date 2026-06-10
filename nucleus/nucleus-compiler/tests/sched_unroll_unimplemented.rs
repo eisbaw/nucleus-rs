@@ -69,9 +69,15 @@ schedule for \"../prog.algo.nuc\" {
         msg.contains("not yet implemented") || msg.contains("unimplemented"),
         "diagnostic must flag the option as unimplemented: {msg}"
     );
+    // User-facing diagnostic is tracker-ID-free (TASK-0455.06): no
+    // internal TASK-NNNN, but it must give an actionable fix.
     assert!(
-        msg.contains("TASK-0293"),
-        "diagnostic must cite the deferral task TASK-0293: {msg}"
+        !msg.contains("TASK-0"),
+        "user-facing diagnostic must not leak a tracker ID: {msg}"
+    );
+    assert!(
+        msg.contains("Remove the `unroll` option"),
+        "diagnostic must give a concrete fix hint: {msg}"
     );
 }
 

@@ -532,16 +532,23 @@ fn inject_in_sequence(
                         return Err(SyncInjectError::UncoveredCrossPartitionReducer {
                             writers: w1.clone(),
                             readers: w2.clone(),
+                            // User-facing string is tracker-ID-free
+                            // (TASK-0455.06). Internal forward-links:
+                            // TASK-0268 (the short-barrier deadlock risk)
+                            // and TASK-0365 / TASK-0281 (the deferred
+                            // participant-correct conditional-Sync, option
+                            // D) — kept here in the comment, not surfaced.
                             message: format!(
                                 "a Sequence boundary inside a partitioned scope writes on \
                                  workers {w1:?} and is read on a DIFFERENT worker set {w2:?} \
-                                 with no transfer_inject Push/Wait pair covering the edge \
-                                 (a cross-partition reducer). sync_inject cannot insert a \
-                                 participant-correct barrier here without risking the \
-                                 floor-with-spillover short-barrier deadlock (TASK-0268), so \
-                                 it refuses rather than silently lose synchronisation. The \
-                                 participant-correct conditional-Sync (option D) is deferred \
-                                 to TASK-0365 (depends on TASK-0281)."
+                                 with no transfer Push/Wait pair covering the edge \
+                                 (a cross-partition reducer). The compiler cannot insert a \
+                                 participant-correct barrier here without risking a \
+                                 short-barrier deadlock, so it refuses rather than silently \
+                                 lose synchronisation. Fix: add a transfer directive routing \
+                                 the data through the host (or a shared worker set) so the \
+                                 producer and consumer are synchronised by a Push/Wait pair \
+                                 instead of an implicit cross-partition barrier."
                             ),
                         });
                     }

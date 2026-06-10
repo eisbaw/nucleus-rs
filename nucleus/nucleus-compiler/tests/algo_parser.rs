@@ -1826,9 +1826,16 @@ for i : 0 .. N until {
         "malformed-until diagnostic must anchor at the `until` token \
          (column 16), not the trailing `{{`, got {err:?}"
     );
+    // User-facing diagnostic is tracker-ID-free (TASK-0455.06): it must
+    // name the `until` clause and give an example fix, not leak a TASK id.
     assert!(
-        err.message.contains("until") && err.message.contains("TASK-0341.02.01.03"),
-        "diagnostic must name the `until` clause and the epic, got: {}",
+        err.message.contains("until") && !err.message.contains("TASK-0"),
+        "diagnostic must name the `until` clause and not leak a tracker ID, got: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("halt condition"),
+        "diagnostic must name the missing halt condition, got: {}",
         err.message
     );
 }

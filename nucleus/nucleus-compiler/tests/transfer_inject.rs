@@ -2940,14 +2940,19 @@ fn task0325_ac2_positive_partial_overlap_non_aligned_read() {
                 data, D_TMP,
                 "expected the rejection to name `tmp` (the cross-pass data)"
             );
+            // User-facing message is tracker-ID-free (TASK-0455.06): no
+            // internal TASK-NNNN leak, but it must stay actionable.
             assert!(
-                message.contains("TASK-0324"),
-                "message must forward-link TASK-0324; got: {message}"
+                !message.contains("TASK-0"),
+                "user-facing message must not leak a tracker ID; got: {message}"
             );
             assert!(
-                message.contains("TASK-0325"),
-                "message must forward-link TASK-0325 (cycle-145 generalisation); \
-                 got: {message}"
+                message.contains("silent miscompile"),
+                "message must name the silent-miscompile risk; got: {message}"
+            );
+            assert!(
+                message.contains("Fix:"),
+                "message must give a concrete fix hint; got: {message}"
             );
             assert!(
                 message.contains("overlap"),
@@ -4291,15 +4296,20 @@ fn task0333_ac1_partial_overlap_partition_producer_topfile_consumer_rejects() {
                  (anchor: \"partition-sliced\" via same_set_elision_unsafe_reason); \
                  got: {message}"
             );
+            // User-facing message is tracker-ID-free (TASK-0455.06): it
+            // must NOT leak an internal TASK-NNNN, but MUST stay
+            // actionable (name the silent-miscompile risk + a fix).
             assert!(
-                message.contains("TASK-0324"),
-                "message must forward-link TASK-0324 (set-equality lineage); \
-                 got: {message}"
+                !message.contains("TASK-0"),
+                "user-facing message must not leak a tracker ID; got: {message}"
             );
             assert!(
-                message.contains("TASK-0325"),
-                "message must forward-link TASK-0325 (partial-overlap \
-                 generalisation lineage); got: {message}"
+                message.contains("silent miscompile"),
+                "message must name the silent-miscompile risk; got: {message}"
+            );
+            assert!(
+                message.contains("Fix:"),
+                "message must give a concrete fix hint; got: {message}"
             );
         }
         Ok(_) => panic!(

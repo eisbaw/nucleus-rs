@@ -790,13 +790,15 @@ impl std::fmt::Display for SchedLowerErrorKind {
                 "loop `{var}` has `pipeline=1`; specify `pipeline=D` with `D >= 2` or omit the option \
                  (pipeline=1 is a no-op — one iteration in flight is the default sequential mode)"
             ),
+            // User-facing string is tracker-ID-free (TASK-0455.06); the
+            // internal follow-up is TASK-0293 (PRD §6.3.3).
             SchedLowerErrorKind::UnrollUnimplemented { var } => write!(
                 f,
                 "loop `{var}` has `unroll=N`, which is accepted by the grammar but \
                  not yet implemented — no compiler pass consumes it, so the option \
                  would silently do nothing. Remove the `unroll` option for now. \
-                 Implementation is deferred to TASK-0293 (PRD §6.3.3); SIMD/unroll \
-                 is currently delegated to the host Rust compiler + LLVM."
+                 SIMD/unroll is currently delegated to the host Rust compiler + LLVM \
+                 auto-vectorisation (PRD §6.3.3)."
             ),
             SchedLowerErrorKind::ZeroLatencyMax { var } => write!(
                 f,

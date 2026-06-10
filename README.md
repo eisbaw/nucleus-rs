@@ -44,6 +44,13 @@ deliberately out of scope for v2.
   `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
   impl + an `input.bin` + an expected `reference.bin`.
   <!-- check-readme-counts: examples=29 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
+- **[`docs/tutorial.md`](docs/tutorial.md)** — getting started: write a
+  program from scratch and run it on two backends. New users start here.
+  See also [`docs/cli-reference.md`](docs/cli-reference.md) (build flags,
+  exit codes, `--emit-pn`), [`docs/stability.md`](docs/stability.md)
+  (stable vs may-change surface), and
+  [`docs/diagnostics-audit.md`](docs/diagnostics-audit.md) (the
+  user-facing error surfaces).
 - **[`docs/`](docs/)** — grammar documents and the reference-impl
   policy.
 - **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`

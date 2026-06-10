@@ -596,13 +596,20 @@ fn task0366_partitioned_cumulative_none_band_raises_fail_loud_error() {
                 err_src, src,
                 "the error must carry the transfer's src worker (band owner)"
             );
+            // User-facing message is tracker-ID-free (TASK-0455.06): it
+            // must NOT leak the internal TASK-NNNN forward-link, but MUST
+            // stay actionable (name the xN risk + a concrete fix).
             assert!(
-                message.contains("TASK-0366"),
-                "message must forward-link TASK-0366; got: {message}"
+                !message.contains("TASK-0"),
+                "user-facing message must not leak a tracker ID; got: {message}"
             );
             assert!(
                 message.contains("xN"),
                 "message must name the xN double-count risk; got: {message}"
+            );
+            assert!(
+                message.contains("Fix:"),
+                "message must give a concrete fix hint; got: {message}"
             );
         }
         other => panic!(
