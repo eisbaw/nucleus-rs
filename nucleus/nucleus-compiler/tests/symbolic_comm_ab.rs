@@ -3,12 +3,9 @@
 //!
 //! ## What it pins
 //!
-//! For every PRE-MEDIATION corpus net plus the synthetic negatives, the
-//! COMBINED verdict (the driver additionally gates the POST-mediation
-//! ACFG on star-topology backends — corpus x mediation-variant A/B is
-//! the open extension, wave-6 review P2.1; soundness is unaffected
-//! because unknown shapes land in NeedsExpansion -> real expanded gate)
-//! the driver computes —
+//! For every corpus net (PRE-mediation AND each POST-mediation variant a
+//! real backend would apply) plus the synthetic negatives, the COMBINED
+//! verdict the driver computes —
 //!
 //! ```text
 //!   match analyze_net_soundness_symbolic(acfg) {
@@ -21,18 +18,41 @@
 //! run unconditionally. That is the soundness-equivalence the whole
 //! symbolic fast path rests on: it may change *when* the expanded analysis
 //! runs, never *whether* an unsound net is caught (thesis `sec:fw-quant`
-//! / P4 guardrail). The two halves are:
+//! / P4 guardrail). The arms are:
 //!
-//! 1. **Corpus arm** — every `examples/*/schedules/*.sched.nuc` that
-//!    reaches the soundness gate (lowered through the FULL pre-mediation
-//!    pass chain the driver runs). Enumerated from the filesystem so a new
-//!    example/schedule is covered automatically, with no hand-maintained
-//!    list to go stale. Both verdicts are derived from the SAME final
-//!    ACFG. The combined verdict must equal the expanded verdict on every
-//!    cell, and at least one cell must exercise each arm (ProvenSound /
-//!    NeedsExpansion) or the pin is vacuous.
+//! 1. **Corpus arm (pre-mediation)** — every
+//!    `examples/*/schedules/*.sched.nuc` that reaches the soundness gate
+//!    (lowered through the FULL pre-mediation pass chain the driver runs).
+//!    Enumerated from the filesystem so a new example/schedule is covered
+//!    automatically, with no hand-maintained list to go stale. Both
+//!    verdicts are derived from the SAME final ACFG. The combined verdict
+//!    must equal the expanded verdict on every cell, and at least one cell
+//!    must exercise each arm (ProvenSound / NeedsExpansion) or the pin is
+//!    vacuous.
 //!
-//! 2. **Negative synthetic-ACFG arm** — hand-built ACFGs whose expanded
+//! 2. **Corpus arm (post-mediation variants)** — TASK-0455.18, closing
+//!    wave-6 review P2.1. The driver ALSO gates the POST-mediation ACFG on
+//!    star-topology backends: before the soundness gate it runs
+//!    `apply_host_mediation_inject` (every star backend) and, for backends
+//!    with no native worker-to-worker DATA channel,
+//!    `apply_host_data_relay_inject` (4-hop relay Xfer pairs, incl.
+//!    in-Repeat ones). The PRODUCTION gate input for mp-tcp-*/mp-uds-event
+//!    is therefore the MEDIATED net, not the pre-mediation one. This arm
+//!    A/B-s that net too: for each DISTINCT `(star, relay)` mediation
+//!    combination present across the 10 shipping `capabilities.toml`
+//!    files (DERIVED from those files at runtime, not a hardcoded list —
+//!    the same completeness-pin discipline as `ALL_BACKENDS` <-> the
+//!    backends/ dir), it applies the same inject passes against the SAME
+//!    elected host the driver uses (host election MIRRORED inline from
+//!    `backend_common::host_election` — `nucleus-compiler` cannot depend
+//!    on `backend-common`, the arrow runs the other way; the
+//!    driver-mirrors-election rule), then asserts symbolic verdict ==
+//!    expanded verdict on the post-mediation net. Soundness was never in
+//!    doubt (the theorem is shape-generic; an unknown mediated shape lands
+//!    in NeedsExpansion -> real expanded gate), but this widens the
+//!    empirical falsifier from the pre-mediation input alone.
+//!
+//! 3. **Negative synthetic-ACFG arm** — hand-built ACFGs whose expanded
 //!    net is UNSOUND (over-capacity, stalling, two-consumer/free-choice).
 //!    The structural inject-pass guards make a real schedule incapable of
 //!    producing one, so these are constructed directly. Each must (a) be
@@ -54,9 +74,13 @@ use nucleus_compiler::algo::{lower_algo, parse_algo};
 use nucleus_compiler::event::{DataId, IterTile, IterVar, KernelId, SeqTag, WorkerId};
 use nucleus_compiler::link;
 use nucleus_compiler::passes::acfg_to_petri::acfg_to_net;
+use nucleus_compiler::passes::petri_to_events::acfg_to_events;
 use nucleus_compiler::petri::Net;
 use nucleus_compiler::sched::{lower_sched, parse_sched};
-use nucleus_compiler::{analyze_net_soundness_symbolic, check_net_sound, SymbolicSoundness};
+use nucleus_compiler::{
+    analyze_net_soundness_symbolic, apply_host_data_relay_inject, apply_host_mediation_inject,
+    check_net_sound, load_capabilities, SymbolicSoundness,
+};
 
 // --------------------------------------------------------------------
 // Corpus enumeration + lowering
@@ -231,6 +255,266 @@ fn corpus_combined_verdict_equals_expanded_verdict() {
         buffered_proven > 0,
         "no BUFFERED cell proven sound — the communicating-net subclass (the point of \
          TASK-0455.01) was never exercised"
+    );
+}
+
+// --------------------------------------------------------------------
+// Corpus arm — POST-mediation variants (TASK-0455.18, wave-6 review P2.1)
+// --------------------------------------------------------------------
+//
+// The driver runs `apply_host_mediation_inject` / `apply_host_data_relay_inject`
+// on the ACFG BEFORE the soundness gate for star-topology backends, so the
+// PRODUCTION gate input for mp-tcp-*/mp-uds-event is the MEDIATED net. The
+// pre-mediation corpus arm above never A/B-s that net. This arm closes the
+// gap: it re-runs each gated corpus cell through every distinct mediation
+// combination a real backend applies and asserts symbolic == expanded on
+// the post-mediation net too.
+
+/// One `(star_topology_host_mediation, host_data_relay)` mediation
+/// combination as declared by a shipping backend. `relay` implies `star`
+/// (the validator rejects relay-without-mediation), mirroring the driver's
+/// nested `if caps.host_data_relay` inside `if caps.star_topology_host_mediation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MediationVariant {
+    star: bool,
+    relay: bool,
+}
+
+/// Resolve `<repo>/nucleus/backends/`. `CARGO_MANIFEST_DIR` for this test
+/// crate is `<repo>/nucleus/nucleus-compiler`; backends live one level up.
+fn backends_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("nucleus-compiler dir has a parent (the cargo workspace root)")
+        .join("backends")
+}
+
+/// Derive the DISTINCT mediation variants present across every shipping
+/// `backends/*/capabilities.toml`, loaded with the EXACT `load_capabilities`
+/// the driver uses (TASK-0455.09). NOT a hardcoded `{(true,false),(true,true)}`
+/// list: deriving from the real files is the same completeness discipline as
+/// `task0455_09`'s `ALL_BACKENDS` <-> backends/ dir set-equality pin — a new
+/// backend declaring a new `(star, relay)` shape is then A/B-d automatically,
+/// and a backend whose flags change is picked up without a test edit.
+///
+/// The identity variant `(false, false)` — every native-barrier / direct-w2w
+/// backend — is EXCLUDED from the returned set: it applies no passes, so its
+/// gate input IS the pre-mediation ACFG already covered by the corpus arm
+/// above. Re-A/B-ing an unmediated ACFG would be a vacuous duplicate.
+fn distinct_mediation_variants() -> Vec<MediationVariant> {
+    let dir = backends_dir();
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read backends dir {}: {e}", dir.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir() && p.join("capabilities.toml").is_file())
+        .collect();
+    entries.sort();
+    assert!(
+        entries.len() >= 10,
+        "expected >= 10 in-tree backends with capabilities.toml, found {} — did the \
+         backends/ layout move? (completeness-pin precedent: task0455_09 ALL_BACKENDS)",
+        entries.len()
+    );
+
+    let mut variants = BTreeSet::new();
+    for ent in &entries {
+        let path = ent.join("capabilities.toml");
+        let caps = load_capabilities(&path)
+            .unwrap_or_else(|e| panic!("load capabilities {}: {e}", path.display()));
+        // Mirror the driver's nested-flag structure: relay only runs inside
+        // the star branch. `validate()` (run by `load_capabilities`) already
+        // rejects relay-without-star, so `relay && !star` is unreachable, but
+        // normalise defensively so the derived variant is exactly what the
+        // driver chain would execute.
+        let star = caps.star_topology_host_mediation;
+        let relay = star && caps.host_data_relay;
+        if star {
+            variants.insert(MediationVariant { star, relay });
+        }
+    }
+    variants.into_iter().collect()
+}
+
+/// Elect the host EXACTLY as the driver's mediation chain does
+/// (`driver/src/main.rs`, the `if caps.star_topology_host_mediation` block):
+/// project the ACFG via `acfg_to_events`, collect the workers with non-empty
+/// event lists into `used`, then apply the canonical host-election rule.
+///
+/// The rule is MIRRORED inline from `backend_common::host_election`
+/// (`elect_host_from_name_workers`): prefer the worker literally named
+/// `"host"` AND present in `used`, else the smallest used `WorkerId`
+/// (`used` is a `BTreeSet`, so `.iter().next()` is the smallest), else
+/// `None` for a degenerate ACFG. `nucleus-compiler` cannot depend on
+/// `backend-common` (the dependency arrow runs the other way), so the
+/// canonical helper is unreachable from here; this inline mirror is the
+/// SAME two-line rule, with the source pinned. The driver-mirrors-election
+/// rule (memory `feedback-driver-must-mirror-backend-election-exactly`)
+/// requires the mediation A/B use the same host the driver elects, or the
+/// post-mediation net under test would differ from the one the production
+/// gate sees. The election-invariant-under-mediation property
+/// (`task0455_09::host_election_is_invariant_under_mediation_*`) means one
+/// election before the first pass suffices for both passes.
+fn elect_host_mirroring_driver(acfg: &ACFG) -> Option<WorkerId> {
+    let preview = acfg_to_events(acfg);
+    let used: BTreeSet<WorkerId> = preview
+        .iter()
+        .filter(|(_, evs)| !evs.is_empty())
+        .map(|(w, _)| *w)
+        .collect();
+    // Inline mirror of backend_common::host_election::elect_host_from_name_workers.
+    let named_host_in_used = acfg
+        .name_workers
+        .get("host")
+        .copied()
+        .filter(|w| used.contains(w));
+    named_host_in_used.or_else(|| used.iter().next().copied())
+}
+
+/// Apply the mediation passes for `variant` against the driver-elected host,
+/// mirroring the driver chain order: `apply_host_mediation_inject` first,
+/// then (only when `relay`) `apply_host_data_relay_inject` with the SAME
+/// host. Returns the ACFG unchanged for a degenerate ACFG (no elected host)
+/// — exactly the driver's `None => acfg` pass-through.
+fn apply_mediation(acfg: ACFG, variant: MediationVariant) -> ACFG {
+    debug_assert!(variant.star, "identity variant should not reach apply_mediation");
+    let Some(h) = elect_host_mirroring_driver(&acfg) else {
+        return acfg;
+    };
+    let acfg = apply_host_mediation_inject(acfg, h);
+    if variant.relay {
+        apply_host_data_relay_inject(acfg, h)
+    } else {
+        acfg
+    }
+}
+
+#[test]
+fn post_mediation_corpus_combined_verdict_equals_expanded_verdict() {
+    let corpus = enumerate_corpus();
+    assert!(
+        corpus.len() >= 60,
+        "corpus enumeration looks wrong (found {} pairs)",
+        corpus.len()
+    );
+
+    let variants = distinct_mediation_variants();
+    // The shipping tree has exactly two non-identity shapes: host-mediation
+    // only (mp-tcp-bufsync, mp-tcp-poll) and host-mediation + host-data-relay
+    // (mp-tcp-event, mp-uds-event). Pin the count so a silently-shorter sweep
+    // (a capabilities.toml that lost its flag) is loud, while still DERIVING
+    // the set from the files rather than hardcoding it.
+    assert!(
+        !variants.is_empty(),
+        "no non-identity mediation variant derived from capabilities.toml files — \
+         every star-topology backend lost its flag? (expected >= 1)"
+    );
+    assert!(
+        variants.iter().all(|v| v.star),
+        "a non-star variant leaked into the mediation sweep: {variants:?}"
+    );
+
+    let mut mediated_cells = 0usize; // (cell, variant) pairs A/B-d post-mediation
+    let mut mediated_proven = 0usize; // ProvenSound on a post-mediation net
+    let mut mediated_fellback = 0usize; // NeedsExpansion on a post-mediation net
+    let mut mediated_changed = 0usize; // variant actually changed the ACFG net
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for (algo, sched) in &corpus {
+        let Some(base) = lower_to_gate_acfg(algo, sched) else {
+            continue; // pre-gate error — never reaches the gate in the driver either
+        };
+        let base_net_places = acfg_to_net(&base).places.len();
+
+        for &variant in &variants {
+            let label = format!(
+                "{}::{} [star={} relay={}]",
+                algo.parent().unwrap().file_name().unwrap().to_string_lossy(),
+                sched.file_name().unwrap().to_string_lossy(),
+                variant.star,
+                variant.relay
+            );
+            let mediated = apply_mediation(base.clone(), variant);
+            let net = acfg_to_net(&mediated);
+            if net.places.len() != base_net_places {
+                mediated_changed += 1;
+            }
+
+            let expanded_ok = check_net_sound(&net).is_ok();
+            let (combined_ok, was_proven) = combined_verdict(&mediated, &net);
+
+            if combined_ok != expanded_ok {
+                mismatches.push(format!(
+                    "{label}: combined={combined_ok} expanded={expanded_ok} (proven={was_proven})"
+                ));
+                continue;
+            }
+            if was_proven {
+                mediated_proven += 1;
+                // Same soundness-equivalence direction as the pre-mediation
+                // arm: ProvenSound MUST imply the expanded gate accepts.
+                assert!(
+                    expanded_ok,
+                    "{label}: post-mediation ProvenSound but expanded gate REJECTS — \
+                     soundness traded for scaling"
+                );
+            } else {
+                mediated_fellback += 1;
+            }
+            mediated_cells += 1;
+        }
+    }
+
+    eprintln!(
+        "symbolic-comm A/B POST-mediation totals: variants={} mediated_cells={} \
+         proven_sound={} needs_expansion={} (variant changed the net for {} cells)",
+        variants.len(),
+        mediated_cells,
+        mediated_proven,
+        mediated_fellback,
+        mediated_changed
+    );
+
+    // If a REAL post-mediation verdict divergence ever appears this is a P1
+    // finding (the symbolic gate and the expanded gate disagree on a net the
+    // production driver actually feeds the gate) — surfaced LOUDLY here, not
+    // swallowed. Per the task brief the fix would NOT live in this test.
+    assert!(
+        mismatches.is_empty(),
+        "POST-mediation A/B verdict mismatches (P1 — symbolic != expanded on a net the \
+         driver gates in production):\n  {}",
+        mismatches.join("\n  ")
+    );
+
+    // Post-mediation gated floor, in step with the pre-mediation `gated >= 55`
+    // floor (Wave-6 review P3.8 rationale): a regression converting gated cells
+    // into pre-gate errors, or a mediation sweep that silently lost a variant,
+    // would shrink this domain otherwise. With 2 non-identity variants x ~62
+    // gated cells the count is ~124; floor at 100 leaves headroom for benign
+    // corpus churn while still catching a halved sweep.
+    assert!(
+        mediated_cells >= 100,
+        "POST-mediation A/B domain shrank: only {mediated_cells} (cell, variant) pairs A/B-d \
+         (>= 100 expected) — a variant dropped out of the capabilities-derived set or pre-gate \
+         errors grew; investigate before trusting the harness"
+    );
+    // Non-vacuity: the mediation passes must actually transform SOME cell's
+    // net (otherwise we are re-A/B-ing the pre-mediation nets under a fancier
+    // name). A host-excluding barrier or a w2w Push/Wait pair triggers it.
+    assert!(
+        mediated_changed > 0,
+        "no corpus cell's net changed under ANY mediation variant — the inject passes were \
+         structurally inert across the whole corpus, so this arm adds nothing over the \
+         pre-mediation arm; the corpus may have lost its star-topology cells"
+    );
+    // Both verdict arms must be exercised on post-mediation nets too, or the
+    // post-mediation pin is as vacuous as a one-sided pre-mediation pin.
+    assert!(
+        mediated_proven > 0,
+        "no post-mediation cell ProvenSound — symbolic fast path never fired on a mediated net"
+    );
+    assert!(
+        mediated_fellback > 0,
+        "no post-mediation cell NeedsExpansion — fallback path never exercised on a mediated net"
     );
 }
 
