@@ -281,6 +281,23 @@ pub(crate) fn prune_retained_runs(parent: &std::path::Path, keep: usize) {
         if !path.is_dir() {
             continue;
         }
+        // Liveness guard (hardening-wave review P2.1): a CONCURRENT run
+        // mid-way through a long cold build can have a stale mtime and
+        // sort older than freshly-retained failures — pruning it would
+        // resurrect the cross-process scratch race TASK-0182 closed.
+        // Run dirs embed the creating pid (`run-<pid>-<nanos>`); skip
+        // any dir whose pid is still alive.
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(pid) = name
+                .strip_prefix("run-")
+                .and_then(|r| r.split('-').next())
+                .and_then(|p| p.parse::<u32>().ok())
+            {
+                if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                    continue;
+                }
+            }
+        }
         // mtime; fall back to UNIX_EPOCH so an unreadable mtime sorts as
         // oldest (gets pruned first), never as newest (never retained
         // over a real recent run).

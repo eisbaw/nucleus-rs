@@ -31,12 +31,24 @@ const HEADER_LEN: usize = 16;
 /// not see the expected connection within the budget fails LOUD naming
 /// the worker, instead of hanging the whole run.
 pub fn handshake_deadline_ms() -> u128 {
-    match std::env::var("NUC_HANDSHAKE_DEADLINE_MS")
-        .ok()
-        .and_then(|s| s.parse::<u128>().ok())
-    {
-        Some(v) if v > 0 => v,
-        _ => 30_000,
+    match std::env::var("NUC_HANDSHAKE_DEADLINE_MS") {
+        Err(_) => 30_000,
+        Ok(raw) => match raw.parse::<u128>() {
+            Ok(v) if v > 0 => v,
+            // Warn-and-default rather than silently coercing (review
+            // P3.1: the resolver must not eat a typo'd knob without a
+            // trace; proc_timeout::resolve_timeout errors loudly on the
+            // same inputs — this one warns because aborting a generated
+            // PROGRAM over a bad env var would turn a knob typo into a
+            // run failure).
+            _ => {
+                eprintln!(
+                    "[wire] WARNING: NUC_HANDSHAKE_DEADLINE_MS={raw:?} is not a \
+                     positive integer; using the 30000 ms default"
+                );
+                30_000
+            }
+        },
     }
 }
 
