@@ -5,7 +5,8 @@
 //!
 //! These are the post-S4 additions on top of the break EMIT itself
 //! (the `if <cond> { __nuc_break_gen = t; break; }` line, emitted in the
-//! `Event::Loop` arm of `render_event` in `lib.rs`). The pieces here:
+//! `Event::Loop` arm of `render_event` in the sibling `events` module).
+//! The pieces here:
 //!
 //!   - [`collect_break_loop_info`] pre-scans the top-level EventList for
 //!     the `for..until` loop and records the cap + the arrays it writes;
@@ -16,24 +17,26 @@
 //!   - [`emit_cap_hit_resolution`] emits the cap-hit stderr diagnostic +
 //!     the `__nuc_final_gen` resolution after the loop.
 //!
-//! Extracted from `lib.rs` (cycle 262) to keep that file under the
-//! mega-file fence; the break machinery is a cohesive unit.
+//! Extracted from `pthreads-sync` `lib.rs` (cycle 262) to keep that
+//! file under the mega-file fence; relocated into `backend-common` in
+//! TASK-0455.11 (the last inter-backend arrow). The break machinery is
+//! a cohesive unit and its emitted bytes are byte-identical.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use backend_common::render::{render_bool_expr, EmitError, RenderCtx};
+use crate::render::{render_bool_expr, EmitError, RenderCtx};
 use nucleus_compiler::algo::IrExpr;
 use nucleus_compiler::event::{ArgBinding, DataId, DataSlice, Event};
 use nucleus_compiler::sidecar::NameSidecar;
 
-use crate::walk_fire_outputs;
+use super::walk_fire_outputs;
 
 /// Render the TOP-LEVEL event stream of the single-worker `fn main`,
 /// handling the `for..until` early-exit machinery in one place
 /// (extracted from `render_main_rs` in cycle-262 per architect P2-1 so
-/// the cohesive break logic does not grow `lib.rs`, which is already at
-/// the mega-file fence — TASK-0437).
+/// the cohesive break logic does not grow the parent module, which was
+/// already at the mega-file fence — TASK-0437).
 ///
 /// When the stream carries no break loop ([`collect_break_loop_info`]
 /// returns `None`) this is exactly `render_events(.., 1, ..)` — the
@@ -46,7 +49,7 @@ use crate::walk_fire_outputs;
 /// after the break loop so they precede the (rewritten) extraction reads.
 /// The break EMIT itself (the capture-before-break line) is
 /// [`emit_break_check`], called from the `Event::Loop` arm of
-/// `render_event` in `lib.rs`.
+/// `render_event` in the sibling `events` module.
 pub(crate) fn render_top_level_events(
     events: &[Event],
     out: &mut String,
@@ -54,7 +57,7 @@ pub(crate) fn render_top_level_events(
     sidecar: &NameSidecar,
 ) -> Result<(), EmitError> {
     match collect_break_loop_info(events) {
-        None => crate::render_events(events, out, 1, ctx),
+        None => super::render_events(events, out, 1, ctx),
         Some(info) => {
             let mut rewritten: Vec<Event> = events.to_vec();
             rewrite_final_reads(&mut rewritten, &info, sidecar, false);
@@ -69,7 +72,7 @@ pub(crate) fn render_top_level_events(
             writeln!(out, "    let mut __nuc_break_gen: i64 = -1;").ok();
             writeln!(out).ok();
             for e in &rewritten {
-                crate::render_event(e, out, 1, ctx, None)?;
+                super::render_event(e, out, 1, ctx, None)?;
                 if matches!(
                     e,
                     Event::Loop {

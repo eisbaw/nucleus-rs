@@ -374,7 +374,8 @@ impl<'a> Plan<'a> {
         writeln!(out, "fn main() {{").ok();
 
         // TASK-0052.05: per-Count-loop Drop guard local. Mirrors the
-        // single-worker emit in `lib.rs::render_main_rs`. The guard's
+        // single-worker emit in `backend_common::single_worker_main::
+        // render_main_rs` (its home since TASK-0455.11). The guard's
         // Drop runs at fn main exit (after every `handle.join()`
         // below has returned, since handles are dropped LIFO in
         // reverse insertion order: the guards declared HERE outlive

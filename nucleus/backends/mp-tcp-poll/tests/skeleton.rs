@@ -2,7 +2,7 @@
 //!
 //! Cycle status (TASK-0044.02.02 cycle 195):
 //! - Single-worker arm IMPLEMENTED (cycle 192): delegation to
-//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` +
+//!   `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` +
 //!   `backend_common::project_skeleton::multi_binary`; byte-identical
 //!   to mp-tcp-bufsync's single-process emit.
 //! - Multi-worker arm IMPLEMENTED (cycle 195): Plan-shaped codegen

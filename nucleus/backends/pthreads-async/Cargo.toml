@@ -42,18 +42,17 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # in cycle 38). This is the single source of truth that prevents
 # renderer drift across the three tier-1 backends.
 backend-common = { path = "../../backend-common" }
-# pthreads-sync provides `render_single_worker_main` — the pthreads-
-# sync-specific straight-line main.rs emitter. pthreads-async
-# DELEGATES to it for the 0/1-used-worker case (TASK-0226), giving
-# byte-identical single-worker emit. This is the ONE semantic inter-
-# backend arrow that survives TASK-0244 + TASK-0246: the project-
-# skeleton renderers (Cargo.toml + run.sh) moved to backend-common in
-# cycle 38, leaving only the straight-line emitter as a genuinely
-# pthreads-sync-owned surface that pthreads-async (and mp-tcp-bufsync's
-# single-process arm) delegate to.
-pthreads-sync = { path = "../pthreads-sync" }
 
 [dev-dependencies]
 # Shared lower-link-inject pipeline boilerplate (TASK-0237) — used by
 # tests/skeleton.rs's lower_example_01_naive helper since cycle 24.
 test-common = { path = "../../test-common" }
+# pthreads-sync is now a TEST-ONLY (oracle) dependency. The shared
+# single-worker renderer (`render_single_worker_main`) was relocated to
+# `backend_common::single_worker_main` in TASK-0455.11 — the last
+# inter-backend PRODUCTION arrow — so the `src/` no longer touches it.
+# tests/skeleton.rs still emits via `pthreads_sync::emit` as the
+# byte-identical single-worker oracle, and tests/check_frame_emit.rs
+# spells `pthreads_sync::NameTables`; that oracle wiring stays as a
+# dev-dependency.
+pthreads-sync = { path = "../pthreads-sync" }

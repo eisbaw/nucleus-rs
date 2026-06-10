@@ -5,7 +5,7 @@
 //! - Empty event-list (smallest legal input): both openmp-rs and
 //!   pthreads-sync must emit byte-identical Cargo.toml + main.rs +
 //!   run.sh + kernels.rs, since openmp-rs's single-worker arm
-//!   delegates to pthreads-sync's `render_single_worker_main` plus
+//!   delegates to the shared `render_single_worker_main` plus
 //!   backend-common's project skeleton.
 //!
 //! - Real non-trivial witness (01-elementwise-add / naive): the same
@@ -140,7 +140,7 @@ fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
         openmp_main, sync_main,
         "openmp-rs single-worker main.rs on 01-elementwise-add/naive MUST \
          be byte-identical to pthreads-sync's. A diff means the delegation \
-         to pthreads_sync::render_single_worker_main was bypassed or \
+         to backend_common::single_worker_main::render_single_worker_main was bypassed or \
          wrapped:\n=== openmp ===\n{openmp_main}\n=== sync ===\n{sync_main}"
     );
 

@@ -20,14 +20,14 @@
 //! ## No renderer drift (TASK-0124 flagged risk, addressed)
 //!
 //! Expression / index / kernel-call / loop-bound / single-worker
-//! rendering is **not re-implemented** here — it calls
-//! pthreads-sync's `pub` shared shims (`render_fire_args_pub`,
-//! `render_fire_output_assign_pub`, `render_const_expr_pub`,
-//! `render_single_worker_main`, `rust_type_of`, …). There is exactly
-//! ONE implementation; this crate only adds the multi-PROCESS
-//! transport. That is why a single-worker example is byte-identical
-//! to pthreads-sync's single process, and why the multi-worker
-//! arithmetic cannot silently diverge.
+//! rendering is **not re-implemented** here — it calls the shared
+//! `backend_common` renderers (`render::render_fire_args`,
+//! `render::render_fire_output_assign`,
+//! `single_worker_main::render_single_worker_main_with_kernels_attr`,
+//! …). There is exactly ONE implementation; this crate only adds the
+//! multi-PROCESS transport. That is why a single-worker example is
+//! byte-identical to pthreads-sync's single process, and why the
+//! multi-worker arithmetic cannot silently diverge.
 //!
 //! ## Topology (deterministic; no sleeps-as-sync — AC#3)
 //!
@@ -98,9 +98,9 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::project_skeleton::multi_binary;
+use backend_common::single_worker_main::render_single_worker_main_with_kernels_attr;
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
-use pthreads_sync::render_single_worker_main_with_kernels_attr;
 
 mod plan;
 
@@ -271,9 +271,9 @@ pub(crate) const SO_BUF_COMMENT_BUFSYNC: &str =
 /// renderer's `mod kernels;` at the copied sibling `../kernels.rs`,
 /// because mp-tcp-bufsync emits the binary under `src/bin/` rather
 /// than as a sibling of `src/kernels.rs`. Passed to
-/// `pthreads_sync::render_single_worker_main_with_kernels_attr` as a
-/// typed parameter (TASK-0177) — replaces the prior `replacen` token-
-/// match against the renderer's literal `mod kernels;` spelling.
+/// `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr`
+/// as a typed parameter (TASK-0177) — replaces the prior `replacen`
+/// token-match against the renderer's literal `mod kernels;` spelling.
 const KERNELS_MOD_ATTR_FOR_SRC_BIN: &str = "#[path = \"../kernels.rs\"]\n#[allow(dead_code)]\n";
 
 // --------------------------------------------------------------------

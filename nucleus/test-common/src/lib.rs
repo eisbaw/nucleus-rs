@@ -419,12 +419,12 @@ schedule for "anything.algo.nuc" {
             r.names.worker.values().any(|n| n == "host"),
             "names.worker must contain host"
         );
-        // No check directives in this schedule, so the transfer
-        // buffer map must be empty.
+        // No check directives in this schedule, so the unified
+        // transfer-facts map must be empty.
         assert!(
-            r.sidecar.transfer_buffer_for_seq.is_empty(),
+            r.sidecar.xfer_facts.is_empty(),
             "single-worker schedule produces no cross-worker transfers; \
-             transfer_buffer_for_seq must be empty"
+             xfer_facts must be empty"
         );
     }
 

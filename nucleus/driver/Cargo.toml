@@ -48,7 +48,7 @@ mp-tcp-event = { path = "../backends/mp-tcp-event" }
 # surface as pthreads-sync (sync + shared-memory + barrier/blocking);
 # differs only in runtime substrate (rayon scope instead of std::thread).
 # Status as of cycle 191: single-worker arm LANDED (delegates to
-# pthreads-sync's render_single_worker_main, byte-identical artefact);
+# the shared (backend-common) render_single_worker_main, byte-identical artefact);
 # multi-worker arm returns ContractGap forward-linking TASK-0044.01.01
 # (rayon-scope codegen pending).
 openmp-rs = { path = "../backends/openmp-rs" }
@@ -56,7 +56,7 @@ openmp-rs = { path = "../backends/openmp-rs" }
 # surface as mp-tcp-bufsync (sync + tcp + no buffer); differs only in
 # wait primitive (nonblocking-read poll loop instead of blocking recv).
 # Status as of cycle 192: single-worker arm LANDED (delegates to
-# pthreads-sync's render_single_worker_main_with_kernels_attr +
+# the shared (backend-common) render_single_worker_main_with_kernels_attr +
 # backend-common's multi_binary skeleton, byte-identical to
 # mp-tcp-bufsync's single-process output); multi-worker arm returns
 # ContractGap forward-linking TASK-0044.02.02 (nonblocking-poll codegen
@@ -66,7 +66,7 @@ mp-tcp-poll = { path = "../backends/mp-tcp-poll" }
 # capability surface as mp-tcp-event (async + buffer + event notify);
 # differs only in transport (Unix domain sockets instead of TCP
 # loopback). Status as of cycle 194: single-worker arm LANDED
-# (delegates to pthreads-sync's render_single_worker_main_with_kernels_attr
+# (delegates to the shared (backend-common) render_single_worker_main_with_kernels_attr
 # + backend-common's multi_binary skeleton, byte-identical to
 # mp-tcp-event's single-process output); multi-worker arm returns
 # ContractGap forward-linking TASK-0044.03.01 (UDS-reactor codegen

@@ -12,9 +12,8 @@
 use std::collections::BTreeMap;
 
 use crate::event::{DataId, IterVar, SeqTag};
-use crate::sched::TransportMode;
 
-use super::{LoopBound, SidecarError};
+use super::{LoopBound, SidecarError, XferFacts};
 use crate::algo::CombineOp;
 
 /// Build the per-accumulator-`DataId` → [`CombineOp`] map
@@ -164,56 +163,49 @@ pub(crate) fn collect_cumulative_data_names(
     }
 }
 
-/// Walk an ACFG subtree, populating `out` with `(seq -> policy.buffer)`
-/// from every `XferPlaceholder` encountered. Mirrors the existing
-/// `acfg`-walk pattern (no allocation; in-place fold over the tree).
+/// Walk an ACFG subtree, populating `out` with one [`XferFacts`] value
+/// per `XferPlaceholder` `seq` (TASK-0455.08). Subsumes the former
+/// `collect_transfer_buffers` (TASK-0233) and `collect_transfer_transports`
+/// (TASK-0438.02) into ONE traversal: each Xfer's `policy.{buffer,
+/// transport,notify}` are copied verbatim, and the pipeline-depth mirror
+/// is looked up from `pipeline_depth_for_seq` (the ACFG's
+/// initial-marking source of truth — see [`XferFacts::pipeline_depth`]).
 ///
 /// Push and Wait endpoints of the same pair share one seq + one
-/// policy.buffer, so the second insertion under a given key is
-/// idempotent. We accept the redundant write rather than branching
-/// on role — simpler + no behavior difference.
-pub(super) fn collect_transfer_buffers(node: &crate::acfg::ACFGNode, out: &mut BTreeMap<SeqTag, u64>) {
-    use crate::acfg::ACFGNode;
-    match node {
-        ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
-        ACFGNode::Xfer(x) => {
-            out.insert(x.seq, x.policy.buffer);
-        }
-        ACFGNode::Sequence(children) => {
-            for c in children {
-                collect_transfer_buffers(c, out);
-            }
-        }
-        ACFGNode::Repeat { body, .. } => {
-            collect_transfer_buffers(body, out);
-        }
-    }
-}
-
-/// Walk an ACFG subtree, populating `out` with `(seq -> policy.transport)`
-/// from every `XferPlaceholder` encountered (TASK-0438.02). Exact mirror
-/// of [`collect_transfer_buffers`] — same traversal, same idempotent
-/// double-write across the Push/Wait pair (both endpoints share one seq
-/// and one `policy.transport`, so the second insertion under a given key
-/// is a no-op). We accept the redundant write rather than branching on
-/// role — simpler + no behavior difference.
-pub(super) fn collect_transfer_transports(
+/// `policy`, so the second insertion under a given key is idempotent
+/// (same `XferFacts` value). We accept the redundant write rather than
+/// branching on role — simpler + no behaviour difference. The pipeline
+/// depth is keyed by the same seq, so the mirror is consistent across
+/// both endpoints by construction.
+pub(super) fn collect_xfer_facts(
     node: &crate::acfg::ACFGNode,
-    out: &mut BTreeMap<SeqTag, TransportMode>,
+    pipeline_depth_for_seq: &BTreeMap<SeqTag, std::num::NonZeroU64>,
+    out: &mut BTreeMap<SeqTag, XferFacts>,
 ) {
     use crate::acfg::ACFGNode;
     match node {
         ACFGNode::Operation(_) | ACFGNode::Sync(_) => {}
         ACFGNode::Xfer(x) => {
-            out.insert(x.seq, x.policy.transport);
+            out.insert(
+                x.seq,
+                XferFacts {
+                    buffer: x.policy.buffer,
+                    transport: x.policy.transport,
+                    notify: x.policy.notify,
+                    // Mirror the ACFG's pipeline pre-fill depth (TASK-0134)
+                    // into the backend-facing surface; `None` for a seq
+                    // whose pair was not created inside a `pipeline=D` loop.
+                    pipeline_depth: pipeline_depth_for_seq.get(&x.seq).copied(),
+                },
+            );
         }
         ACFGNode::Sequence(children) => {
             for c in children {
-                collect_transfer_transports(c, out);
+                collect_xfer_facts(c, pipeline_depth_for_seq, out);
             }
         }
         ACFGNode::Repeat { body, .. } => {
-            collect_transfer_transports(body, out);
+            collect_xfer_facts(body, pipeline_depth_for_seq, out);
         }
     }
 }

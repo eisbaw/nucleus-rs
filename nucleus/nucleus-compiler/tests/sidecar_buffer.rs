@@ -1,6 +1,8 @@
-//! Tests for `NameSidecar::transfer_buffer_for_seq` (TASK-0233).
+//! Tests for the per-SeqTag buffer fact carried on
+//! `NameSidecar::xfer_facts` (TASK-0233 buffer sizing, unified into the
+//! single `XferFacts` map by TASK-0455.08 — read via `XferFacts::buffer`).
 //!
-//! The new sidecar field carries per-SeqTag buffer sizes from the
+//! The sidecar field carries per-SeqTag buffer sizes from the
 //! schedule's `transfer DATA : buffer=N` directives, so the
 //! pthreads-async multi-worker codegen (TASK-0228 Wave B) can size
 //! Arc<Ring<T>> instances without re-reading ACFG or LinkedIR
@@ -74,10 +76,10 @@ fn async_pipeline_parallel_populates_buffer_for_each_cross_worker_pair() {
     // Some entries must exist (this is a multi-worker schedule with
     // cross-worker transfers).
     assert!(
-        !sidecar.transfer_buffer_for_seq.is_empty(),
-        "pipeline_parallel must produce non-empty transfer_buffer_for_seq; \
+        !sidecar.xfer_facts.is_empty(),
+        "pipeline_parallel must produce non-empty xfer_facts; \
          got {:?}",
-        sidecar.transfer_buffer_for_seq
+        sidecar.xfer_facts
     );
 
     // Count buffer values. pipeline_parallel declares 3 async edges
@@ -89,9 +91,9 @@ fn async_pipeline_parallel_populates_buffer_for_each_cross_worker_pair() {
     // that dropped 1 of the 3 entries would slip past a `>= 1`
     // assertion; pin the exact 3 instead. Cycle-19 review-gate C.2.
     let count_3 = sidecar
-        .transfer_buffer_for_seq
+        .xfer_facts
         .values()
-        .filter(|&&v| v == 3)
+        .filter(|f| f.buffer == 3)
         .count();
     assert_eq!(
         count_3, 3,
@@ -100,19 +102,20 @@ fn async_pipeline_parallel_populates_buffer_for_each_cross_worker_pair() {
          one SeqTag so the map must have exactly 3 entries with value 3. \
          A drop here is a regression in either transfer_inject's pair \
          creation or the sidecar walker. Got: {:?}",
-        sidecar.transfer_buffer_for_seq
+        sidecar.xfer_facts
     );
 
     // The sync output hop (default buffer=1) must also appear if it
     // produced any cross-worker Push/Wait. Defensive: any value that's
     // not 1 or 3 would mean an unexpected buffer size leaked in.
-    for (seq, &cap) in &sidecar.transfer_buffer_for_seq {
+    for (seq, f) in &sidecar.xfer_facts {
+        let cap = f.buffer;
         assert!(
             cap == 1 || cap == 3,
             "pipeline_parallel only declares buffer=1 (default sync) or \
              buffer=3 (the 3 async edges); seq {seq:?} carries cap={cap}, \
              which is neither. Full map: {:?}",
-            sidecar.transfer_buffer_for_seq
+            sidecar.xfer_facts
         );
     }
 }
@@ -125,10 +128,10 @@ fn sync_naive_schedule_has_empty_transfer_buffer_map() {
     let (linked, acfg, _) = lower("01-elementwise-add", "schedules/naive.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     assert!(
-        sidecar.transfer_buffer_for_seq.is_empty(),
+        sidecar.xfer_facts.is_empty(),
         "01-elementwise-add/naive is single-worker; no cross-worker \
-         transfers means transfer_buffer_for_seq must be empty. Got: {:?}",
-        sidecar.transfer_buffer_for_seq
+         transfers means xfer_facts must be empty. Got: {:?}",
+        sidecar.xfer_facts
     );
 }
 
@@ -140,18 +143,19 @@ fn split_schedule_carries_default_buffer_1_for_sync_transfers() {
     let (linked, acfg, _) = lower("02-split-add", "schedules/split.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     assert!(
-        !sidecar.transfer_buffer_for_seq.is_empty(),
+        !sidecar.xfer_facts.is_empty(),
         "02-split-add/split is multi-worker; cross-worker transfers \
          must populate the map. Got: {:?}",
-        sidecar.transfer_buffer_for_seq
+        sidecar.xfer_facts
     );
-    for (seq, &cap) in &sidecar.transfer_buffer_for_seq {
+    for (seq, f) in &sidecar.xfer_facts {
+        let cap = f.buffer;
         assert_eq!(
             cap, 1,
             "split.sched.nuc declares no buffer override; every entry \
              must be the default 1. seq {seq:?} carries cap={cap}. \
              Full map: {:?}",
-            sidecar.transfer_buffer_for_seq
+            sidecar.xfer_facts
         );
     }
 }
@@ -169,34 +173,39 @@ fn collect_walks_repeat_and_sequence_via_pipeline_parallel_fixture() {
     let (linked, acfg, _) = lower("13-cnn-inference", "schedules/pipeline_parallel.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");
     let xfer_count = count_xfer_nodes(&acfg.root);
-    let map_count = sidecar.transfer_buffer_for_seq.len();
+    let map_count = sidecar.xfer_facts.len();
     // Each Push/Wait pair shares one seq, so map_count == xfer_count / 2.
     assert_eq!(
         map_count * 2,
         xfer_count,
-        "transfer_buffer_for_seq has {map_count} entries but the ACFG \
+        "xfer_facts has {map_count} entries but the ACFG \
          carries {xfer_count} Xfer nodes (Push + Wait per pair = 2x \
          the map). Walker likely missed nodes inside Repeat or \
          Sequence. Full map: {:?}",
-        sidecar.transfer_buffer_for_seq
+        sidecar.xfer_facts
     );
 }
 
-/// Forward-compatibility (cycle-19 review-gate B.1): a wire payload
-/// serialised BEFORE TASK-0233 lacks the new `transfer_buffer_for_seq`
-/// field. The struct's serde-default attribute on the field means
-/// such payloads must deserialise successfully with the new field
-/// defaulting to empty. This pins the contract on the wire surface,
-/// not just the in-memory roundtrip (the existing
-/// `sidecar_serde_roundtrip_is_byte_identical` in petri_to_events.rs
-/// only exercises the current schema).
+/// Forward-compatibility (cycle-19 review-gate B.1; updated TASK-0455.08):
+/// a wire payload serialised BEFORE the unified `xfer_facts` field lands
+/// (e.g. a pre-TASK-0233 payload that never had ANY per-seq transfer
+/// map, OR a TASK-0233/TASK-0438.02 payload that carried the now-removed
+/// `transfer_buffer_for_seq` / `transfer_transport_for_seq` maps).
+/// `xfer_facts` is `serde(default)`, so a payload with NO `xfer_facts`
+/// key must deserialise successfully with the field defaulting to empty.
+/// Serde silently IGNORES the unknown legacy keys (no `deny_unknown_fields`
+/// on `NameSidecar`), so an old payload that still carries the removed
+/// maps also round-trips — the old per-seq buffer/transport facts are
+/// simply dropped, which is the documented back-compat behaviour (the
+/// schedule is re-walked at build time, not read back from such a stale
+/// sidecar). This pins the contract on the wire surface, not just the
+/// in-memory roundtrip.
 #[cfg(feature = "serde")]
 #[test]
-fn old_wire_payload_without_transfer_buffer_field_deserializes_with_empty_default() {
+fn old_wire_payload_without_xfer_facts_field_deserializes_with_empty_default() {
     use nucleus_compiler::NameSidecar;
 
-    // A NameSidecar JSON payload missing the new field. Every other
-    // field is present at its minimal valid empty shape.
+    // (1) A payload missing the field entirely (minimal valid shape).
     let old_json = r#"{
         "data_types": {},
         "consts": {},
@@ -208,10 +217,32 @@ fn old_wire_payload_without_transfer_buffer_field_deserializes_with_empty_defaul
     let sidecar: NameSidecar =
         serde_json::from_str(old_json).expect("old-wire payload must deserialize cleanly");
     assert!(
-        sidecar.transfer_buffer_for_seq.is_empty(),
+        sidecar.xfer_facts.is_empty(),
         "missing field on the wire must default to empty BTreeMap, \
          not error; got {:?}",
-        sidecar.transfer_buffer_for_seq
+        sidecar.xfer_facts
+    );
+
+    // (2) A LEGACY payload that still carries the removed parallel maps
+    // (`transfer_buffer_for_seq` / `transfer_transport_for_seq`). Serde
+    // ignores unknown keys, so this must deserialise with an empty
+    // `xfer_facts` — the removed maps are dropped, not errored on.
+    let legacy_json = r#"{
+        "data_types": {},
+        "consts": {},
+        "loop_bounds": {},
+        "kernel_sigs": {},
+        "partition_worker_ranges": {},
+        "transfer_buffer_for_seq": {"7": 3},
+        "transfer_transport_for_seq": {"7": "Dma"}
+    }"#;
+    let legacy: NameSidecar = serde_json::from_str(legacy_json)
+        .expect("legacy payload with removed maps must deserialize (unknown keys ignored)");
+    assert!(
+        legacy.xfer_facts.is_empty(),
+        "the removed legacy maps must NOT be read back into xfer_facts; \
+         got {:?}",
+        legacy.xfer_facts
     );
 
     // Defensive: a fresh (non-deserialised) NameSidecar::default()
@@ -219,7 +250,7 @@ fn old_wire_payload_without_transfer_buffer_field_deserializes_with_empty_defaul
     // "field absent on wire" and "field constructed fresh".
     let fresh = NameSidecar::default();
     assert_eq!(
-        sidecar.transfer_buffer_for_seq, fresh.transfer_buffer_for_seq,
+        sidecar.xfer_facts, fresh.xfer_facts,
         "old-wire-deserialized empty must equal fresh-default empty"
     );
 }

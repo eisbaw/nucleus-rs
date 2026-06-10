@@ -20,7 +20,7 @@
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`): IMPLEMENTED
 //!   (TASK-0042.02 Stages 1+2 cycle 41). Delegates to
-//!   `pthreads_sync::render_single_worker_main` so the emitted
+//!   `backend_common::single_worker_main::render_single_worker_main` so the emitted
 //!   arithmetic is byte-identical to pthreads-sync's (and to
 //!   pthreads-async's / mp-tcp-bufsync's) single-worker output.
 //!   Project skeleton uses the multi-process `src/bin/<name>.rs`
@@ -54,7 +54,8 @@
 //!    channel keeps its own ordered semantics.
 //!
 //! 2. **Per-(seq, peer) outbound queues** sized from
-//!    `sidecar.transfer_buffer_for_seq[seq]` (TASK-0233 contract).
+//!    `sidecar.xfer_facts[seq].buffer` (TASK-0233 buffer contract,
+//!    unified into `XferFacts` by TASK-0455.08).
 //!    `Chan<T>::push(v)` enqueues then opportunistically drains
 //!    non-blockingly (so producer can move on without parking the
 //!    consumer); blocks on the back-pressure point when
@@ -161,13 +162,13 @@ use nucleus_compiler::sidecar::NameSidecar;
 use backend_common::project_skeleton::multi_binary;
 
 // Single-worker emit delegate. The shared single-worker renderer
-// lives in pthreads-sync (the pthreads-sync-specific straight-line
-// main.rs emitter); mp-tcp-event, pthreads-async, and mp-tcp-bufsync
-// all DELEGATE to it for the 0/1-used-worker arm. This is THE one
-// semantic inter-backend arrow — Cargo.toml + run.sh now come from
-// `backend_common::project_skeleton`, but the straight-line emitter
-// is genuinely pthreads-sync-owned.
-use pthreads_sync::render_single_worker_main;
+// lives in `backend_common::single_worker_main` (relocated there from
+// pthreads-sync in TASK-0455.11, the last inter-backend arrow);
+// mp-tcp-event, pthreads-async, and mp-tcp-bufsync all DELEGATE to it
+// for the 0/1-used-worker arm so the emitted main.rs is byte-identical
+// across backends. Cargo.toml + run.sh come from
+// `backend_common::project_skeleton`.
+use backend_common::single_worker_main::render_single_worker_main;
 
 // Multi-worker codegen (TASK-0042.05). The mio reactor + per-(seq,
 // peer) outbound queue + per-seq inbound queue substrate lives in
@@ -262,7 +263,7 @@ pub struct EmitResult {
 /// Dispatch:
 ///
 /// - `used_workers <= 1` -> SINGLE-WORKER. Delegates to the SHARED
-///   `pthreads_sync::render_single_worker_main` so the emitted
+///   `backend_common::single_worker_main::render_single_worker_main` so the emitted
 ///   arithmetic is byte-identical to pthreads-sync's. Project skeleton
 ///   uses the mp-tcp-bufsync-style `src/bin/nuc-generated.rs` layout
 ///   so the result shape is uniform with the multi-worker arm.

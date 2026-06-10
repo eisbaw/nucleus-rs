@@ -11,7 +11,7 @@
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`) — IMPLEMENTED
 //!   cycle 194. Delegates to
-//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` plus
+//!   `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` plus
 //!   `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
 //!   render_run_sh_single}` — the SAME shared renderers mp-tcp-event /
 //!   mp-tcp-poll single-process arms consume. SOURCE-byte-identical
@@ -123,7 +123,7 @@ use backend_common::project_skeleton::multi_binary;
 // cycles 191/192 use, which is byte-equivalent to mp-tcp-event's older
 // `wrap_single_worker` post-hoc `replacen` per the cycle-171 honest-
 // scope plan).
-use pthreads_sync::render_single_worker_main_with_kernels_attr;
+use backend_common::single_worker_main::render_single_worker_main_with_kernels_attr;
 
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
@@ -200,7 +200,7 @@ pub struct EmitResult {
 /// Dispatch:
 ///
 /// - `used_workers <= 1` → SINGLE-PROCESS. Delegates to the SHARED
-///   `pthreads_sync::render_single_worker_main_with_kernels_attr` so
+///   `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` so
 ///   the emitted binary body is byte-identical to mp-tcp-event's
 ///   single-process binary (and therefore byte-identical arithmetic
 ///   to pthreads-sync's single process). The Cargo.toml + run.sh
@@ -372,7 +372,7 @@ pub(crate) const MIO_UDS_DEPENDENCY_BLOCK: &str =
 /// because mp-uds-event (like mp-tcp-bufsync / mp-tcp-event /
 /// mp-tcp-poll) emits the binary under `src/bin/` rather than as a
 /// sibling of `src/kernels.rs`. Passed to
-/// `pthreads_sync::render_single_worker_main_with_kernels_attr` as a
+/// `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` as a
 /// typed parameter (TASK-0177).
 ///
 /// Byte-identical to the same const in mp-tcp-bufsync + mp-tcp-poll

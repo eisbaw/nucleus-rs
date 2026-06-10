@@ -7,7 +7,7 @@
 //!   run.sh + kernels.rs (NOT wire.rs — cycle 197 AC#7), since
 //!   mp-uds-event's single-process arm delegates to the SAME shared
 //!   renderers mp-tcp-event's single-process arm uses
-//!   (`pthreads_sync::render_single_worker_main_with_kernels_attr` +
+//!   (`backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` +
 //!   `backend_common::project_skeleton::multi_binary`). wire.rs
 //!   CONTENT diverges by design from cycle 197 onwards: mp-uds-event
 //!   emits the inlined UDS `WIRE_RUNTIME_SRC` (UnixStream API),

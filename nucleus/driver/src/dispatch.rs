@@ -147,9 +147,11 @@ pub(crate) fn dispatch_backend(
         // notify), differing only in runtime substrate (rayon scope
         // instead of std::thread). Status as of cycle 197 (M6 matrix
         // complete): single-worker arm landed cycle 191 (delegates to
-        // pthreads-sync's `render_single_worker_main` + backend-common's
-        // project-skeleton, byte-identical to pthreads-sync /
-        // pthreads-async); multi-worker arm landed cycle 196 via
+        // the shared `backend_common::single_worker_main::
+        // render_single_worker_main` + backend-common's project-skeleton,
+        // byte-identical to pthreads-sync / pthreads-async; the renderer
+        // was relocated out of pthreads-sync in TASK-0455.11);
+        // multi-worker arm landed cycle 196 via
         // TASK-0044.01.01 (rayon-scope codegen + 8 [[required]] cells
         // bit-identical vs pthreads-sync template).
         "openmp-rs" => {
@@ -168,9 +170,9 @@ pub(crate) fn dispatch_backend(
         // as mp-tcp-bufsync, differing only in the wait primitive
         // (nonblocking-read poll loop instead of blocking recv). Status
         // as of cycle 197 (M6 matrix complete): single-worker arm landed
-        // cycle 192 (delegates to pthreads-sync's
-        // `render_single_worker_main_with_kernels_attr` +
-        // backend-common's multi_binary skeleton, byte-identical to
+        // cycle 192 (delegates to the shared `backend_common::
+        // single_worker_main::render_single_worker_main_with_kernels_attr`
+        // + backend-common's multi_binary skeleton, byte-identical to
         // mp-tcp-bufsync's single-process output); multi-worker arm
         // landed cycle 195 via TASK-0044.02.02 (nonblocking-poll
         // codegen + 8 [[required]] cells bit-identical vs mp-tcp-bufsync
@@ -195,10 +197,10 @@ pub(crate) fn dispatch_backend(
         // capability surface as mp-tcp-event, differing only in
         // transport (UDS instead of TCP loopback). Status as of cycle
         // 197 (M6 matrix complete): single-worker arm landed cycle 194
-        // (delegates to pthreads-sync's
-        // `render_single_worker_main_with_kernels_attr` +
-        // backend-common's multi_binary skeleton, byte-identical to
-        // mp-tcp-event's single-process output; wire.rs emitted from
+        // (delegates to the shared `backend_common::single_worker_main::
+        // render_single_worker_main_with_kernels_attr` + backend-common's
+        // multi_binary skeleton, byte-identical to mp-tcp-event's
+        // single-process output; wire.rs emitted from
         // mp_tcp_common::WIRE_RUNTIME_SRC verbatim for shape uniformity,
         // unused because the single-process bin does not `mod wire;`);
         // multi-worker arm landed cycle 197 via TASK-0044.03.01

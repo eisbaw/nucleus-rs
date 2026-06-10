@@ -16,10 +16,13 @@
 //! templates here. TASK-0257 (cycle 112) lifts the multi-binary
 //! templates here in turn, closing the prior 3-way duplication across
 //! mp-tcp-bufsync + mp-tcp-event single-worker + mp-tcp-event multi-
-//! worker. The only inter-backend arrow that survives is
-//! `pthreads_sync::render_single_worker_main` (a real semantic
-//! delegation: pthreads-async's single-worker arm IS pthreads-sync's
-//! straight-line main.rs, byte-identical by construction).
+//! worker. The single-worker straight-line `main.rs` emitter — the
+//! LAST inter-backend arrow, once `pthreads_sync::render_single_worker_main`
+//! — was itself relocated into this crate
+//! ([`crate::single_worker_main`]) in TASK-0455.11, so no backend now
+//! delegates to another backend: every backend's single-worker arm IS
+//! the shared `backend_common::single_worker_main` renderer,
+//! byte-identical by construction.
 //!
 //! # Module shape
 //!

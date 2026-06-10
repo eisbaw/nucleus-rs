@@ -2,7 +2,7 @@
 //!
 //! Cycle history:
 //! - **TASK-0226 (cycle 17):** single-worker arm implemented (delegates
-//!   to `pthreads_sync::render_single_worker_main`). The byte-identical-
+//!   to `backend_common::single_worker_main::render_single_worker_main`). The byte-identical-
 //!   to-pthreads-sync invariant on naive schedules holds by
 //!   construction (same delegated renderer).
 //! - **TASK-0228 Wave B-2 (cycle 26):** multi-worker arm landed. The
@@ -295,7 +295,7 @@ fn single_worker_real_example_emits_byte_identical_to_pthreads_sync() {
         "pthreads-async single-worker main.rs on 01-elementwise-add/naive \
          MUST be byte-identical to pthreads-sync's (the cross-backend \
          differential invariant). A diff here means the delegation to \
-         pthreads_sync::render_single_worker_main was bypassed or wrapped:\n\
+         backend_common::single_worker_main::render_single_worker_main was bypassed or wrapped:\n\
          === async main.rs ===\n{async_main}\n\
          === sync main.rs ===\n{sync_main}"
     );
@@ -342,7 +342,7 @@ fn emit_result_shape_is_single_binary_five_fields() {
 // SHARED `pthreads_sync::multi_worker_walker` (cycle 31 / TASK-0239)
 // which routes through the pub shims (`render_fire_args_pub`,
 // `render_const_expr_pub`); single-worker schedules delegate
-// straight to `pthreads_sync::render_single_worker_main`.
+// straight to `backend_common::single_worker_main::render_single_worker_main`.
 //
 // Cycle-36 audit grep
 // (`grep -rnE "fn render_int_expr|fn render_flat_index|fn

@@ -129,9 +129,10 @@ use nucleus_compiler::event::{
     ArgBinding, BlockTag, CheckFrame, DataId, DataSlice, Event, FireBinding, IterTile, IterVar,
     KernelId, Region, SeqTag, SyncKind, SyncTag, ViolationKind, WorkerId,
 };
+use nucleus_compiler::acfg::NotifyMode;
 use nucleus_compiler::passes::reuse_inference::ReuseSlot;
 use nucleus_compiler::sched::TransportMode;
-use nucleus_compiler::sidecar::{ConstValue, KernelSig, LoopBound, NameSidecar};
+use nucleus_compiler::sidecar::{ConstValue, KernelSig, LoopBound, NameSidecar, XferFacts};
 
 /// Case count floor for both round-trip properties. proptest's default
 /// is 256; the round-trip body is cheap so 256 is plenty fast. Raising
@@ -180,8 +181,7 @@ fn sidecar_field_completeness_guard(s: &NameSidecar) {
         loop_bounds: _,
         kernel_sigs: _,
         partition_worker_ranges: _,
-        transfer_buffer_for_seq: _,
-        transfer_transport_for_seq: _,
+        xfer_facts: _,
         halo_widths: _,
         reuse_widths: _,
         partition_pairs: _,
@@ -600,6 +600,31 @@ fn reuse_slot() -> impl Strategy<Value = ReuseSlot> {
     (any::<i64>(), any::<u64>()).prop_map(|(min_offset, length)| ReuseSlot { min_offset, length })
 }
 
+/// One [`XferFacts`] value (TASK-0455.08): a `buffer` capacity, a
+/// `transport` mode, a `notify` mode, and an optional `pipeline_depth`
+/// (`NonZeroU64`). All four serde-bearing fields are generated so the
+/// round-trip exercises each.
+fn xfer_facts() -> impl Strategy<Value = XferFacts> {
+    (
+        any::<u64>(),
+        prop_oneof![Just(TransportMode::Pio), Just(TransportMode::Dma)],
+        prop_oneof![
+            Just(NotifyMode::Default),
+            Just(NotifyMode::Event),
+            Just(NotifyMode::Poll)
+        ],
+        // pipeline_depth: Option<NonZeroU64>. `1..=u64::MAX` keeps it
+        // non-zero so NonZeroU64::new never returns None.
+        prop::option::of((1u64..=u64::MAX).prop_map(|d| std::num::NonZeroU64::new(d).unwrap())),
+    )
+        .prop_map(|(buffer, transport, notify, pipeline_depth)| XferFacts {
+            buffer,
+            transport,
+            notify,
+            pipeline_depth,
+        })
+}
+
 /// A small `BTreeMap<DataId, V>` (helper for nested maps).
 fn small_map<V: std::fmt::Debug, S: Strategy<Value = V>>(
     vstrat: S,
@@ -627,15 +652,10 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         prop::collection::btree_map(any::<u64>().prop_map(WorkerId), range_i64(), 0..=3),
         0..=3,
     );
-    // transfer_buffer_for_seq: BTreeMap<SeqTag, u64>
-    let transfer_buffer_for_seq =
-        prop::collection::btree_map(any::<u64>().prop_map(SeqTag), any::<u64>(), 0..=3);
-    // transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode> (TASK-0438.02)
-    let transfer_transport_for_seq = prop::collection::btree_map(
-        any::<u64>().prop_map(SeqTag),
-        prop_oneof![Just(TransportMode::Pio), Just(TransportMode::Dma)],
-        0..=3,
-    );
+    // xfer_facts: BTreeMap<SeqTag, XferFacts> (TASK-0455.08 — unifies the
+    // former transfer_buffer_for_seq + transfer_transport_for_seq maps).
+    let xfer_facts =
+        prop::collection::btree_map(any::<u64>().prop_map(SeqTag), xfer_facts(), 0..=3);
     // halo_widths: BTreeMap<KernelId, BTreeMap<IterVar, u64>>
     let halo_widths = prop::collection::btree_map(
         any::<u64>().prop_map(KernelId),
@@ -676,17 +696,12 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
         loop_bounds,
         kernel_sigs,
         partition_worker_ranges,
-        transfer_buffer_for_seq,
+        xfer_facts,
         halo_widths,
         reuse_widths,
         partition_pairs,
         grid_shape_for_outer_iv,
-        (
-            cumulative_data,
-            data_decl_order,
-            transfer_transport_for_seq,
-            combine_for_data,
-        ),
+        (cumulative_data, data_decl_order, combine_for_data),
     )
         .prop_map(
             |(
@@ -695,20 +710,19 @@ fn namesidecar_strategy() -> impl Strategy<Value = NameSidecar> {
                 loop_bounds,
                 kernel_sigs,
                 partition_worker_ranges,
-                transfer_buffer_for_seq,
+                xfer_facts,
                 halo_widths,
                 reuse_widths,
                 partition_pairs,
                 grid_shape_for_outer_iv,
-                (cumulative_data, data_decl_order, transfer_transport_for_seq, combine_for_data),
+                (cumulative_data, data_decl_order, combine_for_data),
             )| NameSidecar {
                 data_types,
                 consts,
                 loop_bounds,
                 kernel_sigs,
                 partition_worker_ranges,
-                transfer_buffer_for_seq,
-                transfer_transport_for_seq,
+                xfer_facts,
                 halo_widths,
                 reuse_widths,
                 partition_pairs,

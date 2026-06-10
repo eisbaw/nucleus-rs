@@ -92,10 +92,19 @@ use std::collections::BTreeMap;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::acfg::NotifyMode;
 use crate::algo::{CombineOp, IrExpr, Purity, ResolvedType, ScalarType};
 use crate::event::{DataId, IterVar, KernelId, SeqTag, WorkerId};
 use crate::sched::TransportMode;
 use crate::link::LinkedIR;
+
+// The unified per-`SeqTag` transfer-facts value (TASK-0455.08). Split into
+// a child module to keep this file under the 1000-LoC mega-file fence
+// (`just check-mega-files`), same precedent as `collectors` /
+// `cumulative_tests`; re-exported so it stays
+// `nucleus_compiler::sidecar::XferFacts`.
+mod xfer_facts;
+pub use xfer_facts::XferFacts;
 
 /// The unevaluated source bounds of a `for` loop, captured before
 /// `build_acfg` folds them to a concrete `Range<i64>`.
@@ -211,62 +220,47 @@ pub struct NameSidecar {
     #[cfg_attr(feature = "serde", serde(default))]
     pub partition_worker_ranges: BTreeMap<IterVar, BTreeMap<WorkerId, std::ops::Range<i64>>>,
 
-    /// Per-SeqTag transfer buffer size — the `transfer DATA : buffer=N`
-    /// value the schedule's directive carries through to the matched
-    /// Push/Wait pair (TASK-0233). Pthreads-async multi-worker codegen
-    /// (TASK-0228 Wave B) needs this to size the per-(DataId,SeqTag)
-    /// `Arc<Ring<T>>` instances — the value lives in
-    /// `ACFG::XferPlaceholder::policy.buffer` upstream, but the backend
-    /// receives only NameSidecar per the EventList contract (TASK-0124),
-    /// so it has to ride along the sidecar.
+    /// Per-`SeqTag` **unified transfer facts** — the single
+    /// backend-facing surface for every per-transfer-edge codegen fact
+    /// the schedule's `transfer DATA : ...` directive carries through to
+    /// a matched Push/Wait pair (TASK-0455.08). Replaces the former
+    /// parallel `transfer_buffer_for_seq` (TASK-0233) and
+    /// `transfer_transport_for_seq` (TASK-0438.02) maps — each fact used
+    /// to ride its OWN `BTreeMap<SeqTag, _>` with its own collector,
+    /// serde-default, and forward-clone, and `notify` had no sidecar
+    /// surface at all. Unifying them under one [`XferFacts`] value
+    /// populated by ONE collector removes the divergence hazard the
+    /// `KernelSig` comment below warns about (N parallel maps that can
+    /// silently fall out of step).
     ///
-    /// One entry per matched Push/Wait pair (the seq is unique per
-    /// pair; both endpoints share it — `passes::transfer_inject`
-    /// guarantees that invariant). Sync transfers also appear here
-    /// (their `buffer` defaults to 1 per `TransferPolicy::default`);
-    /// async transfers carry the schedule's chosen `buffer=N`.
+    /// Every fact lives in `ACFG::XferPlaceholder::policy` upstream
+    /// (`buffer`, `transport`, `notify`), but the backend receives only
+    /// `NameSidecar` per the EventList contract (TASK-0124), so the facts
+    /// ride along the sidecar. `pipeline_depth` is the one exception: it
+    /// is NOT a `policy` field — it lives on `ACFG::pipeline_depth_for_seq`
+    /// (the Petri/initial-marking source of truth, consumed only by the
+    /// middle-end) and is MIRRORED into [`XferFacts::pipeline_depth`] here
+    /// as a read-only backend-facing copy. See that field's docs for why
+    /// the ACFG stays the single source.
     ///
-    /// Empty for any algorithm that produces no cross-worker
-    /// transfers (single-worker or same-worker-only schedules). The
-    /// `Event::Push` / `Event::Wait` variants carry `seq: SeqTag` so
-    /// a codegen consumer joins this map with the event's seq to
-    /// size the ring at runtime.
+    /// One entry per matched Push/Wait pair (the seq is unique per pair;
+    /// both endpoints share it — `passes::transfer_inject` guarantees that
+    /// invariant). Sync transfers also appear here (their `buffer`
+    /// defaults to 1, `transport` to PIO, `notify` to `Default` per
+    /// [`crate::acfg::TransferPolicy::default`]).
+    ///
+    /// Empty for any algorithm that produces no cross-worker transfers
+    /// (single-worker or same-worker-only schedules). The `Event::Push`
+    /// / `Event::Wait` variants carry `seq: SeqTag` so a codegen consumer
+    /// joins this map with the event's seq via the accessor helpers
+    /// ([`xfer_facts`](Self::xfer_facts_for), [`xfer_buffer`](Self::xfer_buffer),
+    /// [`xfer_transport`](Self::xfer_transport), [`xfer_notify`](Self::xfer_notify)).
     ///
     /// Determinism: `BTreeMap` keyed by SeqTag; iteration is in numeric
     /// order. serde-default so an older wire payload (no field)
     /// deserialises as empty.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub transfer_buffer_for_seq: BTreeMap<SeqTag, u64>,
-
-    /// Per-SeqTag transfer transport mode — the `transfer DATA :
-    /// mode=pio|dma` hint the schedule's directive carries through to
-    /// the matched Push/Wait pair (TASK-0438.02). Exact structural
-    /// mirror of [`transfer_buffer_for_seq`](Self::transfer_buffer_for_seq):
-    /// the value lives in `ACFG::XferPlaceholder::policy.transport`
-    /// upstream (threaded by TASK-0438.01), but the backend receives
-    /// only `NameSidecar` per the EventList contract (TASK-0124), so it
-    /// rides along the sidecar.
-    ///
-    /// The embedded-pattern backend joins this map with `Event::Push`/
-    /// `Event::Wait`'s `seq` to choose between the PIO byte-loop
-    /// (`shim.link_push`/`link_recv`) and a structurally distinct
-    /// DMA-shaped descriptor-arm + completion-spin emit. A seq absent
-    /// here (or [`TransportMode::Pio`]) renders the unchanged PIO path —
-    /// so any schedule without a `mode=` directive is byte-identical to
-    /// pre-TASK-0438.02 (load-bearing for the 02-split-add / 14-hearing
-    /// -aid byte-exact gate).
-    ///
-    /// One entry per matched Push/Wait pair (the seq is unique per
-    /// pair; both endpoints share it — `passes::transfer_inject`
-    /// guarantees that invariant, same contract as
-    /// [`transfer_buffer_for_seq`](Self::transfer_buffer_for_seq)).
-    ///
-    /// Empty for any algorithm that produces no cross-worker transfers.
-    /// Determinism: `BTreeMap` keyed by SeqTag; iteration is in numeric
-    /// order. serde-default so an older wire payload (no field)
-    /// deserialises as empty (all transfers default to PIO).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode>,
+    pub xfer_facts: BTreeMap<SeqTag, XferFacts>,
 
     /// Per-(KernelId, IterVar) halo width inferred from the kernel's
     /// access pattern (TASK-0260, Stage 1). Mirrors
@@ -284,7 +278,7 @@ pub struct NameSidecar {
     /// `iter_var + b` reads (every example today ships this way:
     /// Stage 1 is observationally inert). serde-default so an older
     /// wire payload (no field) deserialises as empty — same backward-
-    /// compat contract as `transfer_buffer_for_seq` (TASK-0233) and
+    /// compat contract as `xfer_facts` (TASK-0233/TASK-0455.08) and
     /// `partition_worker_ranges` (TASK-0212).
     ///
     /// ### Shape
@@ -316,8 +310,8 @@ pub struct NameSidecar {
     /// iv-bearing offsets are degenerate (length 1 — a no-op delay
     /// line). serde-default so an older wire payload (no field)
     /// deserialises as empty — same backward-compat contract as
-    /// `halo_widths` (TASK-0260), `transfer_buffer_for_seq`
-    /// (TASK-0233), and `partition_worker_ranges` (TASK-0212).
+    /// `halo_widths` (TASK-0260), `xfer_facts`
+    /// (TASK-0233/TASK-0455.08), and `partition_worker_ranges` (TASK-0212).
     ///
     /// ### Shape
     ///
@@ -633,6 +627,50 @@ impl NameSidecar {
     pub fn kernel_sig(&self, kernel: KernelId) -> Option<&KernelSig> {
         self.kernel_sigs.get(&kernel)
     }
+
+    /// The [`XferFacts`] for transfer `seq`, or `None` if absent (no
+    /// cross-worker Push/Wait pair carries that seq). Join key is the
+    /// same [`SeqTag`] `Event::Push { seq, .. }` / `Event::Wait { seq,
+    /// .. }` carry. An absent entry is a real contract gap for a seq
+    /// that DOES appear in the EventList (the backend should fail loud,
+    /// as `event_plan` and the pthreads-async ring sizing do) — it is
+    /// NOT a default-able miss.
+    pub fn xfer_facts_for(&self, seq: SeqTag) -> Option<&XferFacts> {
+        self.xfer_facts.get(&seq)
+    }
+
+    /// The buffer capacity for transfer `seq`, or `None` if the seq has
+    /// no [`XferFacts`] entry. Thin convenience over
+    /// [`xfer_facts_for`](Self::xfer_facts_for) for the channel-sizing
+    /// consumers (`event_plan` and the pthreads-async ring sizing) that
+    /// previously read the standalone `transfer_buffer_for_seq` map.
+    /// (`tcp_plan` is sync/buffer=1 and never did a sizing lookup.)
+    pub fn xfer_buffer(&self, seq: SeqTag) -> Option<u64> {
+        self.xfer_facts.get(&seq).map(|f| f.buffer)
+    }
+
+    /// The transport-path hint for transfer `seq`, defaulting to
+    /// [`TransportMode::Pio`] when the seq has no [`XferFacts`] entry —
+    /// preserving the embedded backend's pre-TASK-0438.02 "absent ⇒ PIO"
+    /// contract that the 02-split-add / 14-hearing-aid byte-exact gate
+    /// depends on.
+    pub fn xfer_transport(&self, seq: SeqTag) -> TransportMode {
+        self.xfer_facts
+            .get(&seq)
+            .map(|f| f.transport)
+            .unwrap_or(TransportMode::Pio)
+    }
+
+    /// The notification mode for transfer `seq`, defaulting to
+    /// [`NotifyMode::Default`] (schedule stated no preference / no entry)
+    /// — the per-seq `notify` surface threaded by TASK-0455.08; its
+    /// honouring consumer is TASK-0455.02.
+    pub fn xfer_notify(&self, seq: SeqTag) -> NotifyMode {
+        self.xfer_facts
+            .get(&seq)
+            .map(|f| f.notify)
+            .unwrap_or(NotifyMode::Default)
+    }
 }
 
 /// Build the codegen-contract sidecar from a linked program and the
@@ -767,23 +805,19 @@ pub fn build_sidecar(
     //     middle-end; the sidecar flows out to codegen).
     let partition_worker_ranges = acfg.partition_worker_ranges.clone();
 
-    // (f) Per-SeqTag transfer buffer (TASK-0233). Walk the post-pass
-    //     ACFG tree (after transfer_inject populated the XferPlaceholder
-    //     nodes) and key the policy.buffer values by seq. A Push and
-    //     its matching Wait share one seq and one buffer value — that
-    //     pair-level invariant is established by transfer_inject and
-    //     means the map entry is idempotent across the two endpoints.
-    let mut transfer_buffer_for_seq: BTreeMap<SeqTag, u64> = BTreeMap::new();
-    collect_transfer_buffers(&acfg.root, &mut transfer_buffer_for_seq);
-
-    // (f') Per-SeqTag transfer transport mode (TASK-0438.02). Exact
-    //      mirror of (f): walk the same post-pass ACFG tree and key the
-    //      policy.transport hint by seq. A Push and its matching Wait
-    //      share one seq + one transport value (transfer_inject pairs
-    //      them), so the second insertion under a given key is
-    //      idempotent — same invariant as the buffer map.
-    let mut transfer_transport_for_seq: BTreeMap<SeqTag, TransportMode> = BTreeMap::new();
-    collect_transfer_transports(&acfg.root, &mut transfer_transport_for_seq);
+    // (f) Per-SeqTag UNIFIED transfer facts (TASK-0455.08; subsumes the
+    //     former parallel transfer_buffer_for_seq (TASK-0233) +
+    //     transfer_transport_for_seq (TASK-0438.02) maps). ONE walk over
+    //     the post-pass ACFG tree (after transfer_inject populated the
+    //     XferPlaceholder nodes) keys policy.{buffer,transport,notify}
+    //     by seq; the pipeline-depth mirror is then layered on from the
+    //     ACFG's pipeline_depth_for_seq (the Petri/initial-marking source
+    //     of truth — NOT a policy field, see XferFacts::pipeline_depth).
+    //     A Push and its matching Wait share one seq + one policy, so the
+    //     second insertion under a given key is idempotent across the two
+    //     endpoints — same invariant the per-fact collectors relied on.
+    let mut xfer_facts: BTreeMap<SeqTag, XferFacts> = BTreeMap::new();
+    collect_xfer_facts(&acfg.root, &acfg.pipeline_depth_for_seq, &mut xfer_facts);
 
     // (g) Per-(KernelId, IterVar) halo widths (TASK-0260 Stage 1).
     //     Forwarded verbatim from the ACFG sidecar `halo_widths`, which
@@ -921,8 +955,7 @@ pub fn build_sidecar(
         loop_bounds,
         kernel_sigs,
         partition_worker_ranges,
-        transfer_buffer_for_seq,
-        transfer_transport_for_seq,
+        xfer_facts,
         halo_widths,
         reuse_widths,
         partition_pairs,
@@ -941,10 +974,7 @@ pub fn build_sidecar(
 // (`super::collect_cumulative_data_names`) reach them unchanged.
 mod collectors;
 pub(crate) use collectors::collect_cumulative_data_names;
-use collectors::{
-    collect_combine_for_accumulators, collect_loop_bounds, collect_transfer_buffers,
-    collect_transfer_transports,
-};
+use collectors::{collect_combine_for_accumulators, collect_loop_bounds, collect_xfer_facts};
 
 // The cumulative-array discriminator's pin tests live in the
 // `cumulative_tests` child module (split out under

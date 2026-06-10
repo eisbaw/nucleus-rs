@@ -13,13 +13,19 @@
 //! parent of the others. The arrow was leaking the implementation
 //! detail "pthreads-sync was extracted first" as if it were structure.
 //!
-//! TASK-0244 (cycle 37) moves the shared code into THIS crate. Every
-//! backend now depends on `backend-common`; none depends on another
-//! backend except where the dependency is genuinely semantic —
-//! pthreads-async's single-worker arm DELEGATES to
-//! `pthreads_sync::render_single_worker_main` to guarantee byte-
-//! identical single-worker emit, and that delegation is the one
-//! remaining inter-backend arrow.
+//! TASK-0244 (cycle 37) moved the bulk of the shared code into THIS
+//! crate; TASK-0455.11 finished the job by relocating the single-worker
+//! `main.rs` emitter (`render_single_worker_main` + variants) here too —
+//! it was the LAST inter-backend arrow (a real semantic delegation, but
+//! it still made `pthreads-sync` a hidden library hub). Now every
+//! backend depends on `backend-common` and NO production backend crate
+//! depends on another backend crate — the single-worker emit is shared
+//! via [`single_worker_main`], so the byte-identicality across backends
+//! is structural, not a copy-per-backend coincidence. (Some
+//! byte-identical-emit ORACLE edges between backend crates survive as
+//! `[dev-dependencies]` test wiring — grep `backends/*/Cargo.toml` for
+//! the current set rather than trusting a count here — but none is a
+//! production dependency.)
 //!
 //! # Module map
 //!
@@ -74,6 +80,16 @@
 //!   only an `MpiRendezvous` impl + a `Plan` type alias. SPMD (one
 //!   rank-dispatched binary) — distinct from the multi-binary
 //!   `tcp_plan` / `event_plan` substrates.
+//! - [`single_worker_main`] — the SHARED single-worker straight-line
+//!   `main.rs` emitter
+//!   ([`single_worker_main::render_single_worker_main`] plus the
+//!   `_with_kernels_attr` / `_with_signature` variants). Every backend's
+//!   single-process arm emits byte-identical single-worker `main.rs`
+//!   because they all call this one renderer. TASK-0455.11 relocated it
+//!   here from the `pthreads-sync` crate (the last inter-backend arrow —
+//!   pthreads-sync was historically the first backend so the shared
+//!   renderer lived there and the others imported it via
+//!   `pthreads_sync::*`).
 
 pub mod check_frame;
 pub mod event_plan;
@@ -82,6 +98,7 @@ pub mod mpi_plan;
 pub mod multi_worker_walker;
 pub mod project_skeleton;
 pub mod render;
+pub mod single_worker_main;
 pub mod tcp_plan;
 
 // Convenience top-level re-exports of the codegen surface that consumers

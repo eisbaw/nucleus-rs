@@ -226,7 +226,7 @@
 //! Writes [`crate::sidecar::NameSidecar::halo_widths`]:
 //! `BTreeMap<KernelId, BTreeMap<IterVar, u64>>`. The field is `#[serde(default)]`
 //! so an old wire payload (no field) deserialises as an empty map (same
-//! contract precedent as `transfer_buffer_for_seq` from TASK-0233 and
+//! contract precedent as `xfer_facts` from TASK-0233/TASK-0455.08 and
 //! `partition_worker_ranges` from TASK-0212).
 //!
 //! ## Independence from partition policy

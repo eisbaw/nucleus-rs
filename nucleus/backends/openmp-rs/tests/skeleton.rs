@@ -3,7 +3,7 @@
 //! Cycle status (TASK-0044.01.01 cycle 196).
 //!
 //! Single-worker arm IMPLEMENTED (cycle 191): delegates to
-//! `pthreads_sync::render_single_worker_main` +
+//! `backend_common::single_worker_main::render_single_worker_main` +
 //! `backend_common::project_skeleton::single_binary` with
 //! `extra_dependencies = None`.
 //!

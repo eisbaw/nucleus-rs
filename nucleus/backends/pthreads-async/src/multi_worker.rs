@@ -9,7 +9,7 @@
 //! - **Wave B-1** (cycle 20): the `Plan` data structure — collect
 //!   cross-worker `(DataId, SeqTag)` pairs, assign per-pair
 //!   `ring_id`, look up per-pair capacity via
-//!   `NameSidecar::transfer_buffer_for_seq` (TASK-0233), build the
+//!   `NameSidecar::xfer_facts` (`XferFacts::buffer`, TASK-0233/TASK-0455.08), build the
 //!   per-worker dispatch context. Tests pin the Plan's correctness
 //!   against real fixtures (02-split-add/split, 13-cnn-inference/
 //!   pipeline_parallel).
@@ -39,7 +39,7 @@
 //!   directly. All three prefix-using backends route through the
 //!   shared walker; emission is byte-identical to the pre-refactor
 //!   state. This module retains only the per-backend `Plan` shape
-//!   (ring sizing from `transfer_buffer_for_seq`) and the `Plan::emit`
+//!   (ring sizing from `xfer_facts`) and the `Plan::emit`
 //!   orchestration (substrate decl + per-pair instance alloc + per-
 //!   thread spawn).
 
@@ -64,7 +64,7 @@ use crate::{EmitError, NameTables};
 /// schedule. Mirrors `pthreads_sync::multi_worker::render_main_rs_multi`
 /// but emits the bounded `Ring<T>` runtime substrate (TASK-0228 Wave A)
 /// instead of pthreads-sync's one-shot `Slot<T>`, sized per-pair from
-/// `NameSidecar::transfer_buffer_for_seq` (TASK-0233).
+/// `NameSidecar::xfer_facts` (`XferFacts::buffer`, TASK-0233/TASK-0455.08).
 pub(crate) fn render_main_rs_multi(
     per_worker: &BTreeMap<WorkerId, Vec<Event>>,
     names: &NameTables,
@@ -119,7 +119,7 @@ struct Plan<'a> {
     /// Sorted ascending by `(DataId, SeqTag)` for deterministic IDs.
     ring_ids: BTreeMap<(DataId, SeqTag), RingId>,
     /// Per-pair ring capacity from `transfer DATA : buffer=N`. Joined
-    /// from `NameSidecar::transfer_buffer_for_seq` (TASK-0233). One
+    /// from `NameSidecar::xfer_facts` (`XferFacts::buffer`, TASK-0233/TASK-0455.08). One
     /// entry per `ring_ids` key — Wave B-2 will pass this directly to
     /// `ring_buffer::emit_ring_instance_decl(..., cap)`.
     ring_caps: BTreeMap<(DataId, SeqTag), u64>,
@@ -156,9 +156,10 @@ impl<'a> Plan<'a> {
     ///
     /// - `used_workers.len() < 2` (single-worker should have been
     ///   handled by the caller — the single-worker `emit()` arm
-    ///   delegates to pthreads-sync's `render_single_worker_main`).
+    ///   delegates to
+    ///   `backend_common::single_worker_main::render_single_worker_main`).
     /// - A `(DataId, SeqTag)` Push/Wait pair has no entry in
-    ///   `sidecar.transfer_buffer_for_seq` — that would mean
+    ///   `sidecar.xfer_facts` — that would mean
     ///   `build_sidecar` missed an Xfer placeholder (TASK-0233's
     ///   walker invariant is violated), and the ring cannot be sized.
     fn build(
@@ -177,7 +178,7 @@ impl<'a> Plan<'a> {
                 "pthreads-async multi-worker Plan::build requires \
                  used_workers.len() >= 2; got {n}. Single-worker is \
                  handled by emit()'s single-worker arm (delegating to \
-                 pthreads_sync::render_single_worker_main).",
+                 backend_common::single_worker_main::render_single_worker_main).",
                 n = used_workers.len(),
             )));
         }
@@ -225,26 +226,22 @@ impl<'a> Plan<'a> {
         // is a contract-gap: TASK-0233's walker visits every Xfer
         // placeholder, and transfer_inject creates an Xfer for every
         // Push/Wait pair. So if a pair is in `pair_tiles` (= seen in
-        // the EventList) but absent from `transfer_buffer_for_seq`,
+        // the EventList) but absent from `xfer_facts`,
         // either the walker missed it (regression) or the EventList
         // was built without running transfer_inject (caller bug).
         // Either way, fail-loud rather than default-size and produce
         // a runtime mismatch.
         let mut ring_caps: BTreeMap<(DataId, SeqTag), u64> = BTreeMap::new();
         for (data, seq) in pair_tiles.keys() {
-            let cap = sidecar
-                .transfer_buffer_for_seq
-                .get(seq)
-                .copied()
-                .ok_or_else(|| {
-                    EmitError::ContractGap(format!(
-                        "pthreads-async Plan: (data={data:?}, seq={seq:?}) Push/Wait \
-                     pair has no entry in sidecar.transfer_buffer_for_seq. \
+            let cap = sidecar.xfer_buffer(*seq).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "pthreads-async Plan: (data={data:?}, seq={seq:?}) Push/Wait \
+                     pair has no entry in sidecar.xfer_facts. \
                      Either build_sidecar's walker missed an Xfer placeholder \
-                     (TASK-0233 regression), or the EventList was projected \
-                     without running transfer_inject first."
-                    ))
-                })?;
+                     (TASK-0233/TASK-0455.08 regression), or the EventList was \
+                     projected without running transfer_inject first."
+                ))
+            })?;
             ring_caps.insert((*data, *seq), cap);
         }
 
@@ -276,7 +273,7 @@ impl<'a> Plan<'a> {
             ring_caps.len(),
             "ring_ids and ring_caps must be 1:1; a divergence here means \
              two distinct (DataId, SeqTag) pairs collapsed onto one \
-             SeqTag in transfer_buffer_for_seq — see event.rs SeqTag \
+             SeqTag in xfer_facts — see event.rs SeqTag \
              docstring (load-bearing for TASK-0233)."
         );
 
@@ -414,7 +411,7 @@ impl<'a> Plan<'a> {
         }
 
         // ---- Allocate per-pair Ring<T> instances. ----
-        // Sized to `transfer_buffer_for_seq[seq]` (TASK-0233).
+        // Sized to `xfer_facts[seq].buffer` (TASK-0233/TASK-0455.08).
         // Iterates `ring_ids` in ascending `(DataId, SeqTag)` order
         // so ring indices stay deterministic.
         for ((data_id, seq), ring_id) in &self.ring_ids {
@@ -623,7 +620,7 @@ impl<'a> Plan<'a> {
 // (`rendezvous_prefix = "chan"`). mp-tcp-bufsync is the fourth
 // tier-1 backend but bypasses this walker. This module retains only
 // the per-backend `Plan` shape (bounded `Ring<T>` substrate, per-pair
-// capacity from `transfer_buffer_for_seq`) plus the `Plan::emit`
+// capacity from `xfer_facts`) plus the `Plan::emit`
 // orchestration above.
 
 /// Collect unique Count-violation `check_frame` instances across every
@@ -660,6 +657,7 @@ fn collect_unique_count_check_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleus_compiler::sidecar::XferFacts;
     use std::collections::BTreeMap as BTM;
     use std::fs;
     use std::path::PathBuf;
@@ -908,16 +906,16 @@ mod tests {
     #[test]
     fn build_fails_on_missing_sidecar_buffer_entry() {
         // Synthesise the pair-tile state of 02-split-add but with an
-        // EMPTY sidecar.transfer_buffer_for_seq. Plan::build MUST
-        // fail-loud — never default-size and produce a runtime
-        // mismatch (the TASK-0233 contract-gap path).
+        // EMPTY sidecar.xfer_facts. Plan::build MUST fail-loud — never
+        // default-size and produce a runtime mismatch (the TASK-0233
+        // contract-gap path, unified onto xfer_facts by TASK-0455.08).
         let (per_worker, names, _real_sidecar) = lower("02-split-add", "schedules/split.sched.nuc");
         let degenerate_sidecar = NameSidecar::default(); // empty maps
         let r = Plan::build(&per_worker, &names, &degenerate_sidecar);
         match r {
             Err(EmitError::ContractGap(msg)) => {
                 assert!(
-                    msg.contains("transfer_buffer_for_seq"),
+                    msg.contains("xfer_facts"),
                     "missing-cap message must name the sidecar field: {msg}"
                 );
                 assert!(
@@ -926,7 +924,7 @@ mod tests {
                 );
             }
             other => panic!(
-                "expected ContractGap when sidecar.transfer_buffer_for_seq is empty; \
+                "expected ContractGap when sidecar.xfer_facts is empty; \
                  got {other:?}"
             ),
         }
@@ -976,11 +974,17 @@ mod tests {
             }],
         );
 
-        // Plan::build needs a transfer_buffer_for_seq entry for every
+        // Plan::build needs an xfer_facts entry for every
         // cross-worker (DataId, SeqTag) pair; no Sync needed.
         let names = NameTables::default();
         let mut sidecar = NameSidecar::default();
-        sidecar.transfer_buffer_for_seq.insert(seq, 1);
+        sidecar.xfer_facts.insert(
+            seq,
+            XferFacts {
+                buffer: 1,
+                ..Default::default()
+            },
+        );
 
         let plan = Plan::build(&per_worker, &names, &sidecar)
             .expect("Plan::build should succeed for 2 workers + 1 ring + 0 barriers");
@@ -1017,7 +1021,7 @@ mod tests {
         // No Push/Wait: barriers alone are sufficient to exercise the
         // `collect_barriers_by_tag` walker + the `or_insert_with`
         // recording rule in Plan::build. Without Push/Wait the sidecar
-        // can stay empty (no transfer_buffer_for_seq lookup happens).
+        // can stay empty (no xfer_facts lookup happens).
         use nucleus_compiler::event::SyncKind;
         let host = WorkerId(0);
         let w0 = WorkerId(1);

@@ -197,7 +197,7 @@ fn reuse_widths_serde_roundtrip() {
 fn reuse_widths_serde_default_on_missing_field() {
     // An "old" wire payload that omits the `reuse_widths` field must
     // deserialise to an empty map (additive backward-compat contract,
-    // mirroring `halo_widths` / `transfer_buffer_for_seq` /
+    // mirroring `halo_widths` / `xfer_facts` /
     // `partition_worker_ranges`). Synthesise the "old" payload by
     // round-tripping a real NameSidecar through JSON and stripping the
     // `reuse_widths` key — every OTHER field stays present, so the test

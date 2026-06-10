@@ -10,7 +10,7 @@
 //! # Implementation status (TASK-0042.01 cycle 17, 2026-05-22)
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED
-//!   under TASK-0226. Delegates to `pthreads_sync::render_single_worker_main`
+//!   under TASK-0226. Delegates to `backend_common::single_worker_main::render_single_worker_main`
 //!   plus the SHARED `backend_common::project_skeleton::single_binary::
 //!   {render_cargo_toml, render_run_sh}` (TASK-0246), so the emitted
 //!   artefact is byte-identical to pthreads-sync's single-worker output
@@ -23,7 +23,7 @@
 //!   [`EmitError::ContractGap`] with a precise forward-link.
 //! - **check_frame codegen** (single-worker) is deferred to TASK-0227.
 //!   `inject_check_frames` populates `Event::Loop.check_frame`; the
-//!   single-worker delegation to `pthreads_sync::render_single_worker_main`
+//!   single-worker delegation to `backend_common::single_worker_main::render_single_worker_main`
 //!   inherits the pthreads-sync check_frame codegen by construction —
 //!   any `check loop V` directive on a single-worker pthreads-async
 //!   schedule emits the SAME instrumentation as pthreads-sync.
@@ -118,13 +118,14 @@ pub use nucleus_compiler::NameTables;
 //   - `render_cargo_toml` / `render_run_sh` live in
 //     `backend_common::project_skeleton::single_binary` (inert string
 //     templates, no pthreads-sync-specific content).
-//   - `render_single_worker_main` stays in pthreads-sync — it is the
-//     pthreads-sync-specific straight-line emitter, and the
-//     dependency arrow is genuinely a delegation (pthreads-async's
-//     0/1-used-worker arm IS pthreads-sync's straight-line main.rs,
-//     byte-identical by construction).
+//   - `render_single_worker_main` lives in
+//     `backend_common::single_worker_main` (relocated there from
+//     pthreads-sync in TASK-0455.11, the last inter-backend arrow). It
+//     is the SHARED straight-line emitter, and pthreads-async's
+//     0/1-used-worker arm IS that single-worker main.rs, byte-identical
+//     by construction.
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
-use pthreads_sync::render_single_worker_main;
+use backend_common::single_worker_main::render_single_worker_main;
 
 // AlgoIR-free: the only `nucleus_compiler::*` surface this crate uses is the
 // inert per-worker EventList carrier (`nucleus_compiler::event::{Event, WorkerId}`)
@@ -195,7 +196,7 @@ pub struct EmitResult {
 /// Dispatch:
 ///
 /// - `used_workers <= 1` → SINGLE-WORKER (TASK-0226). Delegates to the
-///   SHARED `pthreads_sync::render_single_worker_main` so the emitted
+///   SHARED `backend_common::single_worker_main::render_single_worker_main` so the emitted
 ///   `main.rs` is byte-identical to pthreads-sync's. The Cargo.toml
 ///   and run.sh come from `backend_common::project_skeleton::
 ///   single_binary::{render_cargo_toml, render_run_sh}` (TASK-0246)
@@ -226,7 +227,7 @@ pub fn emit(
         // ---- Multi-worker arm (TASK-0228 Wave B-2). ----
         //
         // Emit the file-scope Ring<T> substrate + per-pair Arc<Ring<T>>
-        // instances sized from `transfer_buffer_for_seq` (TASK-0233),
+        // instances sized from `xfer_facts` (TASK-0233/TASK-0455.08),
         // plus per-worker `thread::spawn` bodies whose Push/Wait
         // dispatch into `ring_<id>.push(v)` / `ring_<id>.wait()`. The
         // structural shape (barriers, Fire, Loop, Sync, check_frame
@@ -285,7 +286,7 @@ pub fn emit(
     // main.rs is byte-identical to pthreads-sync's by construction
     // (same function, same inputs); Cargo.toml + run.sh ditto. The
     // single-worker check_frame codegen (Panic / Log / Count) is
-    // inherited from pthreads-sync's render_single_worker_main →
+    // inherited from the shared single_worker_main renderer →
     // render_main_rs path automatically — no per-backend Log/Count
     // emit is needed for the single-worker case (TASK-0227 carries
     // multi-worker check_frame, which lands with TASK-0228).

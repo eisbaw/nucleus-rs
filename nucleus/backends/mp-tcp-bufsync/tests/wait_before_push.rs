@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use mp_tcp_bufsync::{emit, NameTables};
-use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::{NameSidecar, XferFacts};
 
 fn repo_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -96,8 +96,20 @@ fn wait_before_push_w2w_is_typed_contract_gap() {
     names.data.insert(data_a, "a".to_string());
     names.data.insert(data_b, "b".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq_a, 1);
-    sidecar.transfer_buffer_for_seq.insert(seq_b, 1);
+    sidecar.xfer_facts.insert(
+        seq_a,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
+    sidecar.xfer_facts.insert(
+        seq_b,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data_a,
         nucleus_compiler::algo::ResolvedType {
@@ -212,7 +224,13 @@ fn pure_consumer_wait_only_does_not_trigger_wait_before_push_check() {
     names.worker.insert(w2, "w2".to_string());
     names.data.insert(data, "data".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    sidecar.xfer_facts.insert(
+        seq,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data,
         nucleus_compiler::algo::ResolvedType {

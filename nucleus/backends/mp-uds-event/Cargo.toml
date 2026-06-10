@@ -13,7 +13,7 @@
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
 # wired through. `emit()` dispatches on `used_workers.len()`:
-#   - `<= 1`: delegates to `pthreads_sync::render_single_worker_main_with_kernels_attr`
+#   - `<= 1`: delegates to `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr`
 #     + `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
 #     render_run_sh_single}` (same path mp-tcp-event's single-process arm
 #     takes); the emitted artefact is BYTE-IDENTICAL to mp-tcp-event's
@@ -49,12 +49,10 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # Shared codegen primitives — EmitError + project_skeleton::multi_binary
 # (Cargo.toml + run.sh templates for multi-binary backends).
 backend-common = { path = "../../backend-common" }
-# Single-worker straight-line `main.rs` emitter (with the
-# `#[path="../kernels.rs"]` attribute injection for `src/bin/`-shaped
-# multi-binary projects). Genuine semantic delegation — the same
-# precedent mp-tcp-bufsync + mp-tcp-event + mp-tcp-poll + pthreads-async
-# take for their single-worker arm.
-pthreads-sync = { path = "../pthreads-sync" }
+# (TASK-0455.11) The single-worker straight-line `main.rs` emitter
+# moved out of pthreads-sync into `backend_common::single_worker_main`
+# — the last inter-backend arrow — so this crate no longer depends on
+# pthreads-sync at all (it has no test oracle that needs it either).
 
 [dev-dependencies]
 # Shared lower-link-inject pipeline boilerplate (TASK-0237) — used by

@@ -10,7 +10,7 @@
 #
 # Crate + capabilities.toml + driver dispatch arm + workspace member
 # wired through. `emit()` dispatches on `used_workers.len()`:
-#   - `<= 1`: delegates to `pthreads_sync::render_single_worker_main`
+#   - `<= 1`: delegates to `backend_common::single_worker_main::render_single_worker_main`
 #     + `backend_common::project_skeleton::single_binary::{render_cargo_toml,
 #     render_run_sh}` — emitted artefact byte-identical to pthreads-sync /
 #     pthreads-async single-worker output by construction.
@@ -47,12 +47,6 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # pthreads-async (cycle 16/17, cycle 37 lift): every tier-1 backend
 # depends on backend-common.
 backend-common = { path = "../../backend-common" }
-# Single-worker straight-line `main.rs` emitter. A genuine semantic
-# delegation: openmp-rs's single-worker arm IS pthreads-sync's
-# straight-line main.rs, byte-identical by construction (same precedent
-# as pthreads-async; see `backend_common::project_skeleton` module-doc
-# for the inter-backend arrow rationale).
-pthreads-sync = { path = "../pthreads-sync" }
 
 [dev-dependencies]
 # Shared lower-link-inject pipeline boilerplate (TASK-0237). Same
@@ -60,3 +54,11 @@ pthreads-sync = { path = "../pthreads-sync" }
 # lowers a real example and asserts byte-identical emit against
 # pthreads-sync.
 test-common = { path = "../../test-common" }
+# pthreads-sync is now a TEST-ONLY (oracle) dependency. The shared
+# single-worker renderer (`render_single_worker_main`) was relocated to
+# `backend_common::single_worker_main` in TASK-0455.11 — the last
+# inter-backend PRODUCTION arrow — so the `src/` no longer touches it.
+# tests/single_worker_emit.rs + tests/multi_worker_emit.rs still emit
+# via `pthreads_sync::emit` as the byte-identical single-worker oracle;
+# that oracle wiring stays as a dev-dependency.
+pthreads-sync = { path = "../pthreads-sync" }

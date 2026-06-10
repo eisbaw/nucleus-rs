@@ -36,14 +36,6 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # This is the single source of truth that prevents renderer drift
 # across pthreads-sync / pthreads-async / mp-tcp-bufsync.
 backend-common = { path = "../../backend-common" }
-# pthreads-sync provides `render_single_worker_main` (the straight-
-# line pthreads-sync main.rs emitter) which mp-tcp-bufsync DELEGATES
-# to for the 0/1-used-worker case. Mp-tcp emits multi-process Cargo
-# projects for >=2 workers; the single-worker arm reduces to a
-# pthreads-sync-style single binary so the cross-backend differential
-# is byte-identical on examples 01..09/13 naive schedules. This is
-# the one semantic inter-backend arrow that survives TASK-0244.
-pthreads-sync = { path = "../pthreads-sync" }
 # Wire protocol v0 source text, copied verbatim into generated
 # projects (single source of truth with the protocol's own tests).
 mp-tcp-common = { path = "../../mp-tcp-common" }
@@ -51,3 +43,12 @@ mp-tcp-common = { path = "../../mp-tcp-common" }
 [dev-dependencies]
 # Shared lower-link-inject pipeline boilerplate (TASK-0237).
 test-common = { path = "../../test-common" }
+# pthreads-sync is now a TEST-ONLY (oracle) dependency. The shared
+# single-worker renderer (`render_single_worker_main_with_kernels_attr`)
+# was relocated to `backend_common::single_worker_main` in TASK-0455.11
+# — the last inter-backend PRODUCTION arrow — so the `src/` no longer
+# touches it. tests/pingpong.rs still emits via `pthreads_sync::emit` as
+# the byte-identical single-worker oracle, and several emit tests spell
+# `pthreads_sync::NameTables`; that oracle wiring stays as a
+# dev-dependency.
+pthreads-sync = { path = "../pthreads-sync" }

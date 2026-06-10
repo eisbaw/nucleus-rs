@@ -240,7 +240,7 @@ fn halo_widths_serde_roundtrip() {
 fn halo_widths_serde_default_on_missing_field() {
     // An "old" wire payload that omits the `halo_widths` field must
     // deserialise to an empty map (TASK-0260 backward-compat contract,
-    // mirroring TASK-0233's transfer_buffer_for_seq).
+    // mirroring TASK-0233/TASK-0455.08's xfer_facts).
     //
     // We synthesise the "old" payload by round-tripping a real
     // NameSidecar through JSON and then stripping the `halo_widths`

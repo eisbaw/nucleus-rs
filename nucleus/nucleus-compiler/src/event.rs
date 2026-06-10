@@ -164,7 +164,7 @@ pub struct IterVar(pub u64);
 /// So every SeqTag in a single program is
 /// unique globally — different transfers (different DataIds) never
 /// share a SeqTag. This stronger guarantee lets
-/// `NameSidecar::transfer_buffer_for_seq` use `SeqTag` alone as the
+/// `NameSidecar::xfer_facts` use `SeqTag` alone as the
 /// key (rather than `(DataId, SeqTag)`); a future cycle that
 /// shards the counter per-triple MUST also widen the sidecar key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

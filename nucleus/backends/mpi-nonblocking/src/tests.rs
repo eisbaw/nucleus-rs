@@ -64,7 +64,7 @@ fn single_worker_emit_shape_and_compute_delegation() {
         .collect();
     assert_eq!(used.len(), 1, "01/naive must lower to a single used worker");
     let events: &[Event] = r.per_worker.get(&used[0]).map(Vec::as_slice).unwrap();
-    let expected_compute = pthreads_sync::render_single_worker_main_with_signature(
+    let expected_compute = backend_common::single_worker_main::render_single_worker_main_with_signature(
         events,
         &r.names,
         &r.sidecar,

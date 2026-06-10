@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use mp_tcp_event::{emit, NameTables};
-use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::{NameSidecar, XferFacts};
 
 fn repo_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -95,7 +95,13 @@ fn loop_body_w2w_push_is_typed_contract_gap() {
     names.worker.insert(w2, "w2".to_string());
     names.data.insert(data, "tmp".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    sidecar.xfer_facts.insert(
+        seq,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data,
         nucleus_compiler::algo::ResolvedType {
@@ -249,8 +255,20 @@ fn host_bound_push_inside_loop_does_not_trigger_guard() {
         .iter_var
         .insert(nucleus_compiler::event::IterVar(0), "k".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq_w2w, 1);
-    sidecar.transfer_buffer_for_seq.insert(seq_to_host, 1);
+    sidecar.xfer_facts.insert(
+        seq_w2w,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
+    sidecar.xfer_facts.insert(
+        seq_to_host,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data_w2w,
         nucleus_compiler::algo::ResolvedType {
@@ -347,7 +365,13 @@ fn multi_iter_loop_body_w2w_push_is_typed_contract_gap() {
     names.worker.insert(w2, "w2".to_string());
     names.data.insert(data, "tmp".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    sidecar.xfer_facts.insert(
+        seq,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data,
         nucleus_compiler::algo::ResolvedType {

@@ -822,7 +822,7 @@ mod tests {
         // Original seq=3 has pipeline_depth=4. After rewrite, both
         // fresh seqs (4, 5) MUST carry depth=4 in
         // pipeline_depth_for_seq, so build_sidecar's
-        // transfer_buffer_for_seq map has entries for host's new
+        // xfer_facts map has entries for host's new
         // Chan instances. Wrap pair in Repeat (scope limit).
         let body = ACFGNode::Sequence(pair_xfers(w1(), w2(), d(7), 3));
         let root = ACFGNode::Repeat {

@@ -162,8 +162,8 @@ fn partition_pairs_and_grid_shape_serde_roundtrip() {
 #[test]
 fn partition_pairs_serde_default_on_missing_field() {
     // An "old" wire payload that omits both new fields must deserialise
-    // to empty maps (additive-only contract, mirroring TASK-0233's
-    // transfer_buffer_for_seq + TASK-0260's halo_widths + TASK-0261's
+    // to empty maps (additive-only contract, mirroring TASK-0233/
+    // TASK-0455.08's xfer_facts + TASK-0260's halo_widths + TASK-0261's
     // reuse_widths).
     let (linked, acfg) = lower("01-elementwise-add", "schedules/naive.sched.nuc");
     let sidecar = build_sidecar(&linked, &acfg).expect("build_sidecar");

@@ -5,20 +5,20 @@
 //! existing PIO byte-loop hooks (`shim.link_push` / `shim.link_recv`) or a
 //! STRUCTURALLY DISTINCT modelled-DMA shape (`shim.dma_link_arm` +
 //! `while !shim.dma_link_poll(..) { core::hint::spin_loop(); }`), chosen
-//! per-`SeqTag` from `NameSidecar::transfer_transport_for_seq`. These tests
-//! pin BOTH arms:
+//! per-`SeqTag` from the unified `NameSidecar::xfer_facts` map (the
+//! `XferFacts::transport` field, read via `NameSidecar::xfer_transport`;
+//! TASK-0455.08 unified the former `transfer_transport_for_seq` map). These
+//! tests pin BOTH arms:
 //!   - a seq mapped to `TransportMode::Dma` emits the arm + completion-spin
 //!     and NOT the plain `link_push`/`link_recv`;
 //!   - a seq ABSENT from the map (the default) emits the unchanged PIO path
 //!     and NOT any `dma_link_*` — the load-bearing byte-identity guarantee
 //!     for schedules with no `mode=` directive (02-split-add, 14-hearing-aid).
 
-use std::collections::BTreeMap;
-
 use nucleus_compiler::algo::{ResolvedType, ScalarType};
 use nucleus_compiler::event::{DataId, Event, IterTile, SeqTag, WorkerId};
 use nucleus_compiler::sched::TransportMode;
-use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::{NameSidecar, XferFacts};
 use nucleus_compiler::NameTables;
 
 use crate::render::render_run_body;
@@ -67,9 +67,13 @@ fn sidecar(mode: Option<TransportMode>) -> NameSidecar {
         },
     );
     if let Some(m) = mode {
-        let mut t: BTreeMap<SeqTag, TransportMode> = BTreeMap::new();
-        t.insert(SeqTag(SEQ), m);
-        s.transfer_transport_for_seq = t;
+        s.xfer_facts.insert(
+            SeqTag(SEQ),
+            XferFacts {
+                transport: m,
+                ..Default::default()
+            },
+        );
     }
     s
 }
@@ -112,7 +116,7 @@ fn dma_seq_emits_arm_and_completion_spin_not_link_push() {
 
 #[test]
 fn absent_seq_emits_plain_pio_not_dma() {
-    // No `mode=` -> seq absent from transfer_transport_for_seq -> default PIO.
+    // No `mode=` -> seq absent from xfer_facts -> default PIO.
     let events = vec![push(SEQ), wait(SEQ)];
     let body =
         render_run_body(&events, &names(), &sidecar(None)).expect("PIO-default run body renders");

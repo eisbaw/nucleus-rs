@@ -70,9 +70,9 @@ use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
 
 use backend_common::project_skeleton::single_binary;
+use backend_common::single_worker_main::render_single_worker_main_with_signature;
 pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
-use pthreads_sync::render_single_worker_main_with_signature;
 
 mod multi_worker;
 

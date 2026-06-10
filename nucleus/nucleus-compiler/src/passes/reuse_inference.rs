@@ -144,7 +144,7 @@
 //!
 //! The field is `#[serde(default)]` so an old wire payload (no field)
 //! deserialises as an empty map — same additive contract as
-//! `halo_widths` (TASK-0260), `transfer_buffer_for_seq` (TASK-0233),
+//! `halo_widths` (TASK-0260), `xfer_facts` (TASK-0233/TASK-0455.08),
 //! and `partition_worker_ranges` (TASK-0212).
 //!
 //! ## Independence from partition policy

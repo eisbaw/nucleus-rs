@@ -1,26 +1,27 @@
-//! Single-worker Event-rendering tree for the pthreads-sync backend:
-//! `render_events` / `render_events_in` / `render_event`. Carved
-//! VERBATIM out of `lib.rs` per TASK-0437.01 to keep that file under
-//! the `just check-mega-files` 1000-LoC fence; no logic changed.
+//! Single-worker Event-rendering tree shared by every tier-1 backend:
+//! `render_events` / `render_events_in` / `render_event`. Originally
+//! carved out of `pthreads-sync` `lib.rs` per TASK-0437.01; relocated
+//! here in TASK-0455.11 (the last inter-backend arrow) — no logic
+//! changed, the emitted bytes are byte-identical.
 //!
 //! `render_events` and `render_event` are re-exported `pub(crate)` from
-//! `lib.rs` (`pub(crate) use events::{render_events, render_event};`) so
-//! the `break_loop` consumer keeps resolving `crate::render_events` /
-//! `crate::render_event` with zero change. `render_events_in` is only
-//! used inside this module, so it stays private here.
+//! the parent module (`single_worker_main`) so the `break_loop`
+//! sibling keeps resolving them via `super::render_events` /
+//! `super::render_event`. `render_events_in` is only used inside this
+//! module, so it stays private here.
 
 use std::fmt::Write as _;
 
 use nucleus_compiler::event::{Event, IterVar, ViolationKind};
 
-use backend_common::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
-use backend_common::render::{
+use crate::check_frame::{emit_count_branch, emit_log_branch, sanitize_loop_var};
+use crate::render::EmitError;
+use crate::render::{
     data_name, render_const_expr, render_fire_args, render_fire_output_assign, render_loop_bounds,
     render_reuse_buf_decls, render_reuse_marker_comment, render_reuse_per_iter_update, RenderCtx,
 };
-use backend_common::render::EmitError;
 
-use crate::break_loop;
+use super::break_loop;
 
 pub(crate) fn render_events(
     events: &[Event],

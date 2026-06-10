@@ -12,7 +12,7 @@
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`) is IMPLEMENTED
 //!   (cycle 192). Delegates to
-//!   `pthreads_sync::render_single_worker_main_with_kernels_attr` plus
+//!   `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` plus
 //!   `backend_common::project_skeleton::multi_binary::{render_cargo_toml,
 //!   render_run_sh_single}` — the SAME shared renderers
 //!   mp-tcp-bufsync's single-process arm consumes. Emitted artefact is
@@ -84,9 +84,9 @@ pub use backend_common::EmitError;
 pub use nucleus_compiler::NameTables;
 
 use backend_common::project_skeleton::multi_binary;
+use backend_common::single_worker_main::render_single_worker_main_with_kernels_attr;
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
-use pthreads_sync::render_single_worker_main_with_kernels_attr;
 
 mod plan;
 
@@ -118,7 +118,7 @@ pub struct EmitResult {
 /// EventList. Same signature/contract as `mp_tcp_bufsync::emit`.
 ///
 /// - `used_workers <= 1` → SINGLE-PROCESS. Delegates to the SHARED
-///   `pthreads_sync::render_single_worker_main_with_kernels_attr` so
+///   `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` so
 ///   the emitted binary body is byte-identical to mp-tcp-bufsync's
 ///   single-process body.
 /// - `used_workers >= 2` → MULTI-PROCESS. Plan-shaped per-worker
@@ -243,7 +243,7 @@ pub(crate) const SO_BUF_COMMENT_POLL: &str =
 /// because mp-tcp-poll (like mp-tcp-bufsync / mp-tcp-event) emits the
 /// binary under `src/bin/` rather than as a sibling of
 /// `src/kernels.rs`. Passed to
-/// `pthreads_sync::render_single_worker_main_with_kernels_attr` as a
+/// `backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` as a
 /// typed parameter (TASK-0177).
 ///
 /// Byte-identical to the same const in mp-tcp-bufsync (the cross-

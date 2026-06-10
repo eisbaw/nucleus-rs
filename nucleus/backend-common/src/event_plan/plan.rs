@@ -176,23 +176,20 @@ impl<'a, T: EventTransport> Plan<'a, T> {
             .map(|(i, k)| (*k, i))
             .collect();
 
-        // Capacity per pair (TASK-0233 sidecar lookup).
+        // Capacity per pair (TASK-0233 sidecar lookup, unified into
+        // XferFacts by TASK-0455.08 — read via the `xfer_buffer` accessor).
         let mut chan_caps: BTreeMap<(DataId, SeqTag), u64> = BTreeMap::new();
         for (data, seq) in pair_tiles.keys() {
-            let cap = sidecar
-                .transfer_buffer_for_seq
-                .get(seq)
-                .copied()
-                .ok_or_else(|| {
-                    EmitError::ContractGap(format!(
-                        "{backend} Plan: (data={data:?}, seq={seq:?}) Push/Wait \
-                         pair has no entry in sidecar.transfer_buffer_for_seq. \
-                         Either build_sidecar's walker missed an Xfer placeholder \
-                         (TASK-0233 regression), or the EventList was projected \
-                         without running transfer_inject first.",
-                        backend = T::BACKEND_NAME,
-                    ))
-                })?;
+            let cap = sidecar.xfer_buffer(*seq).ok_or_else(|| {
+                EmitError::ContractGap(format!(
+                    "{backend} Plan: (data={data:?}, seq={seq:?}) Push/Wait \
+                     pair has no entry in sidecar.xfer_facts. \
+                     Either build_sidecar's walker missed an Xfer placeholder \
+                     (TASK-0233/TASK-0455.08 regression), or the EventList was \
+                     projected without running transfer_inject first.",
+                    backend = T::BACKEND_NAME,
+                ))
+            })?;
             chan_caps.insert((*data, *seq), cap);
         }
 

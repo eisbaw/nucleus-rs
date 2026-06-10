@@ -14,7 +14,7 @@
 //! # Implementation status (TASK-0044.01.01 cycle 196)
 //!
 //! - **Single-worker arm** (`used_workers.len() <= 1`) — delegates to
-//!   `pthreads_sync::render_single_worker_main` plus the SHARED
+//!   `backend_common::single_worker_main::render_single_worker_main` plus the SHARED
 //!   `backend_common::project_skeleton::single_binary::
 //!   {render_cargo_toml, render_run_sh}` with
 //!   `extra_dependencies = None`, so the emitted artefact is
@@ -138,9 +138,11 @@ pub use nucleus_compiler::NameTables;
 // `rayon = "1"` dep).
 use backend_common::project_skeleton::single_binary::{render_cargo_toml, render_run_sh};
 
-// Single-worker main.rs body — the only inter-backend arrow that
-// genuinely is a semantic delegation (NOT inert string templating).
-use pthreads_sync::render_single_worker_main;
+// Single-worker main.rs body — the SHARED straight-line emitter, now
+// in `backend_common::single_worker_main` (relocated from pthreads-sync
+// in TASK-0455.11, the last inter-backend arrow). openmp-rs's
+// 0/1-used-worker arm IS this single-worker main.rs, byte-identical.
+use backend_common::single_worker_main::render_single_worker_main;
 
 use nucleus_compiler::event::{Event, WorkerId};
 use nucleus_compiler::sidecar::NameSidecar;
@@ -185,7 +187,7 @@ pub struct EmitResult {
 /// Dispatch:
 ///
 /// - `used_workers <= 1` → SINGLE-WORKER. Delegates to the SHARED
-///   `pthreads_sync::render_single_worker_main` so the emitted
+///   `backend_common::single_worker_main::render_single_worker_main` so the emitted
 ///   `main.rs` is byte-identical to pthreads-sync's. The Cargo.toml
 ///   and run.sh come from `backend_common::project_skeleton::
 ///   single_binary::{render_cargo_toml, render_run_sh}` with

@@ -17,7 +17,7 @@
 //!
 //! Scope: MULTI-WORKER only. Single-worker check_frame on pthreads-
 //! async is inherited free via the cycle-17 delegation to
-//! `pthreads_sync::render_single_worker_main` (TASK-0226) — the
+//! `backend_common::single_worker_main::render_single_worker_main` (TASK-0226) — the
 //! single-worker emit-string is byte-identical to pthreads-sync's, so
 //! pinning it again here would be redundant with
 //! `pthreads-sync/tests/check_frame_codegen.rs`. This file exclusively

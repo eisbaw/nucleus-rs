@@ -359,17 +359,13 @@ fn render_event(
             let chan = seq.0;
             // Per-seq transport mode (TASK-0438.02). Threaded from the
             // schedule's `transfer DATA : mode=pio|dma` directive through
-            // `TransferPolicy.transport` into `NameSidecar.
-            // transfer_transport_for_seq`. A seq absent here renders the
+            // `TransferPolicy.transport` into the unified
+            // `NameSidecar.xfer_facts` map (TASK-0455.08) and read via the
+            // `xfer_transport` accessor. A seq absent there renders the
             // unchanged PIO path — so a schedule with NO `mode=` directive
             // is byte-identical to pre-TASK-0438.02 (load-bearing for the
             // 02-split-add / 14-hearing-aid byte-exact gate, AC#3).
-            let mode = ctx
-                .sidecar
-                .transfer_transport_for_seq
-                .get(seq)
-                .copied()
-                .unwrap_or(TransportMode::Pio);
+            let mode = ctx.sidecar.xfer_transport(*seq);
             match mode {
                 TransportMode::Pio => {
                     // PIO comment + call kept BYTE-IDENTICAL to pre-TASK-0438.02
@@ -438,12 +434,7 @@ fn render_event(
             // arm. PIO/absent: the existing blocking byte-loop receive; DMA:
             // a descriptor-arm + completion-spin. See the Push arm for the
             // SPIN-not-wfi rationale and the modelled-vs-silicon caveat.
-            let mode = ctx
-                .sidecar
-                .transfer_transport_for_seq
-                .get(seq)
-                .copied()
-                .unwrap_or(TransportMode::Pio);
+            let mode = ctx.sidecar.xfer_transport(*seq);
             match mode {
                 TransportMode::Pio => {
                     writeln!(

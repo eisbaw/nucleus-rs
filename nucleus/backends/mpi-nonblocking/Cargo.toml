@@ -57,11 +57,12 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # skeleton (Cargo.toml/run.sh renderers), the multi_worker_walker, and
 # host_election. Same precedent as every tier-1 backend (TASK-0244).
 backend-common = { path = "../../backend-common" }
-# pthreads-sync provides `render_single_worker_main_with_signature` which
-# the single-worker arm DELEGATES to for byte-identical compute
-# arithmetic — the same shared renderer mpi-blocking / mp-tcp-bufsync use.
-# There is ONE compute renderer; this crate only adds the SPMD MPI wrapper.
-pthreads-sync = { path = "../pthreads-sync" }
+# `render_single_worker_main_with_signature` — which the single-worker
+# arm DELEGATES to for byte-identical compute arithmetic — now lives in
+# `backend_common::single_worker_main` (TASK-0455.11 relocated it out of
+# pthreads-sync, the last inter-backend arrow). There is ONE compute
+# renderer; this crate only adds the SPMD MPI wrapper, and it no longer
+# depends on pthreads-sync at all.
 
 [dev-dependencies]
 # Shared parse -> lower -> link -> ACFG -> inject -> sidecar pipeline

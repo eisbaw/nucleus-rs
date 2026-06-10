@@ -28,7 +28,7 @@
 use std::path::PathBuf;
 
 use mp_tcp_event::{emit, EmitResult, NameTables, RUNTIME_SRC};
-use nucleus_compiler::sidecar::NameSidecar;
+use nucleus_compiler::sidecar::{NameSidecar, XferFacts};
 
 fn repo_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -649,9 +649,9 @@ fn wait_without_matching_push_is_typed_contract_gap() {
 }
 
 /// Branch C (multi_worker.rs:174-186) — every cross-worker
-/// `(DataId, SeqTag)` pair must have a `transfer_buffer_for_seq[seq]`
-/// entry in the sidecar (TASK-0233 contract). Missing entry =
-/// ContractGap forward-linking TASK-0233.
+/// `(DataId, SeqTag)` pair must have an `xfer_facts[seq]` entry in the
+/// sidecar (TASK-0233 buffer contract, unified into `XferFacts` by
+/// TASK-0455.08). Missing entry = ContractGap forward-linking TASK-0233.
 ///
 /// Mirrors `pthreads-async`'s `build_fails_on_missing_sidecar_buffer_entry`
 /// (in `pthreads-async/src/multi_worker.rs`) — same shape, same TASK-0233
@@ -669,7 +669,7 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
 
     // host pushes; w1 waits. Both worker events form a VALID
     // Push/Wait pair (chan_pairs lookup will succeed). The ONLY
-    // missing piece is the sidecar's transfer_buffer_for_seq entry
+    // missing piece is the sidecar's xfer_facts entry
     // for `seq` — Plan::build must catch this and forward-link
     // TASK-0233 rather than default-size and silently produce a
     // runtime mismatch.
@@ -713,7 +713,7 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
     let mut names = NameTables::default();
     names.worker.insert(w_host, "host".to_string());
     names.worker.insert(w1, "w1".to_string());
-    // Deliberately empty sidecar — no transfer_buffer_for_seq[seq].
+    // Deliberately empty sidecar — no xfer_facts[seq].
     let sidecar = NameSidecar::default();
 
     let kernels = repo_root().join("nuc-nucleus/examples/02-split-add/kernels.rs");
@@ -728,7 +728,7 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
         Err(e) => {
             let msg = format!("{e}");
             assert!(
-                msg.contains("transfer_buffer_for_seq"),
+                msg.contains("xfer_facts"),
                 "ContractGap must name the missing sidecar field: {msg}"
             );
             assert!(
@@ -736,7 +736,7 @@ fn missing_sidecar_buffer_for_seq_is_typed_contract_gap() {
                 "ContractGap must forward-link TASK-0233 (the sidecar-buffer contract): {msg}"
             );
         }
-        Ok(_) => panic!("expected ContractGap on missing transfer_buffer_for_seq entry"),
+        Ok(_) => panic!("expected ContractGap on missing xfer_facts entry"),
     }
 }
 
@@ -835,7 +835,13 @@ fn worker_to_worker_push_emits_host_relay() {
     names.data.insert(data, "tmp".to_string());
     let mut sidecar = NameSidecar::default();
     // Branch C must NOT trip: provide the sidecar entry.
-    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    sidecar.xfer_facts.insert(
+        seq,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     // Chan::new (emit_reactor_and_chans) needs the ResolvedType to
     // pick the right encode/decode fn pair. i32 scalar is enough for
     // a synthetic 1-byte-payload-equivalent test fixture (the relay
@@ -1008,8 +1014,20 @@ fn wait_before_push_w2w_is_typed_contract_gap() {
     names.data.insert(data_a, "a".to_string());
     names.data.insert(data_b, "b".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq_a, 1);
-    sidecar.transfer_buffer_for_seq.insert(seq_b, 1);
+    sidecar.xfer_facts.insert(
+        seq_a,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
+    sidecar.xfer_facts.insert(
+        seq_b,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data_a,
         nucleus_compiler::algo::ResolvedType {
@@ -1136,7 +1154,13 @@ fn pure_consumer_wait_only_does_not_trigger_wait_before_push_check() {
     names.worker.insert(w2, "w2".to_string());
     names.data.insert(data, "data".to_string());
     let mut sidecar = NameSidecar::default();
-    sidecar.transfer_buffer_for_seq.insert(seq, 1);
+    sidecar.xfer_facts.insert(
+        seq,
+        XferFacts {
+            buffer: 1,
+            ..Default::default()
+        },
+    );
     sidecar.data_types.insert(
         data,
         nucleus_compiler::algo::ResolvedType {

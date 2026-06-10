@@ -18,7 +18,7 @@
 #
 # Stages 1+2 (skeleton + single-worker delegation): TASK-0042.02
 # cycle 41. The 0/1 used-worker arm DELEGATES to
-# `pthreads_sync::render_single_worker_main`, so the emitted artefact
+# `backend_common::single_worker_main::render_single_worker_main`, so the emitted artefact
 # is byte-identical to pthreads-sync's / mp-tcp-bufsync's /
 # pthreads-async's single-worker output. Stage 3 (multi-worker mio
 # reactor + per-(seq, peer) outbound queue + per-seq inbound queue):
@@ -52,14 +52,6 @@ nucleus-compiler = { path = "../../nucleus-compiler" }
 # pthreads-async's `"ring"`, pthreads-sync's `"slot"`); see
 # multi_worker.rs.
 backend-common = { path = "../../backend-common" }
-# pthreads-sync provides `render_single_worker_main` — the straight-
-# line single-worker main.rs emitter. mp-tcp-event DELEGATES to it for
-# the 0/1-used-worker case, exactly as pthreads-async and
-# mp-tcp-bufsync do (the single semantic inter-backend arrow that
-# survives the TASK-0244 / 0246 refactor). This gives the byte-
-# identical single-worker emit the cross-backend differential relies
-# on.
-pthreads-sync = { path = "../pthreads-sync" }
 # Wire protocol v0 source text, copied verbatim into generated
 # projects (single source of truth with the protocol's own tests).
 # Shared with mp-tcp-bufsync; the wire format does not vary across
@@ -71,6 +63,13 @@ mp-tcp-common = { path = "../../mp-tcp-common" }
 # multi-worker emit tests (tests/multi_worker_emit.rs) route through
 # this for the fixture build-up step.
 test-common = { path = "../../test-common" }
+# pthreads-sync is now a TEST-ONLY (oracle) dependency. The shared
+# single-worker renderer (`render_single_worker_main`) was relocated to
+# `backend_common::single_worker_main` in TASK-0455.11 — the last
+# inter-backend PRODUCTION arrow — so the `src/` no longer touches it.
+# tests/host_relay_emit.rs still spells `pthreads_sync::NameTables`;
+# that oracle wiring stays as a dev-dependency.
+pthreads-sync = { path = "../pthreads-sync" }
 # mio is a regular dep in the *generated* multi-worker project's
 # Cargo.toml (multi_worker.rs::render_cargo_toml). Here it is also a
 # dev-dep so the host crate can `#[cfg(test)] mod runtime_src;` to

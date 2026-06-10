@@ -6,7 +6,7 @@
 //!   mp-tcp-bufsync must emit byte-identical Cargo.toml + binary +
 //!   run.sh + kernels.rs + wire.rs, since mp-tcp-poll's single-process
 //!   arm delegates to the SAME shared renderers mp-tcp-bufsync uses
-//!   (`pthreads_sync::render_single_worker_main_with_kernels_attr` +
+//!   (`backend_common::single_worker_main::render_single_worker_main_with_kernels_attr` +
 //!   `backend_common::project_skeleton::multi_binary`).
 //!
 //! - Real non-trivial witness (01-elementwise-add / naive): the same
