@@ -258,68 +258,188 @@ impl WireShape {
         self.recv_basis.is_none()
     }
 
+    /// The CONTIGUOUS narrowable element span `[lo, hi)` of this edge's
+    /// payload, or `None` when the edge must transmit the whole array.
+    ///
+    /// # The contiguity predicate (TASK-0453.22)
+    ///
+    /// This is the load-bearing scoping decision of the wire-narrowing
+    /// flip. The wire is a flat byte stream; the sender can only narrow
+    /// to a SINGLE contiguous slice (`name[lo..hi]`) and the receiver
+    /// can only paste it back from a from-0 contiguous `_tmp` if the
+    /// payload region is itself contiguous in the source array. So:
+    ///
+    /// - [`RecvBasis::Flat`] — one contiguous leading-axis span. Always
+    ///   narrowable; the span is `[lo, hi)` verbatim.
+    /// - [`RecvBasis::NestedRows`] with NO full leading axes
+    ///   (`leading.is_empty()`) — a single contiguous banded span
+    ///   `[band_lo_off, band_hi_off)` over the whole array (the banded
+    ///   axis is dim 0 and every trailing axis is fully copied). This
+    ///   reduces to the same shape as `Flat`, so it is narrowable.
+    /// - [`RecvBasis::NestedRows`] WITH leading axes — the banded span
+    ///   recurs once per leading-axis iteration with STRIDED GAPS
+    ///   between iterations (the `_base` loop in
+    ///   [`super::wait::render_wait_assign`]'s `NestedRows` arm). NOT a
+    ///   single contiguous slice ⇒ kept whole-array (the sound envelope;
+    ///   the 16-jacobi `field[t][y][x]` cumulative-array halo, where
+    ///   whole-array COPY is also the only combine that does not
+    ///   xN-double-count the shared cross-iteration history — memory
+    ///   `project-16-jacobi-distributed-blocker`).
+    /// - [`RecvBasis::Rows`] — strided 2D row-loop (`for _y { copy
+    ///   row-sub-range }`); each row contributes a sub-range with gaps
+    ///   between rows. NOT contiguous ⇒ kept whole-array (07-matmul
+    ///   `partition=blocks2d` output `c`).
+    /// - `None` (whole-array / accumulate fan-in / opaque gather-scatter
+    ///   / cumulative-fallback) ⇒ no span, whole-array stays.
+    ///
+    /// A future task could pack-and-scatter the strided arms (gather the
+    /// sub-rows into a contiguous send buffer, scatter on receive), but
+    /// that needs a NEW receiver paste shape (a packed-source row loop),
+    /// not just an offset rebase — out of scope here and filed as the
+    /// residual on TASK-0453.22 AC#4.
+    pub fn contiguous_span(&self) -> Option<(usize, usize)> {
+        match &self.recv_basis {
+            Some(RecvBasis::Flat { lo, hi }) => Some((*lo, *hi)),
+            Some(RecvBasis::NestedRows {
+                leading,
+                band_lo_off,
+                band_hi_off,
+            }) if leading.is_empty() => Some((*band_lo_off, *band_hi_off)),
+            // Strided NestedRows (with leading axes), strided Rows, and
+            // the whole-array `None` case all transmit the whole array.
+            _ => None,
+        }
+    }
+
     /// The in-process `.push(<expr>)` payload expression for a value
     /// named `name`.
     ///
-    /// WHOLE-ARRAY today (`{name}.clone()`) regardless of
-    /// [`recv_basis`](Self::recv_basis) — TASK-0453.22 narrows this to
-    /// the `recv_basis` slice. Consumed by the shared walker's
-    /// `Event::Push` arm (`super::event_walker`).
+    /// TASK-0453.22: narrows to the CONTIGUOUS recv-basis span when this
+    /// edge has one ([`contiguous_span`](Self::contiguous_span) returns
+    /// `Some`) — `{name}[lo..hi].to_vec()`, sending only the band the
+    /// receiver pastes. Otherwise (whole-array, accumulate fan-in,
+    /// strided Rows/NestedRows, opaque gather-scatter) the whole-symbol
+    /// clone is preserved (the sound envelope). Consumed by the shared
+    /// walker's `Event::Push` arm (`super::event_walker`); the paired
+    /// Wait's [`super::wait::render_wait_assign`] rebases its `_tmp`
+    /// index from 0 in lock-step (same `WireShape` derivation).
     pub fn sender_value_expr(&self, name: &str) -> String {
-        // TASK-0455.07: whole-symbol clone preserved byte-identical.
-        // TASK-0453.22 flips this to the recv_basis sub-slice.
-        format!("{name}.clone()")
+        match self.contiguous_span() {
+            // Narrowed: send only the contiguous band as an owned Vec.
+            // `to_vec()` over the slice produces the same element type
+            // the rendezvous `Chan<Vec<T>>` carries; the receiver pastes
+            // it from `_tmp[0..span]`.
+            Some((lo, hi)) => format!("{name}[{lo}usize..{hi}usize].to_vec()"),
+            // Whole-array / strided / opaque: unchanged whole-symbol clone.
+            None => format!("{name}.clone()"),
+        }
     }
 
     /// The wire-encode expression (`wire::enc_*` / `wire::enc_vec(&name,
     /// …)`) for a value named `name` of type `ty`.
     ///
-    /// WHOLE-ARRAY today (delegates to
-    /// `crate::tcp_plan::encode::encode_expr` over the whole symbol — a
-    /// `pub(crate)` helper, so this is a code span, not an intra-doc
-    /// link) — TASK-0453.22 narrows this to the `recv_basis` slice.
-    /// Consumed by the sync-TCP plan's `Event::Push` arm
-    /// (`crate::tcp_plan::events`).
+    /// TASK-0453.22: when this edge has a CONTIGUOUS recv-basis span
+    /// ([`contiguous_span`](Self::contiguous_span) returns `Some`), the
+    /// encoded expression is the SLICE `{name}[lo..hi]` — only the band
+    /// the receiver decodes goes on the wire. `crate::tcp_plan::encode::
+    /// encode_expr` builds `wire::enc_vec(&<expr>, …)`, so handing it the
+    /// slice expression encodes exactly the band (a scalar never has a
+    /// `recv_basis`, so the narrowing branch only fires for the array
+    /// `enc_vec` / `enc_vec_bool` forms — the slice is always a valid
+    /// `&[T]`). Otherwise the whole symbol is encoded (the sound
+    /// envelope). Consumed by the sync-TCP plan's `Event::Push` arm
+    /// (`crate::tcp_plan::events`). The paired Wait decodes the whole
+    /// `__buf` (which now carries only the band) and `render_wait_assign`
+    /// rebases its `_tmp` index from 0 in lock-step.
     pub fn sender_encode_expr(
         &self,
         name: &str,
         ty: &ResolvedType,
     ) -> Result<String, EmitError> {
-        // TASK-0455.07: whole-symbol encode preserved byte-identical.
-        // TASK-0453.22 flips this to encode only the recv_basis span.
-        crate::tcp_plan::encode::encode_expr(name, ty)
+        match self.contiguous_span() {
+            // Narrowed: encode only the contiguous band slice. A present
+            // `contiguous_span` implies a non-scalar array (scalars
+            // classify `recv_basis == None`), so `encode_expr` takes the
+            // `enc_vec`/`enc_vec_bool` array path over the `&[T]` slice.
+            Some((lo, hi)) => {
+                let slice = format!("{name}[{lo}usize..{hi}usize]");
+                crate::tcp_plan::encode::encode_expr(&slice, ty)
+            }
+            // Whole-array / strided / opaque: unchanged whole-symbol encode.
+            None => crate::tcp_plan::encode::encode_expr(name, ty),
+        }
     }
 
     /// Transmitted flat element count, or `0` if the data symbol had no
     /// `ResolvedType` in the sidecar (the type-absent whole-array
-    /// corner — see the `elems` field doc). The whole-array element
-    /// count today (TASK-0455.07); TASK-0453.22 narrows it to the
-    /// `recv_basis` span. Consumed by MPI buffered-send sizing
-    /// (`crate::mpi_plan::plan::Plan::bsend_bytes`), which only calls it
-    /// for data it has already type-guarded — so the `0` fallback is
+    /// corner — see the `elems` field doc).
+    ///
+    /// TASK-0453.22: when this edge has a CONTIGUOUS recv-basis span
+    /// ([`contiguous_span`](Self::contiguous_span) returns `Some`), the
+    /// transmitted element count is the span length `hi - lo` — matching
+    /// the narrowed sender payload exactly, so MPI buffered-send sizing
+    /// (`crate::mpi_plan::plan::Plan::bsend_bytes`) budgets the band, not
+    /// the whole array. Otherwise the whole-array element count is
+    /// returned (the whole-symbol payload). The MPI consumer only calls
+    /// this for data it has already type-guarded — so the `0` fallback is
     /// never observed there (it merely avoids panicking on the
     /// structurally-unreachable contract gap).
     pub fn extent_elems(&self) -> usize {
-        self.elems.unwrap_or(0)
+        match self.contiguous_span() {
+            // `hi >= lo` is an invariant of every `recv_basis` arm
+            // (ranges are validated `start < end` upstream and scaled by
+            // non-negative strides), so the subtraction never underflows;
+            // `saturating_sub` is belt-and-braces.
+            Some((lo, hi)) => hi.saturating_sub(lo),
+            None => self.elems.unwrap_or(0),
+        }
     }
 
     /// The byte-length expression an embedded (tier-3) Push/Wait passes
     /// as the transport length argument for a value named `name`.
     ///
-    /// WHOLE-ARRAY today: `core::mem::size_of_val(&{name})` — the size
-    /// of the whole `[T; N]` local, BYTE-IDENTICAL to the
-    /// pre-TASK-0455.07 embedded emit. TASK-0453.22 narrows this to the
-    /// `recv_basis` span's byte length. Returned as an EXPRESSION (not a
-    /// literal) so the generated no_std crate computes it at compile
-    /// time, matching the embedded backend's `[T; N]` fixed-array layout
-    /// where the element count is implicit in the array type. Consumed
-    /// by `backends/embedded-pattern/src/render` (the PIO `link_push` /
-    /// `link_recv` and the DMA `dma_link_arm` / `dma_link_recv_arm`
-    /// length args).
+    /// Returned as an EXPRESSION (not a literal) so the generated no_std
+    /// crate computes it at compile time, matching the embedded backend's
+    /// `[T; N]` fixed-array layout where the element count is implicit in
+    /// the array type.
+    ///
+    /// # Embedded stays whole-array by construction (TASK-0453.22)
+    ///
+    /// The tier-3 embedded backend has NO `pair_tiles` substrate — it
+    /// lays every data symbol out as a `[T; N]` local and only supports
+    /// single-worker / naive multi-MCU transfers, so it derives its
+    /// `WireShape` via `from_tile(.., None)` (no tile ⇒ `recv_basis ==
+    /// None` ⇒ [`contiguous_span`](Self::contiguous_span) is `None`). On
+    /// that path this returns `core::mem::size_of_val(&{name})` — the
+    /// whole `[T; N]`, BYTE-IDENTICAL to the pre-TASK-0453.22 embedded
+    /// emit (the 02-split-add / 14-hearing-aid Renode byte-exact gate
+    /// depends on this). This whole-array residual is INTENTIONAL, not a
+    /// split-brain: the embedded receiver has no slice-paste — it fills
+    /// the `[T; N]` local whole — so narrowing the send length without a
+    /// matching banded receive would corrupt the wire. A precise embedded
+    /// flip (banded `[T; N]` send + offset receive) is the residual on
+    /// TASK-0453.22 AC#4.
+    ///
+    /// The `Some` arm below is therefore UNREACHABLE for every shipped
+    /// embedded emit; it exists so the helper stays consistent with the
+    /// other two sender helpers should a future caller ever supply a real
+    /// tile (the byte length would be the span element count × element
+    /// size). Consumed by `backends/embedded-pattern/src/render` (the PIO
+    /// `link_push` / `link_recv` and the DMA `dma_link_arm` /
+    /// `dma_link_recv_arm` length args).
     pub fn sender_byte_len_expr(&self, name: &str) -> String {
-        // TASK-0455.07: whole-array size_of_val preserved byte-identical.
-        // TASK-0453.22 flips this to the recv_basis span byte length.
-        format!("core::mem::size_of_val(&{name})")
+        match self.contiguous_span() {
+            // Unreachable for shipped embedded (which always derives via
+            // `from_tile(.., None)`); kept consistent with the sibling
+            // sender helpers. `{name}[lo]` is in bounds because a present
+            // span implies a non-empty banded array.
+            Some((lo, hi)) => {
+                let span = hi.saturating_sub(lo);
+                format!("({span}usize * core::mem::size_of_val(&{name}[{lo}usize]))")
+            }
+            // Whole `[T; N]` — the embedded whole-array path.
+            None => format!("core::mem::size_of_val(&{name})"),
+        }
     }
 
     /// Transmitted payload byte count = [`extent_elems`](Self::extent_elems)

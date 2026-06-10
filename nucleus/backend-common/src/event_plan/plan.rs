@@ -486,21 +486,25 @@ impl<'a, T: EventTransport> Plan<'a, T> {
 
     /// Largest single cross-worker payload in bytes — drives SO_*BUF
     /// sizing in run.sh. Same calculation as the sync-TCP backends.
+    ///
+    /// TASK-0453.22: routed through the ONE `WireShape` extent per
+    /// `(data, seq)` edge so a narrowed edge (a contiguous recv-basis
+    /// band) sizes the buffer for the BAND it actually transmits, not the
+    /// whole array. The channel keys are `(DataId, SeqTag)`, so each edge
+    /// derives its own `WireShape` and the max is the true largest
+    /// on-wire payload. A datum with no `ResolvedType` is skipped
+    /// (contributes 0) — matching the pre-flip `ok_or_else` guard's
+    /// intent (it cannot size a typeless symbol; the paired Wait render
+    /// fails loud on the same gap if such an edge ever ships).
     pub(crate) fn max_payload_bytes(&self) -> Result<usize, EmitError> {
         let mut max = 0usize;
-        for (d, _) in self.chan_ids.keys() {
-            let ty = self.sidecar.data_type(*d).ok_or_else(|| {
-                EmitError::ContractGap(format!(
-                    "cross-worker data {d:?} has no ResolvedType in sidecar"
-                ))
-            })?;
-            let elems: usize = if ty.is_scalar() {
-                1
-            } else {
-                ty.dims.iter().copied().product()
+        for (d, s) in self.chan_ids.keys() {
+            let Some(ty) = self.sidecar.data_type(*d) else {
+                continue;
             };
-            let w = encode::scalar_width(&ty.scalar);
-            max = max.max(elems * w);
+            let wire = walker::WireShape::derive(self.sidecar, &self.pair_tiles, *d, *s)?;
+            let bytes = wire.extent_bytes(encode::scalar_width(&ty.scalar));
+            max = max.max(bytes);
         }
         Ok(max)
     }

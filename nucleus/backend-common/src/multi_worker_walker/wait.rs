@@ -138,10 +138,21 @@ pub fn render_wait_assign(
         }
         Some(RecvBasis::Flat { lo, hi }) => {
             // 1D leading-axis slice-paste — TASK-0117.
+            //
+            // TASK-0453.22: `Flat` is the CONTIGUOUS narrowable arm
+            // (`wire.contiguous_span()` returns `Some((lo, hi))` for it),
+            // so the paired sender narrows its payload to `name[lo..hi]`.
+            // The decoded/pushed `_tmp` is therefore the BAND, length
+            // `hi - lo`, indexed FROM 0 — not from the destination offset
+            // `lo` (which would be out of bounds on the band). The
+            // DESTINATION keeps the absolute `[lo..hi]` range. Both the
+            // sender narrowing and this from-0 rebase derive from the ONE
+            // `WireShape` for this `(data, seq)`, so they cannot diverge.
+            let span = hi - lo;
             Ok(format!(
                 "{{ let _tmp = {rhs}; \
                  {name}[{lo}usize..{hi}usize].copy_from_slice(\
-                 &_tmp[{lo}usize..{hi}usize]); }}"
+                 &_tmp[0usize..{span}usize]); }}"
             ))
         }
         Some(RecvBasis::Rows {
@@ -188,6 +199,24 @@ pub fn render_wait_assign(
             // 64)]` (the t axis), `band_lo_off..band_hi_off` = the
             // per-row y-band flat span (e.g. `8..24` for band 1..3 on a
             // [.][8][8] data symbol).
+            //
+            // TASK-0453.22 narrowing split — driven by the SAME
+            // `WireShape::contiguous_span()` predicate the sender uses:
+            //
+            // - `leading` EMPTY ⇒ the band is a SINGLE contiguous span
+            //   `[band_lo_off, band_hi_off)` (banded axis is dim 0, all
+            //   trailing axes copied whole). `contiguous_span()` returns
+            //   `Some` for it, so the paired sender narrowed its payload
+            //   to that band; `_tmp` is the BAND, indexed FROM 0.
+            // - `leading` NON-EMPTY ⇒ the band recurs once per
+            //   leading-axis iteration with STRIDED GAPS, so it is NOT a
+            //   single contiguous slice; `contiguous_span()` returns
+            //   `None`, the sender kept the WHOLE array, and `_tmp` is
+            //   indexed by the SAME `_base`-relative offsets as the
+            //   destination (the 16-jacobi cumulative-array halo — kept
+            //   whole-array, which is also the only combine that does not
+            //   xN-double-count the shared cross-iteration history).
+            let narrowed = leading.is_empty();
             let mut s = String::from("{ let _tmp = ");
             s.push_str(rhs);
             s.push_str("; ");
@@ -203,10 +232,20 @@ pub fn render_wait_assign(
                 ));
                 closers += 1;
             }
+            // Source index: from-0 over the band when narrowed (no
+            // leading axes ⇒ `_base` is always 0, so the destination's
+            // `_base + band_lo_off` equals `band_lo_off` and the source
+            // is the band `0..span`); `_base`-relative whole-array index
+            // otherwise.
+            let src_range = if narrowed {
+                let span = band_hi_off - band_lo_off;
+                format!("0usize..{span}usize")
+            } else {
+                format!("_base + {band_lo_off}usize.._base + {band_hi_off}usize")
+            };
             s.push_str(&format!(
                 "{name}[_base + {band_lo_off}usize.._base + {band_hi_off}usize]\
-                 .copy_from_slice(\
-                 &_tmp[_base + {band_lo_off}usize.._base + {band_hi_off}usize]); "
+                 .copy_from_slice(&_tmp[{src_range}]); "
             ));
             for _ in 0..closers {
                 s.push('}');

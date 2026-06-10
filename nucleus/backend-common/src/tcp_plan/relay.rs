@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::multi_worker_walker::collect_pre_init_sets;
+use crate::multi_worker_walker::{collect_pre_init_sets, WireShape};
 use crate::project_skeleton::multi_binary;
 use crate::tcp_plan::encode::scalar_width;
 use crate::tcp_plan::walkers::{collect_w2w_pushes, RelayHop};
@@ -193,22 +193,25 @@ impl<W: WirePrimitives> Plan<'_, W> {
     /// Largest single cross-worker payload in bytes (sum of element
     /// byte widths). Drives SO_*BUF sizing in run.sh. Sized from the
     /// sidecar `ResolvedType` — no AlgoIR.
+    ///
+    /// TASK-0453.22: iterated over `pair_tiles` `(DataId, SeqTag)` EDGES
+    /// (not `xfer_ids` DataIds) and routed through the ONE `WireShape`
+    /// extent per edge, so a narrowed edge (a contiguous recv-basis band)
+    /// sizes the buffer for the BAND it transmits, not the whole array. A
+    /// DataId with several edges of differing bands is covered by the max
+    /// over its edges. Pre-flip this iterated DataIds and always took the
+    /// whole-array size; the per-edge max is `<=` that, so the SO_*BUF
+    /// floor only ever shrinks. A typeless symbol is skipped (contributes
+    /// 0) — the paired Wait render fails loud on the same gap if such an
+    /// edge ships.
     pub(crate) fn max_payload_bytes(&self) -> Result<usize, EmitError> {
         let mut max = 0usize;
-        for d in self.xfer_ids.keys() {
-            let name = self.data_name(*d)?;
-            let ty = self.sidecar.data_type(*d).ok_or_else(|| {
-                EmitError::ContractGap(format!(
-                    "cross-worker data `{name}` ({d:?}) has no ResolvedType"
-                ))
-            })?;
-            let elems: usize = if ty.is_scalar() {
-                1
-            } else {
-                ty.dims.iter().copied().product()
+        for (d, s) in self.pair_tiles.keys() {
+            let Some(ty) = self.sidecar.data_type(*d) else {
+                continue;
             };
-            let w = scalar_width(&ty.scalar);
-            max = max.max(elems * w);
+            let wire = WireShape::derive(self.sidecar, &self.pair_tiles, *d, *s)?;
+            max = max.max(wire.extent_bytes(scalar_width(&ty.scalar)));
         }
         Ok(max)
     }

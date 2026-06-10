@@ -227,17 +227,21 @@ fn flat_1d_slice_paste_for_partition_workers() {
     let out = render_one_wait(&names, &sidecar, &ids, &tiles, data, seq, tile)
         .expect("1D slice-paste Wait must render");
 
-    // Leading-axis: lo=1*16=16, hi=8*16=128. Match the EXACT pre-
-    // TASK-0294 emit (regression pin).
+    // Leading-axis: lo=1*16=16, hi=8*16=128 (span = 112). TASK-0453.22:
+    // the `Flat` arm is the CONTIGUOUS narrowable case — the paired
+    // sender narrows its payload to `img_in[16..128].to_vec()`, so the
+    // received `_tmp` is the BAND (length 112) indexed FROM 0, while the
+    // DESTINATION keeps the absolute `[16..128]` range. (Pre-TASK-0453.22
+    // both sides read `_tmp[16..128]` against a whole-array payload.)
     assert!(
         out.contains(
             "{ let _tmp = ring_5.wait(); \
              img_in[16usize..128usize].copy_from_slice(\
-             &_tmp[16usize..128usize]); }"
+             &_tmp[0usize..112usize]); }"
         ),
         "1D leading-axis slice-paste must emit `name[lo..hi].copy_from_slice(\
-         &_tmp[lo..hi])` with PRE-MULTIPLIED offsets (lo=1*16=16, hi=8*16=128); \
-         got:\n{out}"
+         &_tmp[0..span])` with PRE-MULTIPLIED dst offsets (lo=1*16=16, \
+         hi=8*16=128) and a FROM-0 source span (112); got:\n{out}"
     );
     // The row-loop shape MUST NOT appear on a 1-bound tile.
     assert!(

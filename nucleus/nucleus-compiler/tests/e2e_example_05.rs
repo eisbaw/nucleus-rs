@@ -447,7 +447,10 @@ fn reuse_marker_present_on_reuse_schedule_absent_on_naive() {
 /// Workers waited forever on `ring_X.wait()` and the cell deadlocked.
 /// This test builds 05-stencil/distributed × pthreads-async via the
 /// real driver pipeline and asserts the host `main()` contains a
-/// `ring_<N>.push(img_in.clone())` line for EVERY worker (4 of them).
+/// `ring_<N>.push(img_in…)` line for EVERY worker (4 of them).
+/// (TASK-0453.22 narrowed the payload from `img_in.clone()` to the
+/// per-worker band slice `img_in[lo..hi].to_vec()`; the per-worker
+/// push count is unchanged.)
 ///
 /// HONEST SCOPE: this asserts the BUG 1 / TASK-0267 fix only. The
 /// runtime still deadlocks on BUG 2 (sync_inject barrier under unequal
@@ -502,19 +505,26 @@ fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
     // order, not a worker id. If a future change inserted other Xfers
     // with smaller SeqTags before the host-fanout pushes, the literal
     // enumeration would FALSELY claim the gate was resurrected when
-    // really the seq ids merely shifted. Counting `ring_\d+.push(img_in.clone())`
+    // really the seq ids merely shifted. Counting `ring_\d+.push(img_in…)`
     // occurrences is robust to such re-ordering: what TASK-0267 actually
     // pins is "the host emits one push of img_in per worker", regardless
     // of how the seq ids land.
+    //
+    // TASK-0453.22: the push payload narrowed from `img_in.clone()` to
+    // the per-worker band slice `img_in[lo..hi].to_vec()` (each worker's
+    // row-band is a distinct contiguous span). The match keys on the
+    // stable `.push(img_in` prefix so it counts BOTH the pre-flip
+    // whole-array clone and the narrowed slice — TASK-0267's invariant is
+    // "one img_in push per worker", which the narrowing does not change.
     let push_count = main_rs
         .lines()
         .filter(|line| {
-            // Each emit line is `    ring_<N>.push(img_in.clone()); ...`.
+            // Each emit line is `    ring_<N>.push(img_in[lo..hi].to_vec()); …`.
             // Trim leading whitespace, then check for the ring_<digits>
-            // prefix and the `.push(img_in.clone())` substring.
+            // prefix and a `.push(img_in` of img_in (whole or band).
             let trimmed = line.trim_start();
             trimmed.starts_with("ring_")
-                && trimmed.contains(".push(img_in.clone())")
+                && trimmed.contains(".push(img_in")
                 && trimmed[5..]
                     .chars()
                     .take_while(|c| c.is_ascii_digit())
@@ -524,7 +534,7 @@ fn distributed_pthreads_async_host_pushes_img_in_to_every_worker() {
         .count();
     assert_eq!(
         push_count, 4,
-        "TASK-0267: host main() MUST contain one `ring_<N>.push(img_in.clone())` \
+        "TASK-0267: host main() MUST contain one `ring_<N>.push(img_in…)` \
          per worker (4 workers ⇒ 4 distinct pushes). Got {push_count}.\n\n\
          A push_count below 4 (especially zero) indicates the \
          `contains_block_inner` opacity gate (or equivalent) has been \
