@@ -833,12 +833,39 @@ pub fn build_sidecar(
     //     is inert downstream (the band-rewrite / hoist passes are
     //     partition-guarded no-ops) — but the SET is not "16-jacobi only".
     //     Pinned by `cumulative_tests::{jacobi_field,game_of_life_grid}_*`.
+    //
+    //     A cumulative name is always a declared data symbol (it is the
+    //     LHS of a `<--` dataflow, which link-valid IR requires to be in
+    //     `linked.algo.data`, hence in `acfg.name_data` — build_acfg
+    //     enumerated name_data FROM that same data table). A name present
+    //     here but absent from `acfg.name_data` is therefore a
+    //     compiler-internal name<->id desync, NOT user input. Resolve it
+    //     fail-loud with context — identical in kind to the (a)/(d)/(j)
+    //     `unwrap_or_else(panic!)` guards — never silently drop it. A
+    //     dropped cumulative symbol would skip the COPY-not-accumulate
+    //     exclusion (the xN-double-count protection that is
+    //     value-correctness-load-bearing; TASK-0459). Pinned loud by the
+    //     `sidecar_build_desync` integration test. (Block (l)
+    //     combine_for_data is the one name<->id site that legitimately
+    //     `filter_map`s instead — its accumulator walk can name a symbol
+    //     the partition pass elided, and the consuming gate re-derives +
+    //     reports the miss; that justification does NOT apply to a
+    //     declared cumulative LHS.)
     let mut cumulative_names: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     collect_cumulative_data_names(&linked.algo.stmts, &[], &mut cumulative_names);
     let cumulative_data: std::collections::BTreeSet<DataId> = cumulative_names
         .iter()
-        .filter_map(|n| acfg.name_data.get(n).copied())
+        .map(|name| {
+            *acfg.name_data.get(name).unwrap_or_else(|| {
+                panic!(
+                    "sidecar: cumulative data symbol `{name}` is classified \
+                     from linked.algo.stmts but is not in ACFG name_data — \
+                     cumulative<->id table desync (dropping it would skip the \
+                     COPY-not-accumulate exclusion; TASK-0459)"
+                )
+            })
+        })
         .collect();
 
     // (j) Data-declaration order as DataIds (TASK-0049.10.06). Map each
