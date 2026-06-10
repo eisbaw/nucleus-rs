@@ -74,6 +74,7 @@ name = "e2e"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "test-common",
  "toml",
 ]
 
