@@ -64,7 +64,8 @@
 //!    and accept either form. Trade-off accepted: a future
 //!    silent-skip regression on the per-iv `or_insert(0)` emit site
 //!    (the production sink at `classify_index` — search for
-//!    `per_iv.entry(iv).or_insert(0)` in this file) would let `== 0`
+//!    `per_iv.entry(iv).or_insert(0)` in `halo_inference/walker.rs`,
+//!    its home since the TASK-0460 split) would let `== 0`
 //!    narrative pins pass vacuously. Judged unlikely; preserving the
 //!    contract robustness is worth the accepted vacuous-pass arm. A
 //!    future change to require explicit-0 (Option C) would need a
@@ -73,8 +74,9 @@
 //!    test suite.
 //!
 //!    **TASK-0307 cycle-123 structural sentinel**: the in-module test
-//!    `no_halo_bare_iv` (search for `fn no_halo_bare_iv` in this
-//!    file) carries a `copied() == Some(0)` structural assertion
+//!    `no_halo_bare_iv` (search for `fn no_halo_bare_iv` in
+//!    `halo_inference/tests/stencil.rs`, its home since the TASK-0460
+//!    split) carries a `copied() == Some(0)` structural assertion
 //!    that fails LOUD if the production walker at `classify_index` is
 //!    silently regressed to skip emission for inspected (kernel, iv)
 //!    pairs. This closes the Option B vacuous-pass arm at the

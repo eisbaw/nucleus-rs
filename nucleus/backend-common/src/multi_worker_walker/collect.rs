@@ -464,7 +464,14 @@ pub fn check_accumulator_consistency(
             // EmitError so a non-sum fan-in cannot be mis-combined as a
             // sum. `combine_for_data` is built in `build_sidecar` from
             // the accumulator's Dataflow-RHS callee kernel's `combine`
-            // attribute — absent here ⇔ no attribute declared.
+            // attribute — absent here usually means no attribute
+            // declared, but can also mean build_sidecar's block (l)
+            // name->id resolution elided the symbol (a deliberate
+            // filter_map; see TASK-0459 notes). Both cases must fail
+            // loud, but the message below describes only the
+            // attribute case — in the rarer (l)-miss case it
+            // misattributes a compiler-internal table miss to the
+            // user's kernel.
             if !sidecar.combine_for_data.contains_key(data) {
                 return Err(EmitError::AccumulatorShapeMismatch(format!(
                     "data symbol `{name}` is an overlapping-write accumulator fan-in \

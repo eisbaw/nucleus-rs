@@ -358,7 +358,7 @@ pub fn derive_firing_order(net: &Net) -> Vec<TransitionId> {
 
     'outer: loop {
         // Scan in source order from the cursor; the first firable
-        // un-fired transition wins. `Net::fire_in_place` commits on
+        // un-fired transition wins. `Net::fire_marking` commits on
         // success and leaves the marking alone on failure, so we can
         // use it as the firability oracle directly without an extra
         // `enabled_transitions` call.

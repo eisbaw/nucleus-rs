@@ -868,8 +868,10 @@ pub fn build_sidecar(
         })
         .collect();
 
-    // (j) Data-declaration order as DataIds (TASK-0049.10.06). Map each
-    //     name in `linked.algo.data_decl_order` (already in source
+    // (m) Data-declaration order as DataIds (TASK-0049.10.06; formerly
+    //     mislabeled as a second "(j)" — TASK-0459 notes and commit
+    //     ca270c8 cite this block as the data_decl_order guard). Map
+    //     each name in `linked.algo.data_decl_order` (already in source
     //     declaration order, built by `lower_data`) through
     //     `acfg.name_data` to its canonical DataId. Mirrors the (a)
     //     name_data -> data_types inversion, but iterating the

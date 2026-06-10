@@ -437,7 +437,7 @@ pub(crate) fn compute_delta_rows(
     planned: &[PlannedCell],
 ) -> Vec<DeltaRow> {
     use std::collections::HashMap;
-    pub(crate) type Key = (String, String, String);
+    type Key = (String, String, String);
     let key_for_baseline =
         |b: &BaselineCell| -> Key { (b.example.clone(), b.schedule.clone(), b.backend.clone()) };
     let key_for_current = |r: &CellResult| -> Key {

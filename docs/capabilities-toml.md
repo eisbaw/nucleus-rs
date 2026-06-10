@@ -158,6 +158,15 @@ Each flag selects exactly one pass. They are NOT a schedule-compat axis
 (`check_schedule_compat` never reads them) — they drive the driver's
 internal pass selection only.
 
+The capability file is **authoritative**: a build with an explicit
+`--capabilities` file that omits these flags gets NO mediation passes,
+even for a backend name that the deleted driver lists used to match
+unconditionally. That is the intended semantics (one source of truth,
+serde-default `false`), but it IS a behaviour change for hand-rolled
+out-of-tree capability files aimed at the `mp-tcp-*` / `mp-uds-event`
+backends — such files must now declare the flags explicitly (see the
+per-backend table below).
+
 ### `star_topology_host_mediation`
 
 - Type: bool. Optional, defaults to `false`.

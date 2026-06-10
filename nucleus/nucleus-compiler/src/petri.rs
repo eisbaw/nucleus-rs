@@ -274,9 +274,12 @@ impl std::error::Error for FireError {}
 /// transition index (== `TransitionId.0`). [`TransitionId`]s equal
 /// their position in `net.transitions`, and `Clone` preserves both
 /// `transitions` and `arcs` element-for-element, so an index built from
-/// the original net is valid against a clone of it. The analysis passes
-/// rely on this: they `net.clone()` + `reset_to_initial()` then replay
-/// on the clone using an index built from the original.
+/// the original net is valid against a clone of it. Since TASK-0455.10
+/// the analysis passes no longer clone the net at all — they replay on
+/// a borrowed `&Net` plus a cloned [`Marking`] via [`Net::fire_marking`]
+/// — so the clone-validity property is exercised only by tests and any
+/// ad-hoc caller that still clones; it is kept documented because it is
+/// a real (and easily violated) structural invariant of the type.
 #[derive(Debug, Clone)]
 pub struct ArcIndex {
     /// `in_arcs[t.0]` = indices into `net.arcs` of the `PtoT` arcs

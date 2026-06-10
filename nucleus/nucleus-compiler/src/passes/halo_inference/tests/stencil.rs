@@ -209,7 +209,8 @@ fn no_halo_bare_iv() {
     // Option B defence). Pins the implementation choice of recording
     // explicit `Some(0)` for every inspected (kernel, iv) pair at
     // the `classify_index` emit site (search for
-    // `per_iv.entry(iv).or_insert(0)` in this file). A future
+    // `per_iv.entry(iv).or_insert(0)` in `halo_inference/walker.rs`,
+    // its home since the TASK-0460 split). A future
     // walker regression that silently DROPS entries for bare-iv
     // accesses would make the `== 0` `.unwrap_or(0)` narrative pins
     // in `tests/sidecar_halo.rs` (specifically `task0299_06` and
