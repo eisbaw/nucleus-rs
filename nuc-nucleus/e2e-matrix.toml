@@ -210,20 +210,26 @@ milestone = "M1"
 # live, the worst case, NOT -n 1 which hides Send/Recv ordering bugs), and
 # byte-diffs output.bin against the example's `reference.bin` oracle.
 #
-# EIGHT cells, all observed byte-exact by the harness under mpiexec:
-#   - 01-elementwise-add/naive      (single worker, -n 1)
-#   - 02-split-add/split            (multi-worker SPMD, -n 2)
-#   - 03-reduction/distributed      (multi-worker SPMD tree-reduce, -n 5)
-#   - 07-matmul/distributed         (multi-worker 2D row-band, -n 5)
-#   - 08-histogram/distributed      (multi-worker scatter + partial-sum, -n 5)
-#   - 15-transpose/distributed-rows (multi-worker row-band permute, -n 5)
-#   - 16-jacobi/distributed         (multi-worker stencil iteration, -n 5)
-#   - 17-spmv/distributed           (multi-worker sparse mat-vec gather, -n 5)
-# The first three are also independently proven out-of-band by
-# `just check-mpi`; TASK-0453.09 added the latter five (distinct shapes:
+# TEN cells, all observed byte-exact by the harness under mpiexec:
+#   - 01-elementwise-add/naive          (single worker, -n 1)
+#   - 02-split-add/split                (multi-worker SPMD, -n 2)
+#   - 03-reduction/distributed          (multi-worker SPMD tree-reduce, -n 5)
+#   - 06-separable-filter/distributed   (multi-worker row-band, non-stencil, -n 5)
+#   - 06-separable-filter/distributed2  (multi-worker w<->w tmp fan-out, -n 5)
+#   - 07-matmul/distributed             (multi-worker 2D row-band, -n 5)
+#   - 08-histogram/distributed          (multi-worker scatter + partial-sum, -n 5)
+#   - 15-transpose/distributed-rows     (multi-worker row-band permute, -n 5)
+#   - 16-jacobi/distributed             (multi-worker stencil iteration, -n 5)
+#   - 17-spmv/distributed               (multi-worker sparse mat-vec gather, -n 5)
+# The 01/02/03 cells are also independently proven out-of-band by
+# `just check-mpi`; TASK-0453.09 added 07/08/15/16/17 (distinct shapes:
 # 2D tiling, data-dependent scatter, permute, iterative stencil, gather)
 # as COUNTED harness differential cells, broadening the blocking arm from
-# 3 to 8. All sync schedules (mpi-blocking is sync-only); each verified
+# 3 to 8; TASK-0464 then added the two 06-separable-filter cells (the
+# row-band non-stencil shape + the FIRST w<->w-data mpi-blocking cell),
+# bringing it to 10 and restoring the `check-mpi` coverage the TASK-0454
+# single-source derivation had exposed as matrix-absent. All sync
+# schedules (mpi-blocking is sync-only); each verified
 # byte-exact vs reference.bin under `mpiexec --oversubscribe -n 5` on
 # LOOPBACK (one host, oversubscribed ranks — NOT a production cluster; the
 # cluster caveat stays in the thesis). milestone = "M7" — the PRD §11
@@ -276,6 +282,38 @@ milestone = "M7"
 [[required]]
 example  = "17-spmv"
 schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+# 06-separable-filter distributed cells (TASK-0464). Two MULTI-WORKER
+# (-n 5) shapes that restore the check-mpi coverage the TASK-0454
+# single-source derivation exposed as matrix-absent (they were only in
+# the old hardcoded recipe list). Both schedules are sync-only
+# (`transfer ... : sync`), so mpi-blocking admits them:
+#   - 06-separable-filter/distributed  — pass 1 hblur_acc row-banded on
+#     { w0..w3 } (host->workers in_arr, workers->host tmp gather); pass 2
+#     stays on host. A partition=rows + NON-stencil (rectangular
+#     accumulator, halo=0) shape, distinct from 07/15/16's tilings.
+#   - 06-separable-filter/distributed2 — BOTH passes on { w0..w3 }; the
+#     `tmp` edge is a genuine WORKER<->WORKER transfer (each producer owns
+#     its hy row-band, each consumer's vm sweep needs ALL of tmp). The
+#     mp-tcp star backends SKIP this (no w<->w channel; ContractGap), but
+#     mpi-blocking carries it natively: capabilities.toml declares
+#     star_topology_host_mediation=false / host_data_relay=false, so the
+#     cross-pairs lower as direct rank-to-rank Send/Recv. This is the
+#     FIRST matrix cell that exercises mpi-blocking's w<->w data path on a
+#     non-halo (whole-array fan-out) shape.
+# Both at -n 5 (workers = { host, w0, w1, w2, w3 }); reference.bin oracle
+# is shared with naive/blocked (the row-band partition reorders nothing).
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed"
+backend  = "mpi-blocking"
+milestone = "M7"
+
+[[required]]
+example  = "06-separable-filter"
+schedule = "distributed2"
 backend  = "mpi-blocking"
 milestone = "M7"
 
