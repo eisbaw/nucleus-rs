@@ -231,7 +231,7 @@ mechanism that turns this from an aspiration into a test is the subject of
 The language's restrictions are deliberate, and each one buys a property the
 model depends on. They are stated here rather than discovered later.
 
-\paragraph{Data-dependent control flow is bounded, and multi-worker only on the
+\paragraph{Data-dependent control flow is bounded, and realized only on the
 single-worker path.} There is no conditional in the algorithm sublanguage, and
 \emph{unbounded} data-dependent loop termination is excluded: a loop that runs
 ``until converged'' with no iteration limit cannot be written, because its trip
@@ -243,15 +243,18 @@ statically known (\cref{app:grammar}). This bounded form is realized on the
 single-worker path: two examples (\texttt{21-jacobi-converge} and
 \texttt{29-jacobi-cap-hit}) compile and run a convergence loop value-correctly ---
 one exiting early, one running the full cap so the worst-case bound is itself
-exercised. Static analysability is preserved because the soundness gate replays the
+exercised --- and both do so byte-identically across all seven tier-1 backends, since a
+host-only schedule delegates to the shared single-worker emitter on every backend. The
+construct is thus seven-backend, not single-backend. Static analysability is preserved
+because the soundness gate replays the
 full capped unroll and any early exit is a sub-trace of it; byte-identity is kept
 within reach because the halt predicate is an exact-integer, backend-agnostic
-function of the data, so any backend emitting the loop would stop at the same
-generation. On the current
-\emph{multi}-worker path the break is unsupported --- it requires a collective
-all-reduce of the convergence scalar so all workers exit together, which is future
-work (\cref{sec:fw-affine}) --- and a multi-worker cell using it is recorded as a
-skip rather than mis-compiled. A floating-point halt predicate is at risk under the
+function of the data, so every backend emitting the loop stops at the same
+generation. On the
+\emph{multi}-worker (distributed) path the break is still unsupported --- it requires a
+collective all-reduce of the convergence scalar so all workers exit together, which is
+future work (\cref{sec:fw-affine}) --- so the multi-worker break-condition path is
+fail-loud-rejected rather than mis-compiled. A floating-point halt predicate is at risk under the
 float-determinism limit below; unbounded data-dependent control flow, and the
 convergence-driven solvers that need it, remain out of scope.
 

@@ -40,18 +40,20 @@ not silent gaps: the matrix records a reason for every one, and they fall into a
 well-defined categories. The largest group, thirty-five cells, are embedded-tier fixtures
 that are validated by the simulator gate of \cref{sec:res-tiers} rather than by the
 tier-1 runtime rig, since the embedded backend emits \texttt{no\_std} code that the
-hosted run-and-diff harness cannot execute. The remaining thirty-eight divide cleanly: twenty-four are genuine capability
+hosted run-and-diff harness cannot execute. The remaining twenty-six divide cleanly: twenty-four are genuine capability
 mismatches --- an asynchronous, buffered schedule asked of a synchronous,
 single-buffer backend, which is rejected at compile time as the capability matrix
 prescribes (\cref{sec:be-matrix}), with the schedule's differential requirement met
 instead by a backend that does offer asynchrony (the four newest, the synchronous
 tier-1 backends correctly refusing the double-buffered DMA-ring schedule of
-\cref{sec:be-tier3}) --- and fourteen are language shapes
-honestly unsupported on the multi-worker path: twelve from two \texttt{for..until}
-break-loop examples (a converged and a cap-hit variant, each skipped on the six
-non-\texttt{pthreads-sync} tier-1 backends) and two from an in-loop
+\cref{sec:be-tier3}) --- and two are a language shape
+honestly unsupported on the multi-worker path: an in-loop
 worker-to-worker push, documented as such
-(\cref{sec:res-limits}). \Cref{fig:coverage-heatmap} renders the matrix as an
+(\cref{sec:res-limits}). The two \texttt{for..until} break-loop examples
+(a converged and a cap-hit variant) no longer contribute skips: their single-worker
+schedule was lifted from one backend to all seven, so their twelve formerly-skipped
+sibling cells now pass and agree byte-for-byte, leaving only the genuinely distributed
+break as future work. \Cref{fig:coverage-heatmap} renders the matrix as an
 example-by-backend heatmap.
 
 \input{figures/coverage-heatmap}
@@ -202,11 +204,13 @@ the exercised cells, not proved for all programs the grammar admits; the
 specification is exactly as complete as the example corpus, and a shape absent from
 the corpus is outside the guarantee. Several such shapes are known and recorded
 rather than hidden: a small number of cells are skipped because a language
-construct is supported on the single-worker path but not yet on the multi-worker or
-cross-backend path --- a data-dependent loop break, of the kind the language's
-termination restriction already circumscribes (\cref{sec:lang-limits}), and a
-worker-to-worker transfer nested inside a loop body --- and these are reported as
-skips with a stated reason, not papered over. The cluster result is
+construct is supported on the single-worker path but not yet on the multi-worker
+(distributed) path. The surviving such case is a worker-to-worker transfer nested
+inside a loop body, reported as a skip with a stated reason, not papered over. A
+data-dependent loop break, of the kind the language's termination restriction already
+circumscribes (\cref{sec:lang-limits}), used to sit in this category too, but its
+single-worker form now runs byte-identically across all seven tier-1 backends; only its
+distributed (collective-decision) form remains future work. The cluster result is
 value-correctness on a local launcher, not a cluster-scale measurement, and the MPI
 backends emit point-to-point rather than collective communication. The embedded
 result covers two reference microcontroller shims (an STM32H7 and an nRF52840, across

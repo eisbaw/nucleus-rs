@@ -184,13 +184,14 @@ primary one.
       scan directly. \\
     \texttt{21-jacobi-converge} & A Jacobi sweep with convergence-driven termination &
       The deliberate boundary marker: a bounded \texttt{for..until} early exit that
-      converges before the cap, compiles and runs value-correctly only on the
-      single-worker path, and is recorded as a skip elsewhere. \\
+      converges before the cap, compiling and running value-correctly and byte-identically
+      across all seven tier-1 backends on the single-worker path; the distributed
+      (multi-worker) form is future work. \\
     \texttt{29-jacobi-cap-hit} & The same Jacobi sweep with the cap set below the
       convergence generation & The companion boundary case: the \texttt{until} predicate
       never fires inside the cap, so the loop runs the full worst case and extracts the
       last computed generation --- the cap-bounded replay the soundness gate analyses,
-      exercised end-to-end (single-worker; a skip elsewhere). \\
+      exercised end-to-end seven-way on the single-worker path; distributed is future work. \\
     \bottomrule
   \end{tabular}
   \caption{Embedded examples and the boundary cases that mark the edges of the

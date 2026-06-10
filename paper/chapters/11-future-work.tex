@@ -125,12 +125,19 @@ path rather than an assertion. This holds because the gate replays the full capp
 unroll and any early exit is a sub-trace of it (soundness preserved by the cap), and
 because the exact-integer halt predicate is a deterministic, backend-agnostic
 function of the data, so every backend stops at the same generation (the differential
-test preserved). Two residuals remain. First, the break is single-worker only: on the
-multi-worker path the convergence scalar is a cross-worker reduction, so the early
+test preserved). On this single-worker path the construct is no longer one-backend: both
+examples now run byte-identically across all seven tier-1 backends, because a host-only
+schedule delegates to the shared single-worker emitter on every backend
+(\cref{sec:res-quant}). Two residuals remain. First, the break is single-worker only: on the
+multi-worker (distributed, \texttt{partition=workers}) path the convergence scalar is a
+cross-worker reduction, so the early
 exit must become a collective all-reduce-and-broadcast at a barrier --- every worker
 branching on the identical global value and exiting at the same generation by
 construction --- which keeps the firing order static but is a genuinely new collective
-pattern not yet built; multi-worker convergence cells are recorded as skips meanwhile.
+pattern not yet built. This distributed form is named future work rather than recorded as
+a skipped cell: it cannot become an executable cell until the distributed Jacobi base it
+builds on lands, so the multi-worker break-condition path stays fail-loud-rejected in the
+meantime rather than silently passed.
 Second, byte-identity is at risk under a \emph{floating-point} convergence predicate,
 whose comparison value depends on accumulation order, tying this direction back to the
 float-determinism limit above. Even so, the realized form already admits a useful

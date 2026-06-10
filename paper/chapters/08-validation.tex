@@ -123,8 +123,13 @@ backend builds; a representative seeded run synthesises over a hundred programs 
 all five families with no counterexample. The subclass it samples is still narrower
 than the full grammar --- it generates no floating-point, recursive, or unbounded
 data-dependent shapes --- and one family carries a documented honesty: the
-\texttt{for..until} loop is checked on the single \texttt{pthreads-sync} backend only,
-mirroring the curated matrix's own multi-worker skip for that construct, not seven-way.
+generator checks the \texttt{for..until} family on the single \texttt{pthreads-sync}
+backend only, not seven-way. This is now a property of the \emph{generator}, not of
+the construct: the curated matrix exercises the same single-worker \texttt{for..until}
+machinery byte-identically across all seven tier-1 backends (\cref{sec:res-quant}), so
+the construct itself is no longer single-backend. The generator's narrower scope is a
+not-yet-lifted harness limitation --- its per-family backend set still pins this family
+to \texttt{pthreads-sync} --- rather than a gap in the backends.
 The arm therefore sharpens the corpus-coverage limitation of \cref{sec:val-suite}
 rather than removing it; the honest accounting of what it does and does not buy is
 deferred to \cref{sec:disc-threats}.

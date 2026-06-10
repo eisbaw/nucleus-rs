@@ -92,9 +92,15 @@
 % Updated TASK-0455.17 (production-push wave 5-6): +7 for the
 % 09-producer-consumer/embedded_dma_buffered schedule (3 async tier-1
 % cells [[required]] + 4 sync-backend capability-mismatch [[skip]]).
+% Updated TASK-0341.02.01.08 (epic S7, single-worker for..until 7-backend
+% cross-backend differential): +12 pass / -12 skip. The 12 sibling-backend
+% [[skip]] cells on 21-jacobi-converge/naive + 29-jacobi-cap-hit/naive
+% (6 each) flipped to [[required]] -- a naive (host-only) schedule delegates
+% to the shared single-worker emit on every backend, so the break runs
+% byte-identically seven-way. Total unchanged; pass 431->443, skip 73->61.
 \newcommand{\nmatrixtotal}{504}
-\newcommand{\nmatrixpass}{431}
-\newcommand{\nmatrixskip}{73}
+\newcommand{\nmatrixpass}{443}
+\newcommand{\nmatrixskip}{61}
 
 % Quantitative-characteristics headline figures, measured from the live
 % toolchain (single source of truth; methodology in sec:res-quant). All
