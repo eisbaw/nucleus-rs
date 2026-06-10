@@ -151,9 +151,12 @@ and a \texttt{transfer-decl} refer to a loop variable or data symbol by the name
 algorithm gave it. The three partition kinds cut a distributed loop differently:
 \texttt{rows} into contiguous bands of the outer index, \texttt{blocks2d} into a
 two-dimensional grid, and \texttt{workers} into one contiguous band per worker over
-the loop range. The \texttt{unroll} option is accepted by the parser but is
-currently inert --- no transform pass consumes it --- and is retained in the grammar
-for completeness rather than as an exercised capability. A data symbol that crosses workers must carry a
+the loop range. The \texttt{unroll} option is parsed and validated (its
+divisibility against \texttt{block} is checked) but no transform pass yet consumes
+it, so the compiler \emph{rejects} a schedule that uses it, with a diagnostic naming
+the option as accepted-but-unimplemented --- a loud refusal rather than a silent
+no-op, consistent with the no-silent-downgrade rule below. The production is
+retained in the grammar for the planned consumer. A data symbol that crosses workers must carry a
 \texttt{transfer-decl}; omitting it is an error naming the symbol. Each transfer
 option is resolved against the chosen backend's capability declaration, so an
 \texttt{async} or buffered request on a backend that supports neither is rejected
