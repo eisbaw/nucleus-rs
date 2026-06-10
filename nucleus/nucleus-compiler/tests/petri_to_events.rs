@@ -7,8 +7,8 @@
 //!   variant per test (single Operation, Push/Wait pair, Sync, Repeat
 //!   unrolling).
 //! - **End-to-end**: build the ACFG for example 02-split-add under
-//!   `split.sched.nuc`, run sync+transfer injection, lower to Petri
-//!   net, then project to per-worker `EventList`s. Assert: one
+//!   `split.sched.nuc`, run sync+transfer injection, then project to
+//!   per-worker `EventList`s via `acfg_to_events`. Assert: one
 //!   EventList per declared worker; bit-identical between two runs.
 //!
 //! What this file does NOT cover:
@@ -18,14 +18,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_compiler::acfg::{
-    build_acfg, ACFGNode, DataflowDag, DataflowEdge, NotifyMode, Operation, SyncPlaceholder,
-    TransferPolicy, XferPlaceholder, XferRole, ACFG,
+    build_acfg, ACFGNode, DataflowDag, DataflowEdge, Operation, SyncPlaceholder, TransferPolicy,
+    XferPlaceholder, XferRole, ACFG,
 };
 use nucleus_compiler::algo::{lower_algo, parse_algo};
 use nucleus_compiler::event::{DataId, Event, IterTile, KernelId, SeqTag, SyncKind, WorkerId};
 use nucleus_compiler::link;
-use nucleus_compiler::passes::acfg_to_petri::acfg_to_net;
-use nucleus_compiler::passes::petri_to_events::{acfg_to_events, petri_to_events};
+use nucleus_compiler::passes::petri_to_events::acfg_to_events;
 use nucleus_compiler::passes::sync_inject::inject_syncs;
 use nucleus_compiler::passes::transfer_inject::inject_transfers;
 use nucleus_compiler::sched::{lower_sched, parse_sched};
@@ -488,55 +487,6 @@ fn repeat_worker_with_empty_body_gets_no_loop() {
         events.get(&WorkerId(1)).unwrap().len(),
         0,
         "w1 contributes nothing -> no empty Loop"
-    );
-}
-
-// --------------------------------------------------------------------
-// `petri_to_events` wrapper agrees with `acfg_to_events`
-// --------------------------------------------------------------------
-
-#[test]
-fn petri_wrapper_agrees_with_acfg_entry_point() {
-    let tile = IterTile::empty();
-    let policy = TransferPolicy {
-        synchronous: false,
-        buffer: 4,
-        notify: NotifyMode::Event,
-        // TASK-0438.01: transport is incidental here; default Pio.
-        ..TransferPolicy::default()
-    };
-    let push = ACFGNode::Xfer(XferPlaceholder {
-        role: XferRole::Push,
-        src: WorkerId(0),
-        dst: WorkerId(1),
-        data: DataId(0),
-        tile: tile.clone(),
-        seq: SeqTag(7),
-        policy,
-    });
-    let wait = ACFGNode::Xfer(XferPlaceholder {
-        role: XferRole::Wait,
-        src: WorkerId(0),
-        dst: WorkerId(1),
-        data: DataId(0),
-        tile,
-        seq: SeqTag(7),
-        policy,
-    });
-    let root = ACFGNode::Sequence(vec![
-        op_node(&[0], 100, vec![], Some(0)),
-        push,
-        wait,
-        op_node(&[1], 101, vec![0], None),
-    ]);
-    let acfg = synthetic_acfg(root, &[("d", 0)], &[("w0", 0), ("w1", 1)]);
-
-    let net = acfg_to_net(&acfg);
-    let via_acfg = acfg_to_events(&acfg);
-    let via_petri = petri_to_events(&acfg, &net);
-    assert_eq!(
-        via_acfg, via_petri,
-        "petri_to_events wrapper must agree with acfg_to_events"
     );
 }
 
@@ -1118,10 +1068,7 @@ fn pipeline_to_events(
     let acfg = inject_syncs(acfg).expect("inject_syncs");
     let acfg = inject_transfers(&linked, acfg).expect("inject_transfers");
     let name_workers = acfg.name_workers.clone();
-    // Route through `petri_to_events` so the wrapper is exercised on
-    // a real input too.
-    let net = acfg_to_net(&acfg);
-    (petri_to_events(&acfg, &net), name_workers)
+    (acfg_to_events(&acfg), name_workers)
 }
 
 #[test]

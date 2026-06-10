@@ -29,7 +29,9 @@
 //!    variable. `build_acfg` folds `for y : 1 .. H-1` to a concrete
 //!    `Range<i64>` (`1..15`) — it calls `eval_const(lo)/eval_const(hi)`
 //!    and stores the `i64`s into [`crate::acfg::ACFGNode::Repeat`]
-//!    (and *panics* on a non-const bound). `Event::Loop` mirrors that
+//!    (a non-const or overflowing bound is a typed
+//!    `BuildAcfgError::NonConstLoopBound` / `OverflowingLoopBound`,
+//!    not a panic — TASK-0398). `Event::Loop` mirrors that
 //!    concrete `Range<i64>`, so the source form `H - 1` is destroyed
 //!    before either the ACFG or the EventList. The AlgoIR-walking
 //!    pthreads-sync backend emits `for y in (1_i64)..((16_i64 -

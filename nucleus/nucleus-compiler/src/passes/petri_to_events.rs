@@ -14,12 +14,15 @@
 //! each declared worker, the totally-ordered sequence of
 //! [`crate::event::Event`]s that worker executes.
 //!
-//! ## Why we take the ACFG (and not just the `Net`) as input
+//! ## Why we project from the ACFG (and not from the `Net`)
 //!
-//! The task brief sketched the signature as `(net: &Net) ->
-//! BTreeMap<WorkerId, Vec<Event>>`. In practice the [`crate::petri::Net`]
-//! produced by `acfg_to_net` does not retain enough source-level
-//! metadata to rematerialise the event payloads:
+//! The single entry point is [`acfg_to_events`]: it takes the ACFG
+//! directly and never touches the [`crate::petri::Net`]. The `Net`
+//! produced by `acfg_to_net` is a separate ANALYSIS artifact
+//! (boundedness / deadlock / determinism), not an input to this
+//! projection. It does not retain enough source-level metadata to
+//! rematerialise the event payloads even if we wanted to drive
+//! projection from it:
 //!
 //! - For an `Operation` lowering the transition `name` carries the
 //!   kernel id as a string (`op_k{kid}`) but not the iteration tile,
@@ -32,25 +35,14 @@
 //!   from arcs, but parsing arc structure to recover participants is
 //!   strictly less direct than reading the ACFG node.
 //!
-//! Either of these is solvable: enrich the `Transition` payload, or
-//! sidecar a "what produced this transition" map next to the `Net`.
-//! Both are bigger changes than this M2 task warrants. The ACFG is
-//! the source of truth that `acfg_to_net` projects from, and the
-//! linearisation produced by walking the ACFG in source order is
-//! *exactly* the per-worker control-place chain that
+//! The ACFG is the source of truth that `acfg_to_net` itself projects
+//! from, and the linearisation produced by walking the ACFG in source
+//! order is *exactly* the per-worker control-place chain that
 //! `acfg_to_net` builds (see its module docs). So walking the ACFG
 //! tree directly produces the same per-worker firing order as
 //! "project transitions of the Net by `worker` in their insertion
-//! order would have".
-//!
-//! Pragmatically, the entry point is
-//! [`acfg_to_events`] (the meat). A thin wrapper
-//! [`petri_to_events`] takes a `(&ACFG, &Net)` pair to honour the
-//! task's stated signature — the `&Net` is currently unused, but
-//! threading it now means downstream consumers don't have to change
-//! their call sites when later milestones make the `Net` load-bearing
-//! (e.g. boundedness / liveness facts feeding back into event
-//! synthesis). Filed as a follow-up in the task self-report.
+//! order" would have — and it does so without the lossy round-trip
+//! through the `Net`.
 //!
 //! ## Linearisation
 //!
@@ -201,7 +193,6 @@ use std::ops::Range;
 
 use crate::acfg::{ACFGNode, Operation, SyncPlaceholder, XferPlaceholder, XferRole, ACFG};
 use crate::event::{Event, FireBinding, IterTile, IterVar, SyncKind, WorkerId};
-use crate::petri::Net;
 
 // --------------------------------------------------------------------
 // Public entry points
@@ -273,16 +264,6 @@ pub fn acfg_to_events(acfg: &ACFG) -> BTreeMap<WorkerId, Vec<Event>> {
     );
 
     out
-}
-
-/// Project the Petri net (alongside the source ACFG) into per-worker
-/// event lists. The `_net` argument is presently unused — see the
-/// module docs for why we accept it. Callers that already have a
-/// `Net` lying around can route through this entry point so that
-/// later milestones (where the `Net` becomes load-bearing) don't
-/// require a call-site change.
-pub fn petri_to_events(acfg: &ACFG, _net: &Net) -> BTreeMap<WorkerId, Vec<Event>> {
-    acfg_to_events(acfg)
 }
 
 // --------------------------------------------------------------------

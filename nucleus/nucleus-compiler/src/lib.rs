@@ -99,7 +99,7 @@ pub use passes::inject_check_frames::inject_check_frames;
 pub use passes::partition_blocks2d::{apply_partition_blocks2d, PartitionBlocks2dError};
 pub use passes::partition_rows::{apply_partition_rows, PartitionRowsError};
 pub use passes::partition_workers::{apply_partition_workers, PartitionError};
-pub use passes::petri_to_events::{acfg_to_events, petri_to_events};
+pub use passes::petri_to_events::acfg_to_events;
 pub use passes::reuse_inference::{
     apply_reuse_inference, apply_reuse_inference_advisory, ReuseInferenceError, ReuseSlot,
 };

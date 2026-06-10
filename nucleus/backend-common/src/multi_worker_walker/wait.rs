@@ -283,12 +283,13 @@ pub fn render_wait_assign(
 ///   These are compiler-pass invariant violations worth failing
 ///   loud rather than silently emitting an out-of-bounds slice.
 ///
-/// Module-private — all three `render_worker_events`-using
-/// backends (pthreads-sync, pthreads-async, mp-tcp-event) consume
-/// this only indirectly via `render_wait_assign`. mp-tcp-bufsync
-/// calls `render_wait_assign` directly without going through
-/// `render_worker_events`, so it consumes this helper through the
-/// same surface.
+/// Module-private — the seven `render_worker_events`-using backends
+/// (pthreads-sync, pthreads-async, openmp-rs directly; mp-tcp-event,
+/// mp-uds-event via `event_plan`; mpi-blocking, mpi-nonblocking via
+/// `mpi_plan`) consume this only indirectly via `render_wait_assign`.
+/// mp-tcp-bufsync calls `render_wait_assign` directly without going
+/// through `render_worker_events`, so it consumes this helper through
+/// the same surface.
 ///
 /// # AXIS-MAPPING ASSUMPTION (discharged TASK-0302; consult upstream guarantee)
 ///

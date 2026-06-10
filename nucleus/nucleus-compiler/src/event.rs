@@ -158,8 +158,10 @@ pub struct IterVar(pub u64);
 ///
 /// **Implementation invariant (load-bearing for TASK-0233)**: assigned
 /// from a SINGLE GLOBAL MONOTONIC COUNTER by
-/// `passes::transfer_inject` (see `transfer_inject.rs:279-290`), NOT
-/// per-(src, dst, data) triple. So every SeqTag in a single program is
+/// `passes::transfer_inject` (the `next_seq` field on its `State`,
+/// handed out by `State::fresh_seq` in
+/// `passes/transfer_inject/mod.rs`), NOT per-(src, dst, data) triple.
+/// So every SeqTag in a single program is
 /// unique globally — different transfers (different DataIds) never
 /// share a SeqTag. This stronger guarantee lets
 /// `NameSidecar::transfer_buffer_for_seq` use `SeqTag` alone as the
@@ -780,7 +782,9 @@ pub enum Event {
     /// `range` is a concrete [`Range<i64>`]. The symbolic loop-bound
     /// expression (e.g. `H - 1` un-evaluated) does NOT survive to here:
     /// `build_acfg` folds every loop bound to an `i64` constant when it
-    /// constructs `ACFGNode::Repeat` (it panics on a non-const bound),
+    /// constructs `ACFGNode::Repeat` (a non-const or overflowing bound
+    /// is a typed `BuildAcfgError::NonConstLoopBound` /
+    /// `OverflowingLoopBound`, not a panic — TASK-0179 / TASK-0398),
     /// so the un-evaluated expression no longer exists at the ACFG
     /// layer this projection reads. Carrying the symbolic form requires
     /// the lowering pass to stop folding — that is TASK-0160's

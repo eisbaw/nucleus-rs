@@ -2,9 +2,18 @@
 //!
 //! Nucleus v2 uses a deterministic, bounded, place/transition Petri net
 //! as the central scheduling IR (PRD §8.1). The scheduler is a pure
-//! function `(AlgoIR, SchedIR) -> (GlobalNet, {WorkerId -> EventList})`:
-//! the per-worker `EventList`s (TASK-0015, `crate::event`) are
-//! projections of the `GlobalNet` defined here.
+//! function `(AlgoIR, SchedIR) -> (GlobalNet, {WorkerId -> EventList})`.
+//!
+//! Both outputs are projections of the same ACFG. The `GlobalNet`
+//! defined here is the ANALYSIS artifact (boundedness / deadlock /
+//! determinism); it is built from the ACFG by
+//! [`crate::passes::acfg_to_petri::acfg_to_net`]. The per-worker
+//! `EventList`s (TASK-0015, `crate::event`) are the CODEGEN artifact
+//! and are projected from the ACFG directly by
+//! [`crate::passes::petri_to_events::acfg_to_events`] — that pass does
+//! NOT read the net. The two walks are decoupled by design (the net
+//! unrolls `Repeat`; the EventList is structure-preserving), so the
+//! net here is not an input to EventList projection.
 //!
 //! The full power of Petri nets is *deliberately* not exposed. PRD
 //! §8.4 fences v2 to a small subclass:
@@ -34,10 +43,13 @@
 //!
 //! The set of operations we need is tiny — push back, look up by id,
 //! iterate. A graph library buys us less than the dependency it adds.
-//! The PRD §13 budget of ~500 lines for the whole net library
-//! presupposes a hand-rolled `Vec` + `BTreeMap` shape. If that ever
-//! changes (e.g. we want incremental subgraph reachability over a
-//! petgraph CSR), we revisit.
+//! The PRD §13 budget of ~500 lines for the net library presupposes a
+//! hand-rolled `Vec` + `BTreeMap` shape (this file has since grown
+//! past that figure — ~800 lines — as the fire/analysis surface and
+//! its doctests accreted; the shape, not the line count, is the part
+//! the budget was protecting). If that shape ever changes (e.g. we
+//! want incremental subgraph reachability over a petgraph CSR), we
+//! revisit.
 //!
 //! ## Layout
 //!

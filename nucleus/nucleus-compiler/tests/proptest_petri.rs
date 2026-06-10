@@ -1751,14 +1751,14 @@ fn widened_acfg_net_stays_small() {
 }
 
 // --------------------------------------------------------------------
-// petri_to_events / acfg_to_events properties (p.1 / p.2 / p.3)
+// acfg_to_events properties (p.1 / p.2 / p.3)
 //
-// These properties test `acfg_to_events` directly — the canonical
-// entry point in the module. The `petri_to_events(acfg, _net)`
-// signature exposed alongside ignores its `_net` argument and delegates
-// to `acfg_to_events`. See the module's own docs (intro section "Why
-// we take the ACFG (and not just the Net) as input") for the design
-// rationale.
+// These properties test `acfg_to_events` directly — the SOLE entry
+// point in the `petri_to_events` module. It takes the ACFG alone and
+// never reads the `Net` (the old two-arg `petri_to_events(acfg, _net)`
+// wrapper that ignored its `_net` argument no longer exists). See the
+// module's own docs (intro section "Why we project from the ACFG (and
+// not from the `Net`)") for the design rationale.
 // --------------------------------------------------------------------
 
 proptest! {

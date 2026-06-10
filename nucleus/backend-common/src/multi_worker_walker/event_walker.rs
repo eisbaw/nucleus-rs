@@ -1,8 +1,12 @@
 //! The shared per-worker event walker (TASK-0239 / TASK-0181 /
 //! TASK-0270). `render_worker_events` walks one worker's projected
-//! EventList and emits Rust statements; consumed by pthreads-sync,
-//! pthreads-async, and mp-tcp-event (mp-tcp-bufsync bypasses this
-//! walker entirely — see the parent [`super`] module doc).
+//! EventList and emits Rust statements; consumed by SEVEN backends —
+//! pthreads-sync, pthreads-async and openmp-rs call it directly;
+//! mp-tcp-event and mp-uds-event reach it via the
+//! [`crate::event_plan`] substrate; mpi-blocking and mpi-nonblocking
+//! reach it via the [`crate::mpi_plan`] substrate. mp-tcp-bufsync is
+//! the one tier-1 backend that bypasses this walker entirely (see the
+//! parent [`super`] module doc).
 
 use std::fmt::Write as _;
 
@@ -22,13 +26,16 @@ use super::wait::render_wait_assign;
 
 /// Walk one worker's EventList, emitting Rust statements into `out`.
 ///
-/// This is the SHARED walker — pthreads-sync's `Plan`, pthreads-
-/// async's `Plan`, and mp-tcp-event's `Plan` all call through it
-/// (`rendezvous_prefix` = `"slot"` / `"ring"` / `"chan"` respectively;
-/// mp-tcp-bufsync is the fourth tier-1 backend but bypasses this
-/// walker and calls `render_wait_assign` directly). The substitution
-/// surface is exactly `ctx.rendezvous_prefix` (the variable-name
-/// prefix on `{prefix}_<id>.push(...)` / `{prefix}_<id>.wait()`).
+/// This is the SHARED walker — SEVEN backends call through it.
+/// pthreads-sync, pthreads-async and openmp-rs each own a `Plan` that
+/// calls it directly; mp-tcp-event and mp-uds-event drive it through
+/// [`crate::event_plan`]; mpi-blocking and mpi-nonblocking drive it
+/// through [`crate::mpi_plan`]. mp-tcp-bufsync is the one tier-1
+/// backend that bypasses this walker and calls `render_wait_assign`
+/// directly. The substitution surface is exactly
+/// `ctx.rendezvous_prefix` (the variable-name prefix on
+/// `{prefix}_<id>.push(...)` / `{prefix}_<id>.wait()` —
+/// `"slot"` / `"ring"` / `"chan"` / `"mpi"` etc. per backend).
 ///
 /// # Strip-mine rebinding (TASK-0181)
 ///
@@ -72,8 +79,9 @@ pub fn render_worker_events(
     // has an in-loop Wait whose value is consumed at an enclosing scope
     // (the declare-and-assign `let <name>` would be out of scope at the
     // consumer — rustc E0425). No-op when `let_at_wait_data` is empty.
-    // All FIVE populated-set backends (pthreads-sync, pthreads-async,
-    // mp-tcp-event, mp-uds-event, openmp-rs) route through here;
+    // All SEVEN populated-set backends (pthreads-sync, pthreads-async,
+    // openmp-rs directly; mp-tcp-event, mp-uds-event via `event_plan`;
+    // mpi-blocking, mpi-nonblocking via `mpi_plan`) route through here;
     // mp-tcp-bufsync bypasses the walker and always passes the empty
     // set, so it is unaffected. See `collect::check_let_at_wait_scope_safety`.
     check_let_at_wait_scope_safety(events, ctx.let_at_wait_data, ctx.names)?;
