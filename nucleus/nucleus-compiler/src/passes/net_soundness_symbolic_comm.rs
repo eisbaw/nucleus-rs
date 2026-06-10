@@ -36,7 +36,7 @@
 //! Each `SeqTag` has **exactly one `Push` node and one `Wait` node in the
 //! rolled ACFG** (the transfer-injection pass emits matched pairs; this
 //! is an empirically-confirmed structural fact over the whole corpus, and
-//! a violation is conservatively classified [`NeedsExpansion`] below, not
+//! a violation is conservatively classified [`SymbolicSoundness::NeedsExpansion`](super::net_soundness_symbolic::SymbolicSoundness::NeedsExpansion) below, not
 //! assumed). How many *transitions* that buffer place ends up with in the
 //! EXPANDED net depends solely on how many enclosing `Repeat` loops the
 //! Push/Wait nodes sit inside, because
@@ -52,7 +52,7 @@
 //!   its peak occupancy stays within `C` then depends on the
 //!   per-iteration drain interleaving under the greedy firing order — a
 //!   genuine steady-state argument this first landing does NOT attempt.
-//!   Classified [`NeedsExpansion`] (loud fallback), NOT optimistically
+//!   Classified [`SymbolicSoundness::NeedsExpansion`](super::net_soundness_symbolic::SymbolicSoundness::NeedsExpansion) (loud fallback), NOT optimistically
 //!   accepted.
 //!
 //! ### The single-shot soundness theorem
@@ -127,7 +127,7 @@
 //!   sound, but the steady-state pre-mark argument is the most delicate
 //!   and is deferred.
 //!
-//! Both are classified [`NeedsExpansion`] today; they are the natural
+//! Both are classified [`SymbolicSoundness::NeedsExpansion`](super::net_soundness_symbolic::SymbolicSoundness::NeedsExpansion) today; they are the natural
 //! next subclasses to add WITH PROOF (each with its own A/B pin).
 
 use std::collections::BTreeMap;

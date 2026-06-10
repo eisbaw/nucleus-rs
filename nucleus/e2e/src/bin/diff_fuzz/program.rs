@@ -22,20 +22,21 @@
 //!     (owned by TASK-0453.01.01). 7-backend.
 //!   * [`Family::ForUntil1d`]  — bounded `for..until` single-worker shape
 //!     (cap + EXACT integer halt predicate). pthreads-sync ONLY — see
-//!     [`Family::backends`].
+//!     [`Program::backends`].
 //!
 //! # Honest residual on backend coverage
 //!
 //! Four of the five families compile + run byte-identically across all
-//! SEVEN tier-1 backends. The `for..until` family does NOT: the curated
-//! e2e matrix itself `[[skip]]`s `21-jacobi-converge` on all six non-
-//! pthreads-sync backends with the reason "for..until break emit is
-//! tier-1 single-worker pthreads-sync only" (epic S7, TASK-0341.02.01.08
-//! is the multi-worker / cross-backend break differential). So the
-//! for..until family is checked for self-consistency + reference
-//! agreement on the backend SUBSET that supports it, not for 7-way
-//! identity. Pretending otherwise would be dishonest; the per-family
-//! backend set ([`Family::backends`]) encodes the truth.
+//! SEVEN tier-1 backends. The `for..until` family does NOT — by the
+//! GENERATOR's own deliberate narrowness, not a construct gap: since S7
+//! (TASK-0341.02.01.08) the curated matrix runs single-worker
+//! `for..until` required on all seven backends, but this generative
+//! family stays pinned to pthreads-sync until the generator composes
+//! the same shapes the curated cells pin (see the UNTIL_BACKENDS
+//! docstring below). So the for..until family is checked for
+//! self-consistency + reference agreement on its pinned backend, not
+//! for 7-way identity; the per-family backend set
+//! ([`Program::backends`]) encodes the truth.
 
 use crate::rng::Rng;
 
