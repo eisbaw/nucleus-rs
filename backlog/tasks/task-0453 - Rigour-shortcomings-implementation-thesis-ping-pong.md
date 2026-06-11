@@ -1,10 +1,10 @@
 ---
 id: TASK-0453
 title: 'Rigour + shortcomings: implementation/thesis ping-pong'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-06 22:51'
-updated_date: '2026-06-07 09:50'
+updated_date: '2026-06-11 04:31'
 labels:
   - rigour
   - thesis
@@ -21,9 +21,9 @@ EPIC. Drive more rigour by turning the thesis's honestly-documented shortcomings
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each ADDRESSABLE shortcoming has a dependency-linked IMPLEMENT->THESIS-UPDATE pair filed
-- [ ] #2 FUNDAMENTAL limitations registered as honest-not-planned
-- [ ] #3 Ping-pong cycles land both sides (code + thesis) per cycle with gates green
+- [x] #1 Each ADDRESSABLE shortcoming has a dependency-linked IMPLEMENT->THESIS-UPDATE pair filed
+- [x] #2 FUNDAMENTAL limitations registered as honest-not-planned
+- [x] #3 Ping-pong cycles land both sides (code + thesis) per cycle with gates green
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -37,3 +37,9 @@ CYCLE-10 (P10 .10/.20) landed GO — THE LAST RANKED SHORTCOMING. STEP-0 finding
 
 EPIC STATUS: all 10 addressable shortcomings (P1..P10) now processed across cycles 1-10. IMPLEMENTED real new rigour: P1 (generative diff-fuzz harness), P2 (transfer-honesty thesis; wire-level precise = open TASK-0453.22), P3 (reproducible fsum reduction), P4 (symbolic looped-net gate), P5 (cap-hit worst-case e2e, single-worker), P8 (mechanical reference-independence CI fence), P9 (tier-2 MPI matrix 3->8 blocking cells), P10 (second MCU family nRF52840 byte-exact). HONEST-STOP (no fabrication): P6 (runtime perf study — coupled to unsolved communicating-gate residual + loopback!=cluster), P7 (precise gather/scatter — whole-array IS the trivial sound envelope, tightening is the open problem). Every thesis side revised to match verified code, residuals kept honest. DEFERRED/OPEN: S7 multi-worker break (TASK-0341.02.01.08), TASK-0453.22 (wire-level precise transfer all 7 backends), TASK-0453.10.01 (nRF check-loop runtime), TASK-0453.21 (fundamental-limitations register — honest-not-planned), TASK-0454 (if any). e2e tier-1 baseline 497/428/0/69/0; MPI tier 12/12; embedded TWO families byte-exact.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+EPIC CLOSED (reconciliation 2026-06-11; the content completed at cycle 10 on 2026-06-08 but the status line never flipped — the discrepancy was found at session start and is resolved now that every open child landed). AC#1: all 10 addressable shortcomings had IMPL/THESIS pairs (22 children). AC#2: fundamental register = TASK-0453.21 Done (honest-not-planned). AC#3: ten ping-pong cycles landed both sides with gates green. Post-epic completions during the production push: TASK-0453.22 (wire-precise transfer, wave 5, -50..72 percent measured), TASK-0453.01.01 (diff-fuzz timeout + partition family, wave 7). Every per-cycle detail in the implementation notes above and the topic memory.
+<!-- SECTION:FINAL_SUMMARY:END -->

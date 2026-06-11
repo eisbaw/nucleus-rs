@@ -3,11 +3,11 @@ id: TASK-0426
 title: >-
   mp-tcp-bufsync check_frame_emit scratch_dir parallel-test filesystem race
   (flaky NotFound on kernels_stub write)
-status: In Progress
+status: Done
 assignee:
   - '@me'
 created_date: '2026-06-02 03:04'
-updated_date: '2026-06-02 16:43'
+updated_date: '2026-06-11 04:30'
 labels:
   - compiler
   - test-flake
@@ -24,7 +24,7 @@ Flaky test failure surfaced during TASK-0421 gate. Under parallel cargo test (fu
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 check_frame_emit tests use per-test-unique scratch dirs (no shared-parent remove/create race)
-- [ ] #2 full just test is green across 10 consecutive runs (flake gone)
+- [x] #2 full just test is green across 10 consecutive runs (flake gone)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -44,3 +44,9 @@ AC STATUS: AC#1 (per-test-unique scratch dirs, no shared-parent remove/create) �
 
 FOLLOW-UP: TASK-0426.01 (repo-wide sweep — the identical profile-independent pid-less scratch_dir pattern exists in 20+ other test files across all backends + e2e_example tests; defense-in-depth, none observed flaky).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+AC#1 landed cycle-242/243 (per-test-unique scratch dirs; re-audited intact in wave 2). AC#2 discharged by the final batch gate: ten consecutive full just test runs GREEN (2026-06-11, after the TASK-0461 bounded-accept + watchdog chain landed — the flake family this task opened is closed at root cause plus belt-and-braces watchdogs at every layer). Subtask .01 closed wave 2.
+<!-- SECTION:FINAL_SUMMARY:END -->
