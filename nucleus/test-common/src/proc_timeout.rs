@@ -108,35 +108,49 @@ pub fn run_timed(mut cmd: Command, budget: Duration) -> Result<Timed, String> {
     let pid = child.id() as i32;
     let start = Instant::now();
 
+    // Drain BOTH pipes CONCURRENTLY from spawn time. A poll-without-drain
+    // loop deadlocks any child that emits more than the ~64KB pipe buffer
+    // (it blocks writing, try_wait never completes, and the budget then
+    // kills a healthy build) — exactly what false-failed the chattiest
+    // generated-project builds on the first post-TASK-0466 full ci. The
+    // reader threads block on `read_to_end`; the MAIN thread stays free
+    // to poll the deadline. On timeout the GROUP kill closes every
+    // in-group writer's pipe end, so the joins below return promptly —
+    // the original kill-then-drain rationale, now thread-shaped.
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_h = std::thread::spawn(move || drain(out_pipe));
+    let err_h = std::thread::spawn(move || drain(err_pipe));
+
     // Poll cadence: short enough that the reported `elapsed` is tight,
     // long enough not to burn a core spinning. The build phase dominates
     // wall-clock by orders of magnitude, so 50ms granularity is free.
     let poll = Duration::from_millis(50);
     loop {
         match child.try_wait().map_err(|e| format!("try_wait: {e}"))? {
-            Some(_status) => {
-                // Completed within budget — collect the full output. Use
-                // `wait_with_output` so the captured pipes are drained.
-                let out = child
-                    .wait_with_output()
-                    .map_err(|e| format!("wait_with_output: {e}"))?;
-                return Ok(Timed::Completed(out));
+            Some(status) => {
+                // Completed within budget — join the reader threads for
+                // the full output (writers exited, so EOF is immediate).
+                let stdout = out_h.join().unwrap_or_default();
+                let stderr = err_h.join().unwrap_or_default();
+                return Ok(Timed::Completed(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                }));
             }
             None => {
                 if start.elapsed() >= budget {
                     let elapsed = start.elapsed();
-                    // Kill the WHOLE GROUP first, THEN drain. Draining
-                    // before the kill would deadlock: `read_to_end` blocks
-                    // until every writer of the pipe is closed, and a
-                    // forked grandchild (e.g. the `bash run.sh` workers)
-                    // still holds the write end open while it runs. Killing
-                    // the group closes all those write ends, so the drain
-                    // then reads buffered bytes and returns EOF promptly.
+                    // Kill the WHOLE GROUP first, THEN join the readers:
+                    // the group kill closes all in-group write ends, so
+                    // `read_to_end` sees EOF and the joins return with
+                    // whatever was buffered (the partial diagnostic).
                     kill_group(pid);
-                    let partial_stdout = drain(child.stdout.take());
-                    let partial_stderr = drain(child.stderr.take());
                     // Reap the leader so it does not linger as a zombie.
                     let _ = child.wait();
+                    let partial_stdout = out_h.join().unwrap_or_default();
+                    let partial_stderr = err_h.join().unwrap_or_default();
                     return Ok(Timed::Timeout {
                         elapsed,
                         budget,
@@ -314,5 +328,44 @@ mod tests {
         let out = run_or_timeout(c, Duration::from_secs(5), "ok-probe");
         assert!(out.status.success());
         assert_eq!(out.stdout, b"ok");
+    }
+}
+
+#[cfg(test)]
+mod full_pipe_regression {
+    use super::*;
+    use std::time::Duration;
+
+    /// Regression pin for the full-pipe stall (post-TASK-0466 ci failure):
+    /// a child emitting far more than the ~64KB pipe buffer must COMPLETE
+    /// under `run_timed` — the poll-without-drain shape blocked such
+    /// children on a full pipe until the budget falsely killed them.
+    #[test]
+    fn chatty_child_completes_instead_of_filling_the_pipe() {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
+            // ~280KB to stdout + ~140KB to stderr, then exit 0.
+            .arg("dd if=/dev/zero bs=1k count=210 2>/dev/null | base64; \
+                  dd if=/dev/zero bs=1k count=105 2>/dev/null | base64 >&2; \
+                  exit 0");
+        match run_timed(cmd, Duration::from_secs(30)).expect("spawn") {
+            Timed::Completed(out) => {
+                assert!(out.status.success(), "child must exit 0");
+                assert!(
+                    out.stdout.len() > 64 * 1024,
+                    "stdout must exceed the pipe buffer (got {} bytes)",
+                    out.stdout.len()
+                );
+                assert!(
+                    out.stderr.len() > 64 * 1024,
+                    "stderr must exceed the pipe buffer (got {} bytes)",
+                    out.stderr.len()
+                );
+            }
+            Timed::Timeout { elapsed, .. } => panic!(
+                "chatty child falsely timed out after {elapsed:?} — the \
+                 full-pipe stall is back"
+            ),
+        }
     }
 }
