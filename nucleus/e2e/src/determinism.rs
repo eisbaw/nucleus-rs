@@ -735,12 +735,13 @@ pub(crate) fn run_nucleus_build(
     out_dir: &std::path::Path,
 ) -> Result<(), String> {
     use test_common::proc_timeout::{run_timed, Timed};
-    // Same per-phase wall-clock budget as the curated cell-run path
-    // (`run::e2e_phase_budget`), driven through the SHARED group-kill
-    // machinery so a wedged determinism re-build fails loud instead of
-    // stalling `just e2e` (TASK-0466). A malformed env value is rejected
-    // by the shared resolver before any spawn.
-    let budget = crate::run::e2e_phase_budget()?;
+    // BUILD-phase budget (silent-sibling of run.rs's compile/build
+    // sites): this spawns a cargo build, which is slow-but-bounded under
+    // parallel contention, not deadlock-prone — the tighter run-phase
+    // budget falsely killed the heaviest cells on a loaded host (the
+    // first post-TASK-0466 full ci). Same shared group-kill machinery;
+    // malformed env rejected by the shared resolver before any spawn.
+    let budget = crate::run::e2e_build_phase_budget()?;
     let mut cmd = Command::new("cargo");
     cmd.arg("run")
         .arg("--quiet")

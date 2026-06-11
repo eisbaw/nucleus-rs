@@ -186,14 +186,27 @@ pub(crate) fn missing_fault_substring<'a>(stderr: &str, needles: &'a [String]) -
 /// distinct name so the two harnesses can be tuned independently.
 pub(crate) const E2E_TIMEOUT_ENV: &str = "NUC_E2E_TIMEOUT_SECS";
 
-/// Default per-phase budget. Curated cells normally finish in SECONDS
-/// (compile + a cold `cargo build --release` + a sub-second run); a
-/// deadlocked generated program is the night-eater this catches. The
-/// 600s default matches diff-fuzz: generous enough that a cold,
-/// build-lock-contended `cargo build` never trips it, tight enough that
-/// a genuine hang fails the cell in minutes rather than overnight
-/// (TASK-0466 / TASK-0461 class).
+/// Default RUN-phase budget. A deadlocked generated program is the
+/// night-eater this catches (TASK-0466 / TASK-0461 class); healthy runs
+/// finish in sub-seconds. 600s matches diff-fuzz.
 pub(crate) const E2E_TIMEOUT_DEFAULT_SECS: u64 = 600;
+
+/// Default BUILD/COMPILE-phase budget. Builds are slow-but-bounded, not
+/// deadlock-prone: under a fully-parallel e2e (many cells x full rustc
+/// parallelism on one laptop) the HEAVIEST generated projects (the
+/// distributed async-stencil class) were measured exceeding 600s of
+/// wall on a loaded host — the first full-ci run after TASK-0466
+/// failed three REQUIRED cells exactly that way (legit rustc progress
+/// in the killed output, not a hang). 3600s still bounds a truly
+/// wedged build to an hour instead of a night while never killing a
+/// contended-but-progressing one.
+pub(crate) const E2E_BUILD_TIMEOUT_DEFAULT_SECS: u64 = 3600;
+pub(crate) const E2E_BUILD_TIMEOUT_ENV: &str = "NUC_E2E_BUILD_TIMEOUT_SECS";
+
+/// Resolve the BUILD/COMPILE-phase budget (see the build default above).
+pub(crate) fn e2e_build_phase_budget() -> Result<std::time::Duration, String> {
+    test_common::proc_timeout::resolve_timeout(E2E_BUILD_TIMEOUT_ENV, E2E_BUILD_TIMEOUT_DEFAULT_SECS)
+}
 
 /// Resolve the curated-harness phase budget, falling back to the default.
 /// A malformed / zero value is rejected loudly by the shared resolver —
@@ -401,6 +414,21 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
     // value fails the cell loudly in the Compile phase rather than
     // silently running unbounded — the same fail-fast contract diff-fuzz
     // applies at startup.
+    let build_budget = match e2e_build_phase_budget() {
+        Ok(b) => b,
+        Err(e) => {
+            return CellResult {
+                cell,
+                required: planned.required,
+                status: Status::Failed {
+                    phase: Phase::Compile,
+                    detail: e,
+                },
+                timings,
+                corrupted,
+            }
+        }
+    };
     let budget = match e2e_phase_budget() {
         Ok(b) => b,
         Err(e) => {
@@ -438,7 +466,7 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         .arg("--out")
         .arg(&scratch)
         .current_dir(paths.nucleus_ws());
-    let compile = run_phase_timed(compile_cmd, Phase::Compile, budget);
+    let compile = run_phase_timed(compile_cmd, Phase::Compile, build_budget);
     timings.compile = Some(t0.elapsed());
     let compile = match compile {
         Ok(o) => o,
@@ -513,7 +541,7 @@ pub(crate) fn run_cell(paths: &Paths, planned: &PlannedCell) -> CellResult {
         .arg("--release")
         .arg("--quiet")
         .current_dir(&scratch);
-    let build = run_phase_timed(build_cmd, Phase::Build, budget);
+    let build = run_phase_timed(build_cmd, Phase::Build, build_budget);
     timings.build = Some(t1.elapsed());
     let build = match build {
         Ok(o) => o,
