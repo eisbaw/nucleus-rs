@@ -39,8 +39,10 @@ marking exactly where the claim has not yet been tested.
 The work is equally clear about its price. The whole architecture is bought with a
 single trade --- expressiveness for a statically determined, deterministic firing
 order --- and that trade defines a real boundary. The algorithm class is affine,
-static, single-assignment, and integer-valued, with floating-point summation
-excluded by the determinism it would break; there is no data-dependent control flow,
+static, single-assignment, and integer-valued at its core --- unordered
+floating-point summation is excluded by the determinism it would break, and the
+opt-in fixed-order variant is reproducible across backends but not across
+schedules; there is no data-dependent control flow,
 no recursion, and no dynamic scheduling; the schedule is checked, not optimised, and
 carries no cost model; the soundness guarantee is scoped to coordination within a
 restricted net class, not to value-correctness or to arbitrary nets; and the cheap
