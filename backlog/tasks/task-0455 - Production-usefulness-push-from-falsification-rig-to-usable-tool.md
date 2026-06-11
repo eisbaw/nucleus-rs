@@ -1,7 +1,7 @@
 ---
 id: TASK-0455
 title: 'Production usefulness push: from falsification rig to usable tool'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-09 21:28'
 updated_date: '2026-06-11 04:31'
