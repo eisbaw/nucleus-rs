@@ -677,6 +677,18 @@ schedule for \"a.algo.nuc\" {
         errs,
         vec![LinkError::new(LinkErrorKind::UnplacedKernel("b".into()))]
     );
+    // TASK-0455.06.04 AC#2 + AC#4: the rendered message must propose a
+    // concrete `place` directive to add, naming the offending kernel, so
+    // the hint cannot silently rot back into a bare refusal.
+    let rendered = errs[0].to_string();
+    assert!(
+        rendered.contains("help: add a placement to the schedule"),
+        "UnplacedKernel must propose a fix, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("place b on <worker>;"),
+        "fix hint must template the offending kernel name, got: {rendered}"
+    );
 }
 
 #[test]

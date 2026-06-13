@@ -156,7 +156,9 @@ impl std::fmt::Display for LinkErrorKind {
         match self {
             LinkErrorKind::UnplacedKernel(name) => write!(
                 f,
-                "kernel `{name}` is declared in the algorithm but has no `place` directive in the schedule"
+                "kernel `{name}` is declared in the algorithm but has no `place` directive in the schedule\n  \
+                 help: add a placement to the schedule, e.g. `place {name} on <worker>;` \
+                 (replace `<worker>` with one of the schedule's declared workers)"
             ),
             LinkErrorKind::UnknownKernel { name, suggestion } => {
                 write!(

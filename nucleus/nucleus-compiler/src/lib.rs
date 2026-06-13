@@ -56,8 +56,8 @@ pub use acfg::{
     NotifyMode, Operation, SyncPlaceholder, TransferPolicy, XferPlaceholder, XferRole, ACFG,
 };
 pub use capabilities::{
-    check_schedule_compat, load_capabilities, CapError, CapMismatch, Capabilities,
-    NotifyMode as CapNotifyMode, Transport,
+    check_schedule_compat, load_capabilities, parse_capabilities, CapError, CapMismatch,
+    Capabilities, NotifyMode as CapNotifyMode, Transport,
 };
 pub use contract::{check_kernels_contract, ContractError};
 pub use error::{ParseError, ParseErrorKind, ParseErrors};

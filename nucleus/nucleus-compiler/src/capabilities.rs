@@ -304,7 +304,27 @@ pub fn load_capabilities(path: &Path) -> Result<Capabilities, CapError> {
         path: path.to_path_buf(),
         message: e.to_string(),
     })?;
-    let caps: Capabilities = toml::from_str(&src).map_err(|e| classify_de_error(&e))?;
+    parse_capabilities(&src)
+}
+
+/// Parse and validate a `capabilities.toml` already in memory.
+///
+/// The filesystem-free core of [`load_capabilities`]: that function is
+/// now `read_to_string` + this. Same parse and same [`Capabilities::validate`]
+/// path, so it is byte-for-byte equivalent to loading the same text off
+/// disk (the only [`CapError`] it cannot produce is `Io`, which is an
+/// I/O concern, not a content concern — `validate` is path-independent).
+///
+/// Exists because two callers hold the TOML text directly rather than a
+/// path: (1) the driver's compile-time `BACKEND_CAPS` registry, which
+/// `include_str!`s every backend's committed `capabilities.toml` so a
+/// capability rejection can report which OTHER backends would accept the
+/// schedule without re-reading the filesystem (TASK-0455.06.04); and
+/// (2, forward-carried from TASK-0455.06.04) the planned LSP / live-
+/// diagnostics path (TASK-0469.02), which will want in-memory capability
+/// parsing for editor feedback with no disk round-trip.
+pub fn parse_capabilities(src: &str) -> Result<Capabilities, CapError> {
+    let caps: Capabilities = toml::from_str(src).map_err(|e| classify_de_error(&e))?;
     caps.validate()?;
     Ok(caps)
 }
