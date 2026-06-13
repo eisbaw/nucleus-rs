@@ -222,10 +222,8 @@ mod tests {
         .unwrap_or_else(|e| panic!("host: bind DATA UDS `{}` for w0 failed: {e}", data_path_w0.display()));
     let ctrl_listener_w0 = UnixListener::bind(&ctrl_path_w0)
         .unwrap_or_else(|e| panic!("host: bind CTRL UDS `{}` for w0 failed: {e}", ctrl_path_w0.display()));
-    let (data_w0_std, _) = data_listener_w0.accept()
-        .unwrap_or_else(|e| panic!("host: accept DATA from w0 failed: {e}"));
-    let (ctrl_w0_raw, _) = ctrl_listener_w0.accept()
-        .unwrap_or_else(|e| panic!("host: accept CTRL from w0 failed: {e}"));
+    let data_w0_std = wire::accept_with_deadline(&data_listener_w0, "DATA", "w0");
+    let ctrl_w0_raw = wire::accept_with_deadline(&ctrl_listener_w0, "CTRL", "w0");
     wire::apply_sock_buf(&data_w0_std);
     wire::apply_sock_buf(&ctrl_w0_raw);
     let ctrl_w0: Rc<RefCell<std::os::unix::net::UnixStream>> = Rc::new(RefCell::new(ctrl_w0_raw));

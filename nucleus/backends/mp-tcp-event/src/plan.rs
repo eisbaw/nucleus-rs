@@ -108,16 +108,28 @@ impl EventTransport for TcpEventTransport {
                      \x20\x20\x20\x20}}"
                 )
                 .ok();
+                // Bounded accept (TASK-0461.01): the prior bare
+                // `listener_{nwn}.accept()` was an UNBOUNDED blocking
+                // call — a worker that never connected left host wedged
+                // here forever at 0% CPU with no established socket (the
+                // 10.5h-night-eater signature; silent sibling of the
+                // mp-tcp-bufsync/poll fix in TASK-0461).
+                // `wire::accept_with_deadline` (already shipped dormant
+                // in the emitted `wire.rs`, copied from
+                // `mp_tcp_common::WIRE_RUNTIME_SRC`) polls with a
+                // wall-clock deadline and fails LOUD naming the worker.
+                // It returns the stream DIRECTLY (not a tuple) and
+                // restores the listener + stream to BLOCKING; the
+                // subsequent std->mio `set_nonblocking(true)` on the
+                // stream is unaffected (the helper toggles the LISTENER).
                 writeln!(
                     out,
-                    "    let (data_{nwn}_std, _) = listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept DATA from {nwn} failed: {{e}}\"));"
+                    "    let data_{nwn}_std = wire::accept_with_deadline(&listener_{nwn}, \"DATA\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(
                     out,
-                    "    let (ctrl_{nwn}_raw, _) = listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept CTRL from {nwn} failed: {{e}}\"));"
+                    "    let ctrl_{nwn}_raw = wire::accept_with_deadline(&listener_{nwn}, \"CTRL\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(out, "    data_{nwn}_std.set_nodelay(true).ok();").ok();

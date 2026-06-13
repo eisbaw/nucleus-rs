@@ -151,16 +151,27 @@ impl EventTransport for UdsEventTransport {
                      \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: bind CTRL UDS `{{}}` for {nwn} failed: {{e}}\", ctrl_path_{nwn}.display()));"
                 )
                 .ok();
+                // Bounded accept (TASK-0461.01): the prior bare
+                // `data_listener_{nwn}.accept()` / `ctrl_listener_{nwn}.accept()`
+                // were UNBOUNDED blocking calls — a worker that never
+                // connected left host wedged here forever at 0% CPU (the
+                // 10.5h-night-eater signature; silent sibling of the
+                // mp-tcp-bufsync/poll fix in TASK-0461). The emitted
+                // `wire.rs` (this crate's inlined UDS `wire_runtime.rs`)
+                // now ships a UnixListener `accept_with_deadline` that
+                // polls with a wall-clock deadline and fails LOUD naming
+                // the worker. It returns the stream DIRECTLY (not a
+                // tuple) and restores the listener + stream to BLOCKING;
+                // the subsequent std->mio `set_nonblocking(true)` on the
+                // stream is unaffected (the helper toggles the LISTENER).
                 writeln!(
                     out,
-                    "    let (data_{nwn}_std, _) = data_listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept DATA from {nwn} failed: {{e}}\"));"
+                    "    let data_{nwn}_std = wire::accept_with_deadline(&data_listener_{nwn}, \"DATA\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(
                     out,
-                    "    let (ctrl_{nwn}_raw, _) = ctrl_listener_{nwn}.accept()\n\
-                     \x20\x20\x20\x20\x20\x20\x20\x20.unwrap_or_else(|e| panic!(\"host: accept CTRL from {nwn} failed: {{e}}\"));"
+                    "    let ctrl_{nwn}_raw = wire::accept_with_deadline(&ctrl_listener_{nwn}, \"CTRL\", \"{nwn}\");"
                 )
                 .ok();
                 writeln!(out, "    wire::apply_sock_buf(&data_{nwn}_std);").ok();

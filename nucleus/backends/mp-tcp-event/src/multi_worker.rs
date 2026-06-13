@@ -204,10 +204,8 @@ mod tests {
         fs::rename(&rdv_tmp, &rdv_final)
             .unwrap_or_else(|e| panic!("host: rename rendezvous `{}` -> `{}` for w0 failed: {e}", rdv_tmp.display(), rdv_final.display()));
     }
-    let (data_w0_std, _) = listener_w0.accept()
-        .unwrap_or_else(|e| panic!("host: accept DATA from w0 failed: {e}"));
-    let (ctrl_w0_raw, _) = listener_w0.accept()
-        .unwrap_or_else(|e| panic!("host: accept CTRL from w0 failed: {e}"));
+    let data_w0_std = wire::accept_with_deadline(&listener_w0, "DATA", "w0");
+    let ctrl_w0_raw = wire::accept_with_deadline(&listener_w0, "CTRL", "w0");
     data_w0_std.set_nodelay(true).ok();
     ctrl_w0_raw.set_nodelay(true).ok();
     wire::apply_sock_buf(&data_w0_std);
