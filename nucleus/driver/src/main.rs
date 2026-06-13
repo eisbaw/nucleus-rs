@@ -96,6 +96,7 @@ use nucleus_compiler::{
 // below the 1000-LoC `check-mega-files` fence). `args` = CLI parsing;
 // `dispatch` = per-backend `emit(...)` routing.
 mod args;
+mod cap_registry;
 mod dispatch;
 mod gate;
 
@@ -495,6 +496,19 @@ fn cmd_build(argv: &[String]) -> Result<(), String> {
             s.push_str("\n  - ");
             s.push_str(&m.to_string());
         }
+        // Actionable fix hint (TASK-0455.06.04): the rejected schedule may
+        // be satisfiable on a DIFFERENT backend. Consult every other
+        // backend's committed capability matrix (the `cap_registry`
+        // single-source include_str! registry) and tell the user which
+        // ones would accept it — the data is sitting in the matrices we
+        // just consulted, so refusing without saying so is a missed
+        // teaching opportunity (parent epic TASK-0469). Deterministic
+        // registry order; "none" handled by the helper.
+        s.push_str("\n  ");
+        s.push_str(&cap_registry::accepting_backends_hint(
+            &backend,
+            &linked.sched,
+        ));
         return Err(s);
     }
 
