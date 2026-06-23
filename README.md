@@ -1,10 +1,13 @@
-# Nucleus v2
+# Nucleus
 
-A pre-compiler that takes **two** annotated source files in the Nuc
-language — an *algorithm* (Rust kernels + dataflow + iteration) and a
-*schedule* (workers + mapping + blocking + IO semantics) — and emits
-split, statically-scheduled, parallel code for a range of backends
-spanning commodity CPU, HPC clusters, and embedded targets.
+A pre-compiler for portable parallel software. You write **two** files —
+an *algorithm* (what to compute: Rust kernels, dataflow, iteration) and
+a *schedule* (how to lay it out: workers, mapping, blocking, and IO
+semantics) — and Nucleus emits split, statically-scheduled, parallel
+Rust for a range of backends spanning commodity CPU, HPC clusters, and
+embedded microcontrollers. The algorithm never mentions a worker, a
+buffer, a transport, or a barrier; change the schedule (or the backend)
+and the algorithm stays untouched.
 
 ## Lineage
 
@@ -31,69 +34,127 @@ assertion into something a single differing byte can refute.
 
 ## What this is / isn't
 
-**Is**: a thesis-grade implementation of the algorithm/schedule split,
-with a falsifiable cross-backend bit-identical differential test as the
+**Is**: an implementation of the algorithm/schedule split, with a
+falsifiable cross-backend bit-identical differential test as the
 correctness gate. The same algorithm runs under multiple radically
-different decompositions (single-worker, batch-parallel, distributed)
-and must produce byte-identical output across backends. The central
+different decompositions (single-worker, distributed, pipelined) and
+must produce byte-identical output across every backend. The central
 commitment is the **algorithm/schedule separation** — the algorithm
-states *what* to compute; the schedule states *where, when, and how* to
-compute it; the compiler proves they fit and emits the code.
+states *what* to compute; the schedule states *where, when, and how*;
+the compiler synthesises the transfers and synchronisation, proves the
+result is bounded and deadlock-free, and emits the code.
 
 **Isn't**: a production polyhedral compiler, an auto-tuner, or a
-distributed training framework. Backward pass and collectives are
-deliberately out of scope for v2.
+distributed training framework. The supported algorithm class is affine,
+static, single-assignment, and integer-centric (deterministic
+floating-point only where reductions do not reorder). Data-dependent
+control flow, recursion, dynamic scheduling, and a GPU backend are
+deliberately out of scope; `check` assertions are *checked*, not
+optimised against (there is no cost model).
 
-## Pointers
+## One algorithm, many schedules
 
-- **[`nuc-nucleus/PRD.md`](nuc-nucleus/PRD.md)** — the specification.
-  Start here. Everything else is implementation.
+The algorithm declares shaped data, kernel contracts (real Rust
+functions, bodies in a sibling `kernels.rs`), and a single-assignment
+dataflow body. Here is an element-wise add:
+
+```
+const N : usize = 256;
+
+data a : i32[N];
+data b : i32[N];
+data c : i32[N];
+
+kernel add          : (i32, i32) -> i32 pure;
+kernel load_input   : ()         -> i32[N] effectful;
+kernel load_input_b : ()         -> i32[N] effectful;
+kernel save_output  : (i32[N])   -> ()     effectful;
+
+a <-- load_input();
+b <-- load_input_b();
+for i : 0 .. N {
+    c[i] <-- add(a[i], b[i]);
+}
+save_output(c);
+```
+
+The same algorithm runs under a single-worker schedule:
+
+```
+schedule for "../prog.algo.nuc" {
+    workers = { host };
+    place load_input   on host;
+    place load_input_b on host;
+    place save_output  on host;
+    place add          on host;
+}
+```
+
+…and under a two-worker schedule, where the compiler infers and
+schedules the cross-worker transfers (each crossing data symbol carries
+an explicit `transfer` directive — omitting one is a compile error, not
+a silent default):
+
+```
+schedule for "../prog.algo.nuc" {
+    workers = { host, w0 };
+    place load_input   on host;
+    place load_input_b on host;
+    place save_output  on host;
+    place add          on w0;
+    transfer a : sync;
+    transfer b : sync;
+    transfer c : sync;
+}
+```
+
+Both schedules drive the *same* algorithm file and, on the same input,
+must produce the *same* bytes — on every capable backend. That
+requirement is the whole test.
+
+## Read more
+
+- **[`paper/main.pdf`](paper/main.pdf)** — the full write-up: the
+  design, the two sublanguages, the Petri-net IR and its compile-time
+  soundness gate, the ten-backend target ladder, the validation
+  methodology, and the results. The authoritative reference; start here
+  for the *why*.
 - **[`nuc-nucleus/examples/`](nuc-nucleus/examples/)** — 29 worked
-  examples (fourteen driving examples per PRD §9 plus fifteen later
-  extensions, 15–29) from element-wise add (one kernel, one for-loop)
-  to CNN inference (multi-layer i32 deterministic), a multi-MCU
-  hearing aid, a DMA-async + PIO-sync transport demo, a map-reduce
-  dot product (inner product), a rank-1 outer product (the
-  rank-expansion counterpart of a reduction), a distributed
-  XOR-combine bin-parity (the non-sum accumulator-combine identity),
-  a distributed MIN-combine bin-min (the non-zero-identity
-  accumulator combine, init to `i32::MAX`), a distributed FLOAT
-  MIN-combine bin-fmin (the f32 order-independent combine, init to
-  `f32::INFINITY`), and a distributed reproducible FLOAT SUM bin-fsum
-  (the opt-in `combine=fsum` fixed-order fold: bit-identical across
-  backends for a given schedule, though not the naive IEEE sum — plain
-  `combine=sum` on a float stays rejected as non-associative per PRD
-  §10.1). Each example is `prog.algo.nuc` + one or more
-  `schedules/*.sched.nuc` + a `kernels.rs` + an independent reference
-  impl + an `input.bin` + an expected `reference.bin`.
+  examples, from element-wise add to a multi-layer CNN inference, a
+  multi-microcontroller hearing-aid pipeline, a DMA-async + PIO-sync
+  transport demo, and a family of binned-combine reductions. Each is
+  `prog.algo.nuc` + one or more `schedules/*.sched.nuc` + a `kernels.rs`
+  + an independent reference implementation + an `input.bin` + an
+  expected `reference.bin`.
   <!-- check-readme-counts: examples=29 (filesystem-truth gate; bump when adding/removing an examples/NN-* dir) -->
-- **[`docs/tutorial.md`](docs/tutorial.md)** — getting started: write a
-  program from scratch and run it on two backends. New users start here.
-  See also [`docs/cli-reference.md`](docs/cli-reference.md) (build flags,
-  exit codes, `--emit-pn`), [`docs/stability.md`](docs/stability.md)
-  (stable vs may-change surface), and
-  [`docs/diagnostics-audit.md`](docs/diagnostics-audit.md) (the
-  user-facing error surfaces).
-- **[`docs/`](docs/)** — grammar documents and the reference-impl
-  policy.
 - **[`nucleus/`](nucleus/)** — the Rust workspace: `nucleus-compiler/`
-  (parser + IR + passes), `backends/` (pthreads-sync, mp-tcp-bufsync, …),
-  `driver/` (the `nucleus` CLI), and `e2e/` (the differential matrix).
-- **[`backlog/`](backlog/)** — task tracker (`backlog` CLI). Tasks
-  carry plans, notes, and dependencies; decisions live under
-  `backlog/decisions/`.
+  (parser, IR, and passes), `backends/` (the ten backends across three
+  tiers), `driver/` (the `nucleus` CLI), and `e2e/` (the differential
+  matrix harness).
+- **[`docs/`](docs/)** — [`tutorial.md`](docs/tutorial.md) (write and
+  run a program from scratch), [`cli-reference.md`](docs/cli-reference.md)
+  (build flags, exit codes, `--emit-pn`), the grammar references
+  ([algorithm](docs/grammar-algo.md), [schedule](docs/grammar-sched.md)),
+  [`numeric-determinism.md`](docs/numeric-determinism.md), and
+  [`stability.md`](docs/stability.md).
 
-## Running
+## Build and run
 
-The repo provides a Nix dev shell + a `justfile`:
+The repo provides a Nix dev shell and a `justfile`:
 
 ```
 nix develop -c just build       # cargo build --workspace
 nix develop -c just test        # cargo test --workspace
-nix develop -c just e2e         # full cross-backend differential
-nix develop -c just ci          # the gate CI runs
+nix develop -c just e2e         # full cross-backend differential matrix
+nix develop -c just ci          # the full gate
 ```
 
-`just e2e` is the load-bearing test: it builds + runs every
-example × schedule × backend cell and diffs the output against the
-reference. Bit-identical or it fails.
+`just e2e` is the load-bearing test: it builds and runs every
+(example × schedule × backend) cell and diffs the output against the
+committed reference. Bit-identical, or it fails.
+
+The paper is built from its own pinned environment:
+
+```
+cd paper && nix develop -c just build   # lualatex + biber -> paper/main.pdf
+```
