@@ -51,6 +51,7 @@
           rustToolchain
           fenix.packages.${system}.rust-analyzer
           pkgs.just
+          pkgs.ripgrep
         ];
 
         # Tier-3 (M9+) cross-compile toolchain. Adds the
