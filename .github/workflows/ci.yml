@@ -1,47 +1,17 @@
-# Nucleus v2 — CI verification gate. TASK-0057.
+# Nucleus v2 — CI gate. TASK-0057.
 #
-# Single source of truth: every job runs `nix develop -c just <step>`,
-# and the full gate is exactly `just ci`. "What CI does" == "what a
-# developer runs locally" by construction — the workflow does not
-# re-implement the gate, it delegates to the justfile (see justfile
-# `ci` recipe and its TASK-0162 note).
+# GitHub CI runs the individual fine-grained recipes as PARALLEL jobs so
+# a red check names the exact recipe that regressed. It deliberately
+# does NOT run the `just ci` convenience aggregate (that would duplicate
+# the individual recipes), and it does NOT run the cross-backend e2e
+# matrix (`just e2e` / `e2e-milestone` and the determinism / xbackend /
+# required-coverage arms, all of which drive the full matrix through the
+# `nucleus-e2e` harness) — those are disk- and time-heavy and run
+# locally or on a dedicated runner. `just ci` remains the full local
+# gate; CI is a fine-grained subset of it, minus the e2e matrix.
 #
-# Reproducibility (PRD §1 / §10.1) is a first-class gate, not an
-# afterthought: determinism-check and determinism-check-negative are
-# CI jobs alongside check/clippy/test/e2e. determinism-check-negative
-# is the falsifier — it passes iff the determinism harness correctly
-# DETECTS injected nondeterminism, so a green determinism-check is
-# only trustworthy because the negative arm is also green.
-#
-# Milestone matrix (TASK-0167, AC#3/#4 — GENUINE, not cosmetic). The
-# `milestone` job below is a real matrix: each entry runs
-# `just e2e-milestone M<k>`, which the e2e harness narrows to the
-# CUMULATIVE required set tagged at or before M<k> (see
-# nuc-nucleus/e2e-matrix.toml per-cell `milestone` key). The jobs run
-# DIFFERENT required sets — at the time of writing 4 (M1) / 8 (M2) /
-# 24 (M3) REQUIRED cells (M3 executes 28 total = 24 pass + 4 skipped)
-# — so this is a data dimension that changes behaviour,
-# not the 7-identical-jobs decoration the architect rejected in the
-# original TASK-0057 cycle (commit 6d7fcf7 collapsed that). The
-# separate `gate` job remains the single full-trust tier-1 gate
-# (`just ci`); the milestone matrix is the per-tier early-signal /
-# milestone-branch gate. Both delegate to the justfile (CI == local).
-#
-# PR-to-milestone-branch (AC#4): a PR targeting `milestone/M<k>` runs
-# that tier — the `milestone` job's matrix covers M1..M3 on every PR
-# and push, so a milestone branch's PR is gated by (at least) its
-# tier; `just e2e-milestone M<k>` is the exact command to reproduce a
-# given tier locally. Tier-3 (Renode M9-M11) is now a REAL job
-# (`renode-multimcu` below) — the no_std embedded backend (M9) and the
-# Renode multi-MCU co-sim (M10/M11) exist and pass locally. Tier-2 (MPI
-# M7+) remains a disabled placeholder — see the `gate` job comment.
-#
-# Limitations recorded in TASK-0057 notes (AC#6/#7): runner choice
-# (GitHub-hosted vs self-hosted) and Nix/Cargo cache strategy/cost;
-# branch-protection / merge-block cannot be configured from the repo
-# and must be set in GitHub repo settings by a maintainer; this
-# repo currently has no remote, so this workflow has NOT been
-# observed on a real runner.
+# Tier-3 Renode and the nightly mp-tcp port-stress stay as separate
+# best-effort jobs (unchanged).
 
 name: ci
 
@@ -49,66 +19,27 @@ on:
   push:
     branches: [main, master]
   pull_request:
-  # Milestone branches: PRs targeting a milestone branch get the same
-  # tier-1 gate today. When tier-2/3 land, the matrix `include` rows
-  # below switch the extra tiers on for the relevant milestones.
   workflow_dispatch:
-  # Nightly schedule (TASK-0252) for the heavy `port-stress` job that
-  # would bloat per-PR walltime. 04:00 UTC = quiet hours across most
-  # contributor timezones. The port-stress job's `if:` guard scopes it
-  # to schedule + workflow_dispatch only, so push / pull_request runs
-  # are unaffected (gate + milestone matrix continue as before).
   schedule:
     - cron: '0 4 * * *'
 
-# A failing job fails the workflow (AC#2): GitHub Actions marks the
-# workflow run failed if any job exits non-zero, and required status
-# checks then block merge once branch protection is configured on the
-# repo (maintainer action — see TASK-0057 notes / TASK-0166).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # The single full-trust tier-1 gate: the entire `just ci` aggregate
-  # (check/clippy/test/e2e/determinism). This is the byte-for-byte
-  # "what a developer runs locally" gate and is the authoritative
-  # merge-blocking check. It runs the FULL e2e matrix (bare `just
-  # e2e`), unaffected by the milestone work.
-  #
-  # Tier-2 MPI CI (TASK-0164, lands with M7) is still a disabled
-  # placeholder — that runtime is not wired into a CI recipe yet, and a
-  # row that fails or fakes success is forbidden. Tier-3 Renode (M9-M11,
-  # TASK-0165) is NO LONGER a placeholder: the `renode-multimcu` job
-  # below runs the real multi-MCU value-correctness gate. Per
-  # PRD §10.2/§10.3 every non-tier-1 row runs a tier-appropriate recipe
-  # (compile-mandatory / run-best-effort), NOT `just ci`.
-  gate:
-    name: tier-1 gate
+  check:
+    name: check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Nix is the reproducibility substrate (PRD §12.1). The flake
-      # pins the Rust toolchain; CI must use the SAME shell a
-      # developer uses, so every gate step is `nix develop -c ...`.
+      - uses: actions/checkout@v4
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-
-      # Cache the Nix store so the pinned toolchain + flake inputs are
-      # not re-fetched/rebuilt every run. See TASK-0057 notes for the
-      # cost trade-off (free GitHub-hosted runner + magic-nix-cache vs
-      # self-hosted persistent store).
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
-
-      # Cargo build/registry cache, keyed on the lockfile so a
-      # dependency change invalidates cleanly. nucleus/target is the
-      # workspace target dir (justfile `cd nucleus && cargo ...`).
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -119,45 +50,20 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
+      - run: nix develop -c just check
 
-      # The whole gate, delegated to the justfile. One command so CI
-      # and local cannot drift. Exits non-zero on the first failing
-      # step (just is fail-fast), which fails the job and the
-      # workflow (AC#2). Covers AC#1 (check/clippy/test/e2e) plus the
-      # reproducibility gates.
-      - name: just ci (tier-1 full gate)
-        run: nix develop -c just ci
-
-  # GENUINE per-milestone matrix (TASK-0167 AC#3/#4). Each entry runs
-  # `just e2e-milestone M<k>`, which the harness narrows to the
-  # CUMULATIVE required set for that tier — the jobs run DIFFERENT
-  # required sets (M1 ⊂ M2 ⊂ M3; today 4 / 8 / 24 required cells; M3
-  # executes 28 total incl. 4 skipped), so this is
-  # a real data dimension, NOT the 7-identical-jobs decoration the
-  # architect rejected. fail-fast:false so every tier reports even if
-  # an earlier tier fails (a per-tier signal is the point). Delegates
-  # to the justfile, so CI == local: reproduce any tier with
-  # `nix develop -c just e2e-milestone M<k>`.
-  milestone:
-    name: e2e tier ${{ matrix.milestone }}
+  clippy:
+    name: clippy
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        milestone: [M1, M2, M3]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
-
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -168,47 +74,102 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
+      - run: nix develop -c just clippy
 
-      # The per-tier required set. A PR to a milestone branch is gated
-      # by (at minimum) its tier; this command reproduces it locally
-      # verbatim. Exits non-zero on any required-cell failure or a
-      # TASK-0163 coverage gap WITHIN that tier (the coverage guard is
-      # scoped by the SAME cumulative predicate, so a typo'd/stale
-      # milestone-tagged required cell still hard-fails its tier).
-      - name: just e2e-milestone ${{ matrix.milestone }}
-        run: nix develop -c just e2e-milestone ${{ matrix.milestone }}
+  test:
+    name: test (dev profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nucleus/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - run: nix develop -c just test
 
-  # Nightly mp-tcp-bufsync port-handshake stress (TASK-0252 closes
-  # TASK-0176 AC#2 as a STEADY-STATE guarantee, not a one-shot reading
-  # at landing time). Runs `just port-stress-check` (20 parallel
-  # `nucleus-e2e --backend mp-tcp-bufsync` invocations per recipe). Any
-  # flake — even 1-in-20 — fails the job loud with all child logs
-  # dumped (justfile recipe behaviour).
-  #
-  # `if:` guard scopes to schedule + manual dispatch only: a 20-way
-  # parallel e2e is too heavy for per-push/PR walltime; gate + milestone
-  # jobs above continue to run on every push/PR unchanged. Reproduce
-  # the same outcome locally with `nix develop -c just port-stress-check`.
-  #
-  # Mirrors the gate job's Nix + Cargo cache shape so cold-start cost
-  # is bounded.
+  test-release:
+    name: test (release profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nucleus/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - run: nix develop -c just test-release
+
+  # Cheap structural + doc-honesty fences. Each is its own step so a red
+  # one names the exact fence; they share a job because none needs a
+  # cargo build (grep/rg over source), so per-fence jobs would only pay
+  # redundant Nix-install setup.
+  fences:
+    name: structural + doc fences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+      - run: nix develop -c just check-textual-replace-on-codegen
+      - run: nix develop -c just check-include-str-coverage
+      - run: nix develop -c just check-reference-independence
+      - run: nix develop -c just check-reference-independence-negative
+      - run: nix develop -c just check-narrative-doc-lie
+      - run: nix develop -c just check-doc-citation-staleness
+      - run: nix develop -c just check-doc-citation-staleness-bare
+      - run: nix develop -c just check-doc-test-name-staleness
+      - run: nix develop -c just check-doc-cell-path-staleness
+      - run: nix develop -c just check-mega-files
+      - run: nix develop -c just check-readme-counts
+      - run: nix develop -c just check-doc-links
+
+  # Nightly mp-tcp-bufsync port-handshake stress (TASK-0252 / TASK-0176
+  # AC#2): 20 parallel `nucleus-e2e --backend mp-tcp-bufsync` runs, fail
+  # loud on any flake. Scoped to schedule + manual dispatch (too heavy
+  # for per-PR walltime). Reproduce: `nix develop -c just port-stress-check`.
   port-stress:
     name: nightly port-stress (mp-tcp-bufsync, 20x parallel)
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
-
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -219,51 +180,27 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
+      - run: nix develop -c just port-stress-check
 
-      - name: just port-stress-check (TASK-0176 AC#2 / TASK-0252)
-        run: nix develop -c just port-stress-check
-
-  # Tier-3 Renode multi-MCU value-correctness gate (TASK-0049.10.08 AC#4,
-  # TASK-0165). Runs `just renode-multimcu-gate`: two STM32H7 Renode
-  # co-sims — 02-split-add (2-MCU, 1024B) + 14-hearing-aid (REAL 3-MCU
-  # fe/dsp/rf hearing-aid, 512B) — each BYTE-EXACT vs reference.bin, fail
-  # loud on any mismatch. This is the M11 multi-MCU value-correctness
-  # proof (PRD §10.3 point 3), now that the staged-release boot-order fix
-  # (TASK-0049.05.03) resolved the ex14 rf frame-3 stall.
-  #
-  # Tier-3 run-best-effort (PRD §10.3), NOT part of the merge-blocking
-  # `just ci` — deliberately a SEPARATE job, like `port-stress`. It enters
-  # `.#embedded` + `.#renode` internally; the Renode closure is ~1-2GB and
-  # two co-sims take several minutes, so the `if:` guard scopes it to
-  # push-to-main/master + schedule + manual dispatch only (NOT per-PR) to
-  # keep PR walltime bounded — same rationale as port-stress. Reproduce
-  # locally verbatim with `nix develop -c just renode-multimcu-gate`.
-  #
-  # HONESTY CAVEAT (TASK-0057 AC#6/#7): this repo has NO git remote, so
-  # this workflow has NEVER executed on a real runner — the gate is
-  # DECLARED + locally reproducible, not observed-green in CI. A
-  # GitHub-hosted runner must also fetch the ~1-2GB Renode/embedded Nix
-  # closure on cold start; if that proves infeasible on hosted runners,
-  # a self-hosted runner with a warm Nix store is the fallback (TASK-0165
-  # / TASK-0057 runner-choice note). Mirrors the gate/port-stress Nix +
-  # Cargo cache shape to bound cold-start cost.
+  # Tier-3 Renode multi-MCU value-correctness gate (TASK-0049.10.08 /
+  # TASK-0165): two STM32H7 co-sims (02-split-add 2-MCU + 14-hearing-aid
+  # 3-MCU), each byte-exact vs reference.bin. Enters `.#embedded` +
+  # `.#renode` internally (~1-2GB closure), so it is scoped to
+  # push-to-main/master + schedule + manual dispatch, not per-PR.
+  # Reproduce: `nix develop -c just renode-multimcu-gate`.
   renode-multimcu:
     name: tier-3 Renode multi-MCU value-correctness
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
-
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -274,6 +211,4 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('nucleus/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
-
-      - name: just renode-multimcu-gate (M11 02-split-add + ex14 byte-exact)
-        run: nix develop -c just renode-multimcu-gate
+      - run: nix develop -c just renode-multimcu-gate
