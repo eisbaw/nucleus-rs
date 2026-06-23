@@ -6,6 +6,29 @@ language — an *algorithm* (Rust kernels + dataflow + iteration) and a
 split, statically-scheduled, parallel code for a range of backends
 spanning commodity CPU, HPC clusters, and embedded targets.
 
+## Lineage
+
+Nucleus is a **clean-room reimplementation** of the author's MSc (Hons)
+thesis work, originally carried out at Intel, on compiling a single
+annotated source for **multi-ASIP VLIW** targets — arrays of
+application-specific VLIW processors. That original system proved the
+core idea but was deliberately narrow: a single proprietary target, one
+backend, and a handful of demonstrations, with a genericity claim that
+could not be *falsified* because there was nothing to vary it against.
+
+This v2 is a from-scratch, clean-room port — it shares the *ideas*, not
+the code — rebuilt in **Rust** both as the language the compiler is
+written in and as the language it emits for every target. The scope and
+the rigour are both substantially higher: ten backends across three
+tiers (commodity CPU, MPI clusters, and bare-metal embedded), 29 worked
+examples, a Petri-net soundness gate that rejects unbounded or
+deadlocking schedules at compile time, and — the load-bearing addition —
+a **cross-backend bit-identical differential test** that compiles the
+*same* algorithm under every schedule and backend and requires
+byte-for-byte identical output. That iso-output demonstration across
+radically different runtimes is what turns the portability claim from an
+assertion into something a single differing byte can refute.
+
 ## What this is / isn't
 
 **Is**: a thesis-grade implementation of the algorithm/schedule split,
